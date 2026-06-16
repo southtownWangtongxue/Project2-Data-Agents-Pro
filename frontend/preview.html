@@ -1,0 +1,732 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DataAgent Pro - 设计预览</title>
+  
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  
+  <style>
+    :root {
+      --color-primary: #6366f1;
+      --color-primary-light: #818cf8;
+      --color-primary-dark: #4f46e5;
+      --color-bg: #09090b;
+      --color-surface: #18181b;
+      --color-surface-elevated: #27272a;
+      --color-border: #3f3f46;
+      --color-border-light: #52525b;
+      --color-text-primary: #fafafa;
+      --color-text-secondary: #a1a1aa;
+      --color-text-muted: #71717a;
+      --color-success: #22c55e;
+      --color-warning: #f59e0b;
+      --color-error: #ef4444;
+      
+      --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+      
+      --radius-sm: 6px;
+      --radius-md: 8px;
+      --radius-lg: 12px;
+      --radius-xl: 16px;
+      --radius-2xl: 24px;
+      --radius-full: 9999px;
+      
+      --transition-fast: 150ms ease;
+      --transition-normal: 200ms ease;
+    }
+    
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      font-family: var(--font-sans);
+      background-color: var(--color-bg);
+      color: var(--color-text-primary);
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+    
+    /* Header */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 64px;
+      padding: 0 24px;
+      background: rgba(24, 24, 27, 0.8);
+      backdrop-filter: blur(20px);
+      border-bottom: 1px solid var(--color-border);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    
+    .logo {
+      width: 32px;
+      height: 32px;
+    }
+    
+    .logo svg {
+      width: 100%;
+      height: 100%;
+    }
+    
+    .app-title {
+      font-size: 18px;
+      font-weight: 600;
+      background: linear-gradient(135deg, #fafafa, #a1a1aa);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    
+    .nav {
+      display: flex;
+      gap: 8px;
+    }
+    
+    .nav-link {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 16px;
+      border-radius: var(--radius-lg);
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--color-text-secondary);
+      text-decoration: none;
+      transition: all var(--transition-fast);
+    }
+    
+    .nav-link:hover {
+      background: rgba(99, 102, 241, 0.1);
+      color: var(--color-text-primary);
+    }
+    
+    .nav-link.active {
+      background: rgba(99, 102, 241, 0.15);
+      color: var(--color-primary-light);
+    }
+    
+    .nav-link svg {
+      opacity: 0.7;
+    }
+    
+    /* Main Container */
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 48px 24px;
+    }
+    
+    /* Hero Section */
+    .hero {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 64px;
+      align-items: center;
+      padding: 48px 0;
+    }
+    
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 16px;
+      background: rgba(99, 102, 241, 0.1);
+      border: 1px solid rgba(99, 102, 241, 0.3);
+      border-radius: var(--radius-full);
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--color-primary-light);
+      margin-bottom: 24px;
+    }
+    
+    .badge-dot {
+      width: 8px;
+      height: 8px;
+      background: linear-gradient(135deg, #6366f1, #818cf8);
+      border-radius: 50%;
+      animation: pulse 2s ease-in-out infinite;
+    }
+    
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.6; transform: scale(0.9); }
+    }
+    
+    .hero-title {
+      font-size: 56px;
+      font-weight: 700;
+      line-height: 1.1;
+      letter-spacing: -0.03em;
+      margin-bottom: 24px;
+    }
+    
+    .title-gradient {
+      background: linear-gradient(135deg, #6366f1 0%, #818cf8 50%, #a78bfa 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    
+    .hero-desc {
+      font-size: 18px;
+      line-height: 1.7;
+      color: var(--color-text-secondary);
+      margin-bottom: 32px;
+    }
+    
+    .hero-actions {
+      display: flex;
+      gap: 16px;
+    }
+    
+    .btn-primary {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 24px;
+      background: linear-gradient(135deg, #6366f1 0%, #818cf8 100%);
+      border: none;
+      border-radius: var(--radius-lg);
+      font-size: 15px;
+      font-weight: 600;
+      color: white;
+      cursor: pointer;
+      box-shadow: 0 4px 14px rgba(99, 102, 241, 0.4);
+      transition: all var(--transition-fast);
+    }
+    
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(99, 102, 241, 0.5);
+    }
+    
+    .btn-secondary {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 24px;
+      background: transparent;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-lg);
+      font-size: 15px;
+      font-weight: 500;
+      color: var(--color-text-secondary);
+      cursor: pointer;
+      transition: all var(--transition-fast);
+    }
+    
+    .btn-secondary:hover {
+      background: var(--color-surface);
+      border-color: var(--color-border-light);
+      color: var(--color-text-primary);
+    }
+    
+    /* Hero Visual */
+    .hero-visual {
+      position: relative;
+    }
+    
+    .visual-card {
+      background: var(--color-surface);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-xl);
+      overflow: hidden;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+    }
+    
+    .visual-header {
+      padding: 12px 16px;
+      background: rgba(255, 255, 255, 0.02);
+      border-bottom: 1px solid var(--color-border);
+    }
+    
+    .visual-dots {
+      display: flex;
+      gap: 8px;
+    }
+    
+    .visual-dots span {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+    }
+    
+    .visual-dots span:nth-child(1) { background: #ef4444; }
+    .visual-dots span:nth-child(2) { background: #f59e0b; }
+    .visual-dots span:nth-child(3) { background: #22c55e; }
+    
+    .visual-content {
+      padding: 24px;
+    }
+    
+    .visual-query {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 16px;
+      background: rgba(99, 102, 241, 0.1);
+      border: 1px solid rgba(99, 102, 241, 0.2);
+      border-radius: var(--radius-lg);
+      margin-bottom: 24px;
+      color: var(--color-primary-light);
+    }
+    
+    .visual-query span {
+      font-size: 14px;
+      color: var(--color-text-primary);
+    }
+    
+    .visual-chart {
+      display: flex;
+      align-items: flex-end;
+      gap: 12px;
+      height: 120px;
+    }
+    
+    .chart-bar {
+      flex: 1;
+      background: linear-gradient(180deg, #6366f1 0%, #4f46e5 100%);
+      border-radius: 4px 4px 0 0;
+      transition: all var(--transition-normal);
+    }
+    
+    .chart-bar:hover {
+      background: linear-gradient(180deg, #818cf8 0%, #6366f1 100%);
+    }
+    
+    /* Floating Elements */
+    .floating {
+      position: absolute;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 48px;
+      height: 48px;
+      background: var(--color-surface);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-lg);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+      animation: float 3s ease-in-out infinite;
+    }
+    
+    .floating-1 {
+      top: -20px;
+      right: -20px;
+      color: var(--color-primary);
+    }
+    
+    .floating-2 {
+      bottom: 40px;
+      left: -30px;
+      color: var(--color-success);
+      animation-delay: 1s;
+    }
+    
+    @keyframes float {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-10px); }
+    }
+    
+    /* Features */
+    .features {
+      padding: 64px 0;
+    }
+    
+    .section-header {
+      text-align: center;
+      margin-bottom: 48px;
+    }
+    
+    .section-title {
+      font-size: 36px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 16px;
+    }
+    
+    .section-desc {
+      font-size: 16px;
+      color: var(--color-text-secondary);
+      max-width: 500px;
+      margin: 0 auto;
+    }
+    
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 24px;
+    }
+    
+    .feature-card {
+      padding: 24px;
+      background: var(--color-surface);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-xl);
+      transition: all var(--transition-normal);
+    }
+    
+    .feature-card:hover {
+      border-color: var(--color-border-light);
+      transform: translateY(-4px);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+    }
+    
+    .feature-icon {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 48px;
+      height: 48px;
+      border-radius: var(--radius-lg);
+      margin-bottom: 16px;
+    }
+    
+    .feature-title {
+      font-size: 18px;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+    
+    .feature-desc {
+      font-size: 14px;
+      color: var(--color-text-secondary);
+      line-height: 1.6;
+    }
+    
+    /* Color Palette */
+    .palette {
+      padding: 64px 0;
+    }
+    
+    .palette-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+      gap: 16px;
+    }
+    
+    .color-item {
+      text-align: center;
+    }
+    
+    .color-swatch {
+      width: 100%;
+      aspect-ratio: 1;
+      border-radius: var(--radius-lg);
+      margin-bottom: 8px;
+      border: 1px solid var(--color-border);
+    }
+    
+    .color-name {
+      font-size: 12px;
+      font-weight: 500;
+      margin-bottom: 4px;
+    }
+    
+    .color-hex {
+      font-size: 11px;
+      font-family: var(--font-mono);
+      color: var(--color-text-muted);
+    }
+    
+    /* Footer */
+    .footer {
+      text-align: center;
+      padding: 48px 24px;
+      border-top: 1px solid var(--color-border);
+      color: var(--color-text-muted);
+      font-size: 14px;
+    }
+    
+    /* Responsive */
+    @media (max-width: 1024px) {
+      .hero {
+        grid-template-columns: 1fr;
+        text-align: center;
+      }
+      
+      .hero-title {
+        font-size: 42px;
+      }
+      
+      .hero-actions {
+        justify-content: center;
+      }
+      
+      .features-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+    
+    @media (max-width: 768px) {
+      .header {
+        flex-direction: column;
+        height: auto;
+        padding: 16px;
+        gap: 16px;
+      }
+      
+      .nav {
+        width: 100%;
+        justify-content: center;
+      }
+      
+      .hero-title {
+        font-size: 32px;
+      }
+      
+      .section-title {
+        font-size: 28px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <!-- Header -->
+  <header class="header">
+    <div class="header-left">
+      <div class="logo">
+        <svg viewBox="0 0 32 32" fill="none">
+          <rect width="32" height="32" rx="8" fill="url(#logoGrad)"/>
+          <path d="M8 11h16M8 16h10M8 21h12" stroke="white" stroke-width="2" stroke-linecap="round"/>
+          <defs>
+            <linearGradient id="logoGrad" x1="0" y1="0" x2="32" y2="32">
+              <stop stop-color="#6366f1"/>
+              <stop offset="1" stop-color="#818cf8"/>
+            </linearGradient>
+          </defs>
+        </svg>
+      </div>
+      <span class="app-title">DataAgent Pro</span>
+    </div>
+    <nav class="nav">
+      <a href="#home" class="nav-link active">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+        </svg>
+        首页
+      </a>
+      <a href="#" class="nav-link">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+        </svg>
+        智能对话
+      </a>
+      <a href="#" class="nav-link">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M9 11l3 3L22 4"/>
+          <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
+        </svg>
+        审批管理
+      </a>
+    </nav>
+  </header>
+  
+  <!-- Main -->
+  <main class="container">
+    <!-- Hero -->
+    <section class="hero" id="home">
+      <div class="hero-content">
+        <div class="hero-badge">
+          <span class="badge-dot"></span>
+          AI-powered Data Analytics
+        </div>
+        <h1 class="hero-title">
+          用自然语言<br/>
+          <span class="title-gradient">探索数据洞察</span>
+        </h1>
+        <p class="hero-desc">
+          DataAgent Pro 是一款智能数据分析助手，基于大语言模型，
+          让非技术用户也能轻松完成复杂的数据查询与分析。
+        </p>
+        <div class="hero-actions">
+          <button class="btn-primary">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+            </svg>
+            开始对话
+          </button>
+          <button class="btn-secondary">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="5 3 19 12 5 21 5 3"/>
+            </svg>
+            观看演示
+          </button>
+        </div>
+      </div>
+      
+      <div class="hero-visual">
+        <div class="visual-card">
+          <div class="visual-header">
+            <div class="visual-dots">
+              <span></span><span></span><span></span>
+            </div>
+          </div>
+          <div class="visual-content">
+            <div class="visual-query">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="11" cy="11" r="8"/>
+                <path d="m21 21-4.35-4.35"/>
+              </svg>
+              <span>"查询本月销售额Top10产品"</span>
+            </div>
+            <div class="visual-chart">
+              <div class="chart-bar" style="height: 60%"></div>
+              <div class="chart-bar" style="height: 85%"></div>
+              <div class="chart-bar" style="height: 45%"></div>
+              <div class="chart-bar" style="height: 70%"></div>
+              <div class="chart-bar" style="height: 95%"></div>
+            </div>
+          </div>
+        </div>
+        <div class="floating floating-1">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+          </svg>
+        </div>
+        <div class="floating floating-2">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+            <polyline points="22 4 12 14.01 9 11.01"/>
+          </svg>
+        </div>
+      </div>
+    </section>
+    
+    <!-- Features -->
+    <section class="features">
+      <div class="section-header">
+        <h2 class="section-title">为什么选择 DataAgent Pro</h2>
+        <p class="section-desc">专为业务人员设计的智能数据分析平台，让数据探索变得简单</p>
+      </div>
+      
+      <div class="features-grid">
+        <div class="feature-card">
+          <div class="feature-icon" style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+            </svg>
+          </div>
+          <h3 class="feature-title">自然语言交互</h3>
+          <p class="feature-desc">使用日常语言描述您的数据分析需求，无需编写代码即可完成复杂查询。</p>
+        </div>
+        
+        <div class="feature-card">
+          <div class="feature-icon" style="background: linear-gradient(135deg, #8b5cf6 0%, #d946ef 100%);">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+              <line x1="18" y1="20" x2="18" y2="10"/>
+              <line x1="12" y1="20" x2="12" y2="4"/>
+              <line x1="6" y1="20" x2="6" y2="14"/>
+            </svg>
+          </div>
+          <h3 class="feature-title">智能图表生成</h3>
+          <p class="feature-desc">自动为您生成直观的数据可视化图表，支持多种图表类型。</p>
+        </div>
+        
+        <div class="feature-card">
+          <div class="feature-icon" style="background: linear-gradient(135deg, #22c55e 0%, #10b981 100%);">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            </svg>
+          </div>
+          <h3 class="feature-title">企业级安全</h3>
+          <p class="feature-desc">高危 SQL 自动审批，数据脱敏保护，确保您的业务数据安全无忧。</p>
+        </div>
+        
+        <div class="feature-card">
+          <div class="feature-icon" style="background: linear-gradient(135deg, #f59e0b 0%, #f97316 100%);">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+              <ellipse cx="12" cy="5" rx="9" ry="3"/>
+              <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
+              <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+            </svg>
+          </div>
+          <h3 class="feature-title">多数据源支持</h3>
+          <p class="feature-desc">支持 MySQL、PostgreSQL、Oracle、SQL Server 等多种主流数据库。</p>
+        </div>
+      </div>
+    </section>
+    
+    <!-- Color Palette -->
+    <section class="palette">
+      <div class="section-header">
+        <h2 class="section-title">设计色板</h2>
+        <p class="section-desc">基于 Apple + 深色科技感的设计系统</p>
+      </div>
+      
+      <div class="palette-grid">
+        <div class="color-item">
+          <div class="color-swatch" style="background: #6366f1;"></div>
+          <div class="color-name">Primary</div>
+          <div class="color-hex">#6366f1</div>
+        </div>
+        <div class="color-item">
+          <div class="color-swatch" style="background: #818cf8;"></div>
+          <div class="color-name">Primary Light</div>
+          <div class="color-hex">#818cf8</div>
+        </div>
+        <div class="color-item">
+          <div class="color-swatch" style="background: #09090b; border: 1px solid #3f3f46;"></div>
+          <div class="color-name">Background</div>
+          <div class="color-hex">#09090b</div>
+        </div>
+        <div class="color-item">
+          <div class="color-swatch" style="background: #18181b; border: 1px solid #3f3f46;"></div>
+          <div class="color-name">Surface</div>
+          <div class="color-hex">#18181b</div>
+        </div>
+        <div class="color-item">
+          <div class="color-swatch" style="background: #27272a; border: 1px solid #3f3f46;"></div>
+          <div class="color-name">Surface Elevated</div>
+          <div class="color-hex">#27272a</div>
+        </div>
+        <div class="color-item">
+          <div class="color-swatch" style="background: #fafafa;"></div>
+          <div class="color-name">Text Primary</div>
+          <div class="color-hex">#fafafa</div>
+        </div>
+        <div class="color-item">
+          <div class="color-swatch" style="background: #a1a1aa;"></div>
+          <div class="color-name">Text Secondary</div>
+          <div class="color-hex">#a1a1aa</div>
+        </div>
+        <div class="color-item">
+          <div class="color-swatch" style="background: #22c55e;"></div>
+          <div class="color-name">Success</div>
+          <div class="color-hex">#22c55e</div>
+        </div>
+        <div class="color-item">
+          <div class="color-swatch" style="background: #f59e0b;"></div>
+          <div class="color-name">Warning</div>
+          <div class="color-hex">#f59e0b</div>
+        </div>
+        <div class="color-item">
+          <div class="color-swatch" style="background: #ef4444;"></div>
+          <div class="color-name">Error</div>
+          <div class="color-hex">#ef4444</div>
+        </div>
+      </div>
+    </section>
+  </main>
+  
+  <!-- Footer -->
+  <footer class="footer">
+    <p>DataAgent Pro - 智能数据分析助手 · Powered by AI</p>
+  </footer>
+</body>
+</html>
