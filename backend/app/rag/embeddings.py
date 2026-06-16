@@ -153,14 +153,15 @@ async def embed_texts(texts: list[str]) -> list[list[float]]:
     )
 
     try:
-        response = client.embed_documents( texts )
-        embeddings = [item.embedding for item in response.data]
+        # ── 注意：HuggingFaceEmbeddings.embed_documents() 直接返回 List[List[float]] ──
+        # 不是 OpenAI 风格的 response 对象，不需要 .data / .embedding 属性访问
+        embeddings = client.embed_documents(texts)
         dim = len(embeddings[0]) if embeddings else 0
         logger.info("成功向量化 %d 条文本，维度=%d", len(embeddings), dim)
         return embeddings
 
     except Exception as e:
-        logger.warning("调用 embeddings API 失败（模型=%s）: %s", settings.EMBEDDING_MODEL, e)
+        logger.warning("调用 embeddings 失败（模型=%s）: %s", settings.EMBEDDING_MODEL, e)
         return []
 
 

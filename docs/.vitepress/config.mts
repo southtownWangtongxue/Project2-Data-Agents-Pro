@@ -9,6 +9,7 @@ export default defineConfig({
       { text: '首页', link: '/' },
       { text: '开发指南', link: '/guide/quick-start' },
       { text: 'API 文档', link: '/api/introduction' },
+      { text: '项目文档', link: '/开发计划' },
     ],
     sidebar: {
       '/guide/': [
@@ -28,6 +29,11 @@ export default defineConfig({
       '/develop/': [
         { text: '前端二次开发', link: '/develop/frontend-dev' },
         { text: 'Agent 开发指南', link: '/develop/agent-dev' },
+      ],
+      '/': [
+        { text: '开发计划', link: '/开发计划' },
+        { text: '项目需求规格说明书', link: '/项目需求规格说明书' },
+        { text: '项目审计与改进计划', link: '/项目审计与改进计划' },
       ],
     },
     socialLinks: [

@@ -65,8 +65,8 @@ export const useApprovalStore = defineStore('approval', () => {
 
     try {
       await client.post('/approve', {
-        thread_id: threadId,
-        approved: true,
+        task_id: threadId,
+        action: 'approve',
         comment: comment || '',
       })
 
@@ -86,8 +86,8 @@ export const useApprovalStore = defineStore('approval', () => {
 
     try {
       await client.post('/approve', {
-        thread_id: threadId,
-        approved: false,
+        task_id: threadId,
+        action: 'reject',
         comment: comment || '',
       })
 
