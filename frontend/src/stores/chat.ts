@@ -69,6 +69,9 @@ export const useChatStore = defineStore('chat', () => {
   /* 当前正在流式更新的 token 消息 ID */
   let activeTokenMsgId: string | null = null
 
+  /* 最后一个助手文本消息 ID（用于流式光标动画） */
+  const lastAssistantMsgId = ref('')
+
   /* 当前活跃的 Agent（用于去重：某些 Agent 的 token 流不显示为独立文本） */
   let currentAgent: string | null = null
 
@@ -261,6 +264,7 @@ export const useChatStore = defineStore('chat', () => {
             }
           } else {
             activeTokenMsgId = generateId()
+            lastAssistantMsgId.value = activeTokenMsgId
             messages.value.push({
               id: activeTokenMsgId,
               role: 'assistant',
@@ -608,6 +612,7 @@ export const useChatStore = defineStore('chat', () => {
     currentTurnIndex,
     tasks,
     tasksCollapsed,
+    lastAssistantMsgId,
     sendMessage,
     retryLastMessage,
     clearMessages,

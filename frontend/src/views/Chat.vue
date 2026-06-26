@@ -641,9 +641,13 @@ function scrollToNode(nodeIndex: number) {
             <ExecutionCard :msg="msg" />
           </template>
 
-          <!-- 助手文本（Markdown 渲染） -->
+          <!-- 助手文本（Markdown 渲染 + 流式光标） -->
           <template v-else-if="msg.role === 'assistant'">
-            <div class="message-bubble message-bubble--assistant markdown-body" v-html="renderMarkdown(msg.content || '')"></div>
+            <div
+              class="message-bubble message-bubble--assistant markdown-body"
+              :class="{ 'is-streaming': store.isLoading && msg.id === store.lastAssistantMsgId }"
+              v-html="renderMarkdown(msg.content || '')"
+            ></div>
           </template>
 
           <!-- 追问建议 -->
@@ -867,12 +871,18 @@ function scrollToNode(nodeIndex: number) {
   border-radius: var(--radius-lg);
   overflow: hidden;
   flex-shrink: 0;
-  animation: fadeIn 0.3s ease-out;
-  transition: all 0.3s ease;
+  transition: all 0.35s ease;
 }
+/* 进行中 → 金色左边框 + 阴影，更显眼 */
+.task-list:not(.is-collapsed) {
+  border-left: 3px solid #f59e0b;
+  box-shadow: 0 0 20px rgba(245, 158, 11, 0.08);
+}
+/* 全部完成 → 绿色边框 */
 .task-list.is-collapsed {
-  border-color: rgba(34, 197, 94, 0.15);
-  background: rgba(34, 197, 94, 0.04);
+  border-color: rgba(34, 197, 94, 0.25);
+  background: rgba(34, 197, 94, 0.05);
+  border-left: 3px solid #22c55e;
 }
 
 .task-list-header {
@@ -894,12 +904,20 @@ function scrollToNode(nodeIndex: number) {
   font-size: 13px;
   font-weight: 600;
   color: var(--color-text-primary);
+  transition: color 0.3s ease;
+}
+.task-list:not(.is-collapsed) .task-list-title {
+  color: #f59e0b;
 }
 .task-list.is-collapsed .task-list-title {
   color: #22c55e;
 }
 .task-list-title svg {
   color: var(--color-text-muted);
+  transition: color 0.3s ease;
+}
+.task-list:not(.is-collapsed) .task-list-title svg {
+  color: #f59e0b;
 }
 .task-list.is-collapsed .task-list-title svg {
   color: #22c55e;
@@ -912,6 +930,10 @@ function scrollToNode(nodeIndex: number) {
   font-size: 11px;
   color: var(--color-text-muted);
   font-family: var(--font-mono);
+  transition: color 0.3s ease;
+}
+.task-list:not(.is-collapsed) .task-list-count {
+  color: #f59e0b;
 }
 
 .task-list-chevron {
@@ -921,7 +943,7 @@ function scrollToNode(nodeIndex: number) {
   transform: rotate(180deg);
 }
 
-/* 展开动画 */
+/* 展开/折叠动画 */
 .task-list-expand-enter-active {
   transition: all 0.25s ease;
   overflow: hidden;
@@ -955,13 +977,30 @@ function scrollToNode(nodeIndex: number) {
   font-size: 13px;
   color: var(--color-text-muted);
   transition: all 0.3s ease;
+  border-left: 2px solid transparent;
 }
+/* 进行中 → 金色左边框 + 背景渐变 */
 .task-item.is-running {
-  color: var(--color-text-primary);
-  background: linear-gradient(90deg, rgba(99, 102, 241, 0.06), transparent);
+  color: #fef3c7;
+  background: linear-gradient(90deg, rgba(245, 158, 11, 0.12), transparent);
+  border-left-color: #f59e0b;
+  animation: taskPulse 1.5s ease-in-out infinite;
+}
+@keyframes taskPulse {
+  0%, 100% { background: linear-gradient(90deg, rgba(245, 158, 11, 0.12), transparent); }
+  50% { background: linear-gradient(90deg, rgba(245, 158, 11, 0.18), transparent); }
 }
 .task-item.is-done {
   color: var(--color-text-secondary);
+}
+
+/* 新任务出现闪动 */
+.task-item-enter-active {
+  animation: taskIn 0.4s ease-out;
+}
+@keyframes taskIn {
+  0% { opacity: 0; transform: translateX(-8px); }
+  100% { opacity: 1; transform: translateX(0); }
 }
 
 .task-item-icon {
@@ -976,9 +1015,10 @@ function scrollToNode(nodeIndex: number) {
   transition: all 0.4s ease;
 }
 .task-item.is-running .task-item-icon {
-  border-color: #6366f1;
-  background: rgba(99, 102, 241, 0.1);
-  color: #818cf8;
+  border-color: #f59e0b;
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.3);
 }
 .task-item.is-done .task-item-icon {
   border-color: #22c55e;
@@ -986,7 +1026,6 @@ function scrollToNode(nodeIndex: number) {
   color: #22c55e;
 }
 
-/* 旋转动画 */
 .task-spinner {
   animation: taskSpin 0.8s linear infinite;
 }
@@ -999,7 +1038,70 @@ function scrollToNode(nodeIndex: number) {
   transition: color 0.3s ease;
 }
 
-/* ========== 消息列表 ========== */
+/* 已完成任务对勾弹入动画 */
+.task-item.is-done .task-item-icon {
+  animation: checkPop 0.35s ease-out;
+}
+@keyframes checkPop {
+  0% { transform: scale(0); }
+  60% { transform: scale(1.3); }
+  100% { transform: scale(1); }
+}
+
+/* ========== 消息项 ========== */
+.message-item {
+  margin-bottom: var(--space-5);
+  display: flex;
+  animation: msgSlideIn 0.35s ease-out;
+}
+@keyframes msgSlideIn {
+  0% { opacity: 0; transform: translateY(8px) scale(0.98); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+.message-item:last-child { margin-bottom: 0; }
+.message-user { justify-content: flex-end; }
+.message-assistant { justify-content: flex-start; }
+.message-status, .message-error { justify-content: center; }
+
+/* 用户消息弹入 */
+.message-user .message-bubble--user {
+  animation: userMsgIn 0.3s ease-out;
+}
+@keyframes userMsgIn {
+  0% { opacity: 0; transform: translateX(12px); }
+  100% { opacity: 1; transform: translateX(0); }
+}
+
+/* ========== 流式光标 ========== */
+.message-bubble--assistant.is-streaming::after {
+  content: '';
+  display: inline-block;
+  width: 8px;
+  height: 16px;
+  background: var(--color-primary-light);
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  border-radius: 1px;
+  animation: cursorBlink 0.8s step-end infinite;
+}
+@keyframes cursorBlink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* ========== 工具卡片展开内容 ========== */
+.tool-body {
+  margin-top: var(--space-2);
+  padding: var(--space-3);
+  background: rgba(0,0,0,.2);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-left: 2px solid var(--color-primary);
+}
 .chat-messages {
   flex: 1;
   overflow-y: auto;
@@ -1102,20 +1204,6 @@ function scrollToNode(nodeIndex: number) {
   to { transform: rotate(360deg); }
 }
 
-/* ========== 消息项 ========== */
-.message-item {
-  margin-bottom: var(--space-5);
-  display: flex;
-  animation: messageIn 0.3s ease-out;
-}
-@keyframes messageIn {
-  from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-.message-item:last-child { margin-bottom: 0; }
-.message-user { justify-content: flex-end; }
-.message-assistant { justify-content: flex-start; }
-.message-status, .message-error { justify-content: center; }
 
 /* ========== 消息气泡 ========== */
 .message-bubble {
