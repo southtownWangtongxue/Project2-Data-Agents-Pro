@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.core.config import settings
 from app.core.llm import get_llm
+from app.core.stream import get_stream_context
 
 
 async def generate_sql(
@@ -52,9 +53,17 @@ async def generate_sql(
             {"role": "user", "content": user_message},
         ],
         temperature=0.1,
+        stream=True,
     )
 
-    sql = response.choices[0].message.content.strip()
+    ctx = get_stream_context()
+    content_chunks = []
+    async for chunk in response:
+        if chunk.choices and chunk.choices[0].delta.content:
+            token = chunk.choices[0].delta.content
+            content_chunks.append(token)
+            # 不推送 token：SQL 内容短，由格式化 SQL 卡片展示，避免前端重复显示
+    sql = "".join(content_chunks).strip()
     sql = _clean_sql(sql)
     return sql
 
@@ -101,6 +110,7 @@ async def generate_and_execute_sql(
     schema_info: str,
     dialect: str = "mysql",
     max_retries: int = 2,
+    initial_sql: str = "",
 ) -> dict:
     """
     生成 SQL 并执行，执行失败时自动将错误反馈给 LLM 进行重试修正。
@@ -114,6 +124,7 @@ async def generate_and_execute_sql(
         schema_info: 数据库表结构字符串（由 Schema Agent 提供）
         dialect: 目标 SQL 方言，默认 mysql
         max_retries: 最大重试次数，默认 2
+        initial_sql: 已生成的初始 SQL（如从工作流状态传入），非空时跳过重新生成
 
     返回:
         {
@@ -124,8 +135,11 @@ async def generate_and_execute_sql(
             "retries": int
         }
     """
-    # 首次生成 SQL
-    sql = await generate_sql(user_question, schema_info, dialect)
+    # 优先使用工作流传入的已有 SQL，否则重新生成
+    if initial_sql:
+        sql = initial_sql
+    else:
+        sql = await generate_sql(user_question, schema_info, dialect)
 
     # 尝试执行
     result = await execute_sql(engine, sql)

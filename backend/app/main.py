@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1 import router as v1_router
 from app.graph.workflow import init_checkpointer, close_checkpointer
+from app.models import create_tables
 from app.utils.log_utils import log
 
 
@@ -15,6 +16,7 @@ from app.utils.log_utils import log
 async def lifespan(app: FastAPI):
     """应用生命周期管理：启动时打印日志，关闭时清理资源。"""
     log.info("[DataAgent Pro] 服务启动中...")
+    await create_tables()
     log.info("[DataAgent Pro] API 文档: http://localhost:8000/docs")
     log.info("[DataAgent Pro] 前端开发地址: http://localhost:5173")
     await init_checkpointer()  # ✅ 启动时初始化（async 环境）

@@ -142,21 +142,34 @@ def verify_password(password: str, hashed: str) -> bool:
     """
     验证密码是否与存储的哈希值匹配。
 
+    支持两种格式:
+        - sha256:<salt>:<hash>  — 新版加盐 SHA-256（由 hash_password 生成）
+        - <md5_hex>             — 旧版 MD5 无盐哈希（32位大写 hex）
+
     参数:
         password: 待验证的明文密码
-        hashed:   存储的哈希字符串（由 hash_password 生成）
+        hashed:   存储的哈希字符串
 
     返回:
         True 表示密码正确，False 表示不匹配
     """
     try:
-        parts = hashed.split(":", 2)
-        if len(parts) != 3 or parts[0] != "sha256":
-            return False
-        _, salt, stored_hash = parts
-        salted = salt + password
-        computed = hashlib.sha256(salted.encode("utf-8")).hexdigest()
-        return secrets.compare_digest(computed, stored_hash)
+        # 新版格式: sha256:<salt>:<hash>
+        if hashed.startswith("sha256:"):
+            parts = hashed.split(":", 2)
+            if len(parts) != 3:
+                return False
+            _, salt, stored_hash = parts
+            salted = salt + password
+            computed = hashlib.sha256(salted.encode("utf-8")).hexdigest()
+            return secrets.compare_digest(computed, stored_hash)
+
+        # 旧版格式: 纯 MD5 hex（32字符，字母大写）
+        if len(hashed) == 32:
+            computed = hashlib.md5(password.encode("utf-8")).hexdigest()
+            return secrets.compare_digest(computed.upper(), hashed.upper())
+
+        return False
     except Exception:
         return False
 

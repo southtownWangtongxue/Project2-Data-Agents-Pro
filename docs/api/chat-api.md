@@ -1,320 +1,130 @@
-# 对话与审批接口
+# 对话接口
 
-本文档详细描述核心对话接口 `POST /api/v1/chat/completions` 和审批回调接口 `POST /api/v1/chat/approve` 的请求/响应格式及 SSE 事件类型。
+核心对话接口 `POST /api/v1/chat/completions`，基于 SSE 流式推送实时进度和结果。
+
+> **最后更新**: 2026-06-26 — 更新 SSE 事件类型、新增 node_started、任务清单机制。
 
 ---
 
-## POST /api/v1/chat/completions
+## 流式对话
 
-核心对话接口，接收用户自然语言输入，通过 SSE 流式返回处理结果。
+### `POST /api/v1/chat/completions`
 
-### 请求
+接收用户消息，通过 SSE 流式返回执行进度和结果。需要 Bearer Token 认证。
 
-**URL**：`/api/v1/chat/completions`
-
-**Method**：`POST`
-
-**Content-Type**：`application/json`
-
-**Accept**：`text/event-stream`
+#### 请求体
 
 ```json
 {
-  "query": "去年每个月的销售额是多少？",
-  "datasource_id": "mysql_main",
-  "options": {
-    "max_retries": 2,
-    "enable_analysis": true,
-    "enable_chart": true
-  }
+  "messages": [
+    {"role": "user", "content": "查询上个月的销售额TOP10"}
+  ],
+  "stream": true,
+  "thread_id": "admin:uuid"  // 可选，多轮对话复用
 }
 ```
 
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `query` | string | 是 | 用户的自然语言问题 |
-| `datasource_id` | string | 否 | 目标数据源 ID，默认使用 `default` |
-| `options.max_retries` | int | 否 | SQL 执行失败最大重试次数，默认 2 |
-| `options.enable_analysis` | bool | 否 | 是否启用数据分析（同比/环比/异常检测），默认 true |
-| `options.enable_chart` | bool | 否 | 是否生成图表配置，默认 true |
+#### 响应格式
 
-### 响应（SSE 流）
-
-响应格式遵循 SSE 规范，`Content-Type` 为 `text/event-stream`。
-
-每条消息格式：
+`Content-Type: text/event-stream`。每个事件一行：
 
 ```
-event: <事件类型>
-data: <JSON 数据>
-
+data: {"type": "node_started", "agent": "clarify_plan", "label": "意图分析"}
 ```
 
-#### 事件类型详解
+#### SSE 事件类型
 
-##### 1. status — 状态更新
+| 类型 | 触发时机 | 关键字段 |
+|------|---------|---------|
+| `thread_id` | 流开始时 | `thread_id` |
+| `node_started` | **每个节点开始时** | `agent`, `label` |
+| `thinking` | 节点完成时 | `agent`, `phase`, `content` |
+| `clarification` | 意图不明确时 | `text`, `options` |
+| `plan` | 执行计划生成后 | `intent`, `intent_label`, `steps`, `chart_suitable` |
+| `tool_call` | 工具调用开始 | `tool_name`, `sql`/`rows`/`cols` |
+| `tool_result` | 工具调用结束 | `tool_name`, `row_count` |
+| `sql` | SQL 生成完成 | `content` |
+| `result` | 查询结果 | `data`, `columns` |
+| `token` | 流式文本（逐字） | `content` |
+| `chart` | 图表配置 | `config` |
+| `title` | 标题生成 | `content`, `thread_id`, `node_index` |
+| `approval_required` | 高危 SQL 需审批 | `thread_id`, `sql`, `reason` |
+| `error` | 异常 | `error`, `code`, `recoverable` |
+| `done` | 流结束 | — |
 
+#### 典型交互时序
+
+```
+用户: "查询a_sheet1表project_no为1到5的cur_month_actual"
+
+SSE 事件流:
+  → thread_id: "admin:uuid"
+  → node_started: "意图分析" (running)
+  → plan: {intent:"query_data", steps:[...]}
+  → node_started: "加载表结构" (running)
+  → node_started: "生成SQL" (running)
+  → sql: "SELECT cur_month_actual FROM a_sheet1 WHERE project_no BETWEEN 1 AND 5;"
+  → node_started: "安全审核" → "执行查询"
+  → tool_call: "execute_sql"
+  → result: {data:[{cur_month_actual:16516},...], columns:["cur_month_actual"]}
+  → tool_result: "execute_sql"
+  → node_started: "质量评估" → "数据分析"
+  → token: "共查询到" → token: " 5 条记录..." → ... (Markdown 流式)
+  → node_started: "生成图表"/"生成回答"
+  → node_started: "完成"
+  → title: "查询a_sheet1表实际值"
+  → done
+```
+
+#### 去重说明
+
+- **SQL 仅出现一次**：由 `sql` 事件展示，不再有 token 流或 tool_call 重复
+- **分析文本流式输出**：由 `token` 事件逐字追加，无 tool_call/text 重复
+- **工具卡片清洁**：`tool_call`/`tool_result` 仅含必要字段，无 `undefined`
+
+---
+
+## 会话管理
+
+### `GET /api/v1/chat/sessions`
+
+获取当前用户的会话列表。
+
+### `DELETE /api/v1/chat/sessions/{thread_id}`
+
+删除指定会话（MySQL + Redis 双删）。
+
+### `GET /api/v1/chat/sessions/{thread_id}`
+
+恢复历史会话的完整消息。遍历所有节点从 Redis 恢复每轮数据。
+
+返回格式：
 ```json
 {
-  "event": "status",
-  "data": {
-    "stage": "intent_parsing",
-    "message": "正在理解你的问题..."
-  }
-}
-```
-
-**stage 枚举值**：
-
-| stage | 含义 |
-|-------|------|
-| `intent_parsing` | 意图解析中 |
-| `rag_retrieving` | 知识库检索中 |
-| `schema_loading` | 加载表结构中 |
-| `sql_generating` | 生成 SQL 中 |
-| `sql_retrying` | SQL 执行失败，正在重试 |
-| `executing` | 执行 SQL 查询中 |
-| `analyzing` | 数据分析中 |
-| `chart_generating` | 生成图表配置中 |
-| `exporting` | 文件导出中 |
-
-##### 2. sql_generation — SQL 生成结果
-
-```json
-{
-  "event": "sql_generation",
-  "data": {
-    "sql": "SELECT month, SUM(amount) AS total FROM sales WHERE year = 2024 GROUP BY month ORDER BY month",
-    "dialect": "mysql"
-  }
-}
-```
-
-##### 3. result_data — 查询结果
-
-```json
-{
-  "event": "result_data",
-  "data": {
-    "columns": ["month", "total"],
-    "rows": [
-      [1, 150000],
-      [2, 180000],
-      [3, 120000]
-    ],
-    "row_count": 3
-  }
-}
-```
-
-##### 4. insights — 分析洞察
-
-```json
-{
-  "event": "insights",
-  "data": {
-    "text": "2月销售额达到峰值18万元，环比增长20%。3月出现明显回落至12万元，降幅33.3%。整体呈现先升后降的趋势。"
-  }
-}
-```
-
-##### 5. chart — 图表配置
-
-```json
-{
-  "event": "chart",
-  "data": {
-    "echartsConfig": {
-      "title": { "text": "2024年月度销售额" },
-      "xAxis": { "type": "category", "data": ["1月", "2月", "3月"] },
-      "yAxis": { "type": "value" },
-      "series": [{
-        "type": "bar",
-        "data": [150000, 180000, 120000]
-      }]
-    }
-  }
-}
-```
-
-##### 6. approval_required — 需要审批
-
-```json
-{
-  "event": "approval_required",
-  "data": {
-    "task_id": "abc-123-def-456",
-    "sql": "UPDATE users SET status = 'inactive' WHERE last_login < '2023-01-01'",
-    "risk_level": "write",
-    "message": "检测到写操作，需要管理员审批后执行"
-  }
-}
-```
-
-##### 7. approval_result — 审批结果
-
-```json
-{
-  "event": "approval_result",
-  "data": {
-    "task_id": "abc-123-def-456",
-    "status": "approved",
-    "message": "审批已通过，正在执行操作..."
-  }
-}
-```
-
-##### 8. export_ready — 导出就绪
-
-```json
-{
-  "event": "export_ready",
-  "data": {
-    "file_url": "/exports/report_20240429.xlsx",
-    "file_name": "report_20240429.xlsx",
-    "file_size": 10240
-  }
-}
-```
-
-##### 9. error — 错误
-
-```json
-{
-  "event": "error",
-  "data": {
-    "stage": "executing",
-    "message": "数据库连接超时",
-    "detail": "ConnectionError: unable to connect to mysql:3306 after 30s"
-  }
-}
-```
-
-##### 10. done — 完成
-
-```json
-{
-  "event": "done",
-  "data": {
-    "message": "分析完成"
-  }
+  "thread_id": "admin:uuid",
+  "title": "查询项目编号与名称",
+  "nodes": [
+    {"index": 0, "title": "第1轮标题", "question": "用户问题", "run_id": "admin:run-uuid"}
+  ],
+  "messages": [
+    {"role": "user", "type": "text", "content": "用户问题"},
+    {"role": "assistant", "type": "sql", "sql": "SELECT ..."},
+    {"role": "assistant", "type": "result", "data": [...], "columns": [...]},
+    {"role": "assistant", "type": "text", "content": "Markdown分析..."}
+  ]
 }
 ```
 
 ---
 
-## POST /api/v1/chat/approve
+## 审批回调
 
-管理员审批回调接口，用于对需要审批的写操作进行人工决策。
-
-### 请求
-
-**URL**：`/api/v1/chat/approve`
-
-**Method**：`POST`
-
-**Content-Type**：`application/json`
+### `POST /api/v1/chat/approve`
 
 ```json
 {
-  "task_id": "abc-123-def-456",
-  "action": "approve",
-  "comment": "确认无误，允许执行"
+  "thread_id": "admin:uuid",
+  "approved": true,
+  "comment": "确认安全，允许执行"
 }
-```
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `task_id` | string | 是 | 审批任务 ID（由 `approval_required` 事件返回） |
-| `action` | string | 是 | 审批操作：`approve`（通过）或 `reject`（驳回） |
-| `comment` | string | 否 | 审批备注 |
-
-### 响应
-
-**通过时**：
-
-```json
-{
-  "task_id": "abc-123-def-456",
-  "status": "approved",
-  "message": "审批通过，SQL 已执行"
-}
-```
-
-**驳回时**：
-
-```json
-{
-  "task_id": "abc-123-def-456",
-  "status": "rejected",
-  "message": "审批已驳回，操作未执行"
-}
-```
-
----
-
-## POST /api/v1/chat/stop
-
-中断正在执行的 Agent 任务。
-
-### 请求
-
-```json
-{
-  "task_id": "abc-123-def-456"
-}
-```
-
-### 响应
-
-```json
-{
-  "status": "stopped",
-  "message": "任务已中断"
-}
-```
-
----
-
-## 完整交互流程示例
-
-### 场景 1：读查询（SELECT）
-
-```
-1. 用户发送："查询本月销售额前5的产品"
-2. 后端 SSE 流式返回：
-   → status: intent_parsing
-   → status: rag_retrieving
-   → status: schema_loading
-   → status: sql_generating
-   → sql_generation: { "sql": "SELECT ...", "dialect": "mysql" }
-   → status: executing
-   → result_data: { "columns": [...], "rows": [...] }
-   → status: analyzing
-   → insights: { "text": "..." }
-   → status: chart_generating
-   → chart: { "echartsConfig": {...} }
-   → done: { "message": "分析完成" }
-```
-
-### 场景 2：写操作（UPDATE）— 含审批
-
-```
-1. 用户发送："把过期会员标记为 inactive"
-2. 后端 SSE 流式返回：
-   → status: intent_parsing
-   → ...各种中间阶段...
-   → sql_generation: { "sql": "UPDATE members SET status='inactive' WHERE ..." }
-   → approval_required: { "task_id": "xxx", "sql": "...", "risk_level": "write" }
-   
-   [此时 Graph 中断，等待管理员操作]
-
-3. 管理员在前端点击"通过"
-4. 前端 POST /api/v1/chat/approve { "task_id": "xxx", "action": "approve" }
-
-5. 后端继续 SSE 流式返回：
-   → approval_result: { "status": "approved" }
-   → status: executing
-   → result_data: { "columns": [...], "rows": [...] }
-   → done: { "message": "操作完成" }
 ```

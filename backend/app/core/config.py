@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     POSTGRES_PASSWORD: str = ""
     POSTGRES_DATABASE: str = "dataagent"
 
+    # ── JWT 认证 ───────────────────────────────────
+    JWT_SECRET: str = "dataagent-default-secret-change-in-production"
+    JWT_EXPIRE_HOURS: int = 24
+
     # ── 应用服务 ────────────────────────────────────
     APP_HOST: str = "0.0.0.0"
     APP_PORT: int = 8000

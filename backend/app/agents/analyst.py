@@ -2,12 +2,14 @@
 Analyst Agent - 数据分析师
 接收 SQL 执行结果集，进行统计分析并生成自然语言洞察
 """
+import asyncio
 import json
 import statistics
 import math
 
 from app.core.config import settings
 from app.core.llm import get_llm
+from app.core.stream import get_stream_context
 from app.utils.json_encoder import CustomEncoder
 
 
@@ -126,7 +128,7 @@ async def analyze_results(
     流程：
     1. 调用 _basic_stats 进行纯 Python 基础统计
     2. 将基础统计结果 + 前 10 行数据 + 用户原始问题发给 LLM
-    3. LLM 以数据分析师身份生成洞察并返回 JSON
+    3. LLM 以数据分析师身份生成洞察、异常，并判断是否适合图表展示
 
     参数:
         question: 用户原始问题
@@ -140,6 +142,7 @@ async def analyze_results(
             "stats": dict,            # 基本统计量
             "insights": list[str],    # 洞察列表
             "anomalies": list[str],   # 异常点
+            "chart_suitable": bool,   # 是否适合生成图表（基于实际数据判断）
         }
     """
     # ── 第一步：基础统计（不调 LLM） ──────────────────────
@@ -166,9 +169,20 @@ async def analyze_results(
             "stats": stats,
             "insights": [],
             "anomalies": [],
+            "chart_suitable": False,
         }
 
-    # ── 第二步：LLM 增强分析 ──────────────────────────────
+    # ── 实时推送基础统计 summary（LLM 调用前填充等待期）──
+    ctx = get_stream_context()
+    if ctx.queue:
+        chunk_size = 3
+        for i in range(0, len(summary), chunk_size):
+            chunk = summary[i:i + chunk_size]
+            await ctx.push_token(chunk)
+            # 让出事件循环，确保 token 能被 _forward_tokens 消费
+            await asyncio.sleep(0)
+
+    # ── 第二步：LLM 增强分析（实时流式输出 Markdown）─────────
     # 取前 10 行数据供 LLM 参考
     sample_data = data[:10]
 
@@ -177,18 +191,27 @@ async def analyze_results(
     system_prompt = (
         "你是一个专业的数据分析师。"
         "根据提供的查询结果和基础统计信息，生成有价值的数据洞察和异常检测。\n\n"
+        "输出格式要求（严格按顺序）：\n"
+        "1. 第一行必须是 `[CHART_SUITABLE:true]` 或 `[CHART_SUITABLE:false]`，"
+        "   指示数据是否适合用图表展示（≥2行数据且有数值列→true，单行/纯文本→false）\n"
+        "2. 之后输出 Markdown 格式的分析文本，按以下结构组织：\n"
+        "   - ### 数据概览：用一两句话概括整体情况\n"
+        "   - ### 数据洞察：2-5 条具体洞察（排名、占比、趋势等）\n"
+        "   - ### 异常关注：数据中的异常点或需要关注的问题\n\n"
+        "Markdown 排版要求：\n"
+        "- 数值用 **粗体** 强调\n"
+        "- 列表用 - 开头的无序列表\n"
+        "- 对比数据用 Markdown 表格（| 列1 | 列2 |）\n"
+        "- 重点信息用 > 引用块\n\n"
         "严格要求：\n"
-        "1. 只返回 JSON 格式，不要包含任何其他文字或 markdown 标记\n"
-        "2. summary 字段：用一两句话概括数据的整体情况\n"
-        "3. insights 字段：列出 2-5 条具体的数据洞察（如排名、占比、趋势等）\n"
-        "4. anomalies 字段：列出数据中的异常点或需要关注的问题\n"
-        "5. 返回的 JSON 必须是合法的，使用双引号\n"
-        "6. 如果无法生成有意义的洞察，相应字段返回空列表"
+        "- 不要使用代码块（```）包裹内容\n"
+        "- 直接输出内容，不要有任何前缀说明\n"
+        "- chart_suitable 标签必须在第一行，不能省略"
     )
 
     # 将基础统计格式化为易读字符串
     stats_text = json.dumps(stats, ensure_ascii=False, indent=2)
-    sample_text = json.dumps(sample_data, ensure_ascii=False, indent=2,cls=CustomEncoder)
+    sample_text = json.dumps(sample_data, ensure_ascii=False, indent=2, cls=CustomEncoder)
 
     user_message = (
         f"## 用户问题\n\n{question}\n\n"
@@ -205,34 +228,84 @@ async def analyze_results(
             {"role": "user", "content": user_message},
         ],
         temperature=0.3,
+        stream=True,
     )
 
-    # 解析 LLM 返回的 JSON
-    raw_content = response.choices[0].message.content.strip()
-    try:
-        # 去除可能的 markdown 代码块标记
-        if raw_content.startswith("```"):
-            lines = raw_content.split("\n")
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            raw_content = "\n".join(lines).strip()
+    # ── 实时流式收集 LLM 内容，提取 chart_suitable 前缀后立即推送 token ──
+    ctx = get_stream_context()
+    content_chunks = []
+    chart_suitable = row_count >= 2  # 默认值
+    prefix_buffer = ""  # 用于收集第一行（chart_suitable 标签）
+    prefix_extracted = False  # 是否已从前缀中提取出 chart_suitable
+    streaming_active = False  # 是否开始将 token 推送到前端
 
-        llm_result = json.loads(raw_content)
-    except json.JSONDecodeError:
-        # LLM 返回格式异常时使用基础统计结果兜底
-        return {
-            "summary": summary,
-            "stats": stats,
-            "insights": [],
-            "anomalies": [],
-        }
+    async for chunk in response:
+        if chunk.choices and chunk.choices[0].delta.content:
+            token = chunk.choices[0].delta.content
+            content_chunks.append(token)
 
-    # 合并基础统计量与 LLM 生成的分析
+            if not prefix_extracted:
+                # 仍在积累第一行，查找 CHART_SUITABLE 标签
+                prefix_buffer += token
+                if "\n" in prefix_buffer:
+                    # 遇到换行，检查前缀
+                    first_line = prefix_buffer.split("\n")[0].strip()
+                    if first_line.startswith("[CHART_SUITABLE:"):
+                        chart_suitable = "true" in first_line.lower()
+                    # 将前缀中换行后的部分推送出去
+                    remaining = "\n".join(prefix_buffer.split("\n")[1:])
+                    prefix_extracted = True
+                    if remaining and ctx.queue:
+                        streaming_active = True
+                        await ctx.push_token(remaining)
+            elif streaming_active and ctx.queue:
+                # 实时推送后续所有 token
+                await ctx.push_token(token)
+            elif ctx.queue:
+                # 第一次推送时激活流式输出
+                streaming_active = True
+                await ctx.push_token(token)
+
+    # 如果整个响应都没有换行（异常情况），回退处理
+    if not prefix_extracted and prefix_buffer:
+        first_line = prefix_buffer.strip()
+        if first_line.startswith("[CHART_SUITABLE:"):
+            chart_suitable = "true" in first_line.lower()
+            # 去掉标签行，推送剩余内容
+            remaining = first_line[first_line.index("]") + 1:].strip()
+            if remaining and ctx.queue:
+                await ctx.push_token(remaining)
+        else:
+            # 没有标签，全部当作分析文本推送
+            if ctx.queue:
+                await ctx.push_token(prefix_buffer)
+
+    raw_content = "".join(content_chunks).strip()
+
+    # 清理可能的 markdown 代码块标记
+    if raw_content.startswith("```"):
+        lines = raw_content.split("\n")
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        raw_content = "\n".join(lines).strip()
+
+    # 提取纯分析文本（去除第一行的 chart_suitable 标签）
+    analysis_lines = raw_content.split("\n")
+    if analysis_lines and analysis_lines[0].strip().startswith("[CHART_SUITABLE:"):
+        analysis_text = "\n".join(analysis_lines[1:]).strip()
+    else:
+        analysis_text = raw_content
+
+    # 如果分析文本为空，使用基础统计 summary 兜底
+    if not analysis_text:
+        analysis_text = summary
+
     return {
-        "summary": llm_result.get("summary", summary),
+        "summary": analysis_text,  # 完整的 Markdown 分析文本
         "stats": stats,
-        "insights": llm_result.get("insights", []),
-        "anomalies": llm_result.get("anomalies", []),
+        "insights": [],  # 已整合到 summary 文本中，不再单独返回
+        "anomalies": [],
+        "chart_suitable": chart_suitable,
     }

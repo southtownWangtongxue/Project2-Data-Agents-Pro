@@ -6,6 +6,7 @@ import json
 
 from app.core.config import settings
 from app.core.llm import get_llm
+from app.core.stream import get_stream_context
 from app.utils.json_encoder import CustomEncoder
 
 
@@ -146,10 +147,17 @@ async def generate_chart_config(
             {"role": "user", "content": user_message},
         ],
         temperature=0.2,
+        stream=True,
     )
 
-    # 解析 LLM 返回的 JSON
-    raw_content = response.choices[0].message.content.strip()
+    # 流式收集 LLM 返回内容（不推送到 stream_queue：Reporter 输出 JSON，图表配置由工作流格式化后推送）
+    ctx = get_stream_context()
+    content_chunks = []
+    async for chunk in response:
+        if chunk.choices and chunk.choices[0].delta.content:
+            token = chunk.choices[0].delta.content
+            content_chunks.append(token)
+    raw_content = "".join(content_chunks).strip()
     try:
         # 去除可能的 markdown 代码块标记
         if raw_content.startswith("```"):
@@ -178,16 +186,96 @@ async def generate_chart_config(
 
 async def generate_excel(
     data: list[dict], columns: list[str], filename: str
-) -> str:
+) -> bytes:
     """
-    占位函数：Excel 导出功能将在阶段 4 实现。
+    生成 Excel (.xlsx) 文件的字节内容。
 
     参数:
         data: 查询结果行列表
         columns: 列名列表
-        filename: 目标文件名
+        filename: 文件名（用于 sheet 标题）
 
     返回:
-        提示信息字符串
+        .xlsx 文件的二进制内容
     """
-    return "Excel 导出功能将在阶段 4 实现"
+    import io
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    from datetime import datetime
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = filename[:31] or "Sheet1"
+
+    if not columns:
+        return b""
+
+    # ── 样式定义 ──────────────────────────────────
+    header_fill = PatternFill(start_color="6366F1", end_color="6366F1", fill_type="solid")
+    header_font = Font(name="Microsoft YaHei", bold=True, color="FFFFFF", size=11)
+    header_align = Alignment(horizontal="center", vertical="center")
+    thin_border = Border(
+        left=Side(style="thin", color="D1D5DB"),
+        right=Side(style="thin", color="D1D5DB"),
+        top=Side(style="thin", color="D1D5DB"),
+        bottom=Side(style="thin", color="D1D5DB"),
+    )
+    even_fill = PatternFill(start_color="F3F4F6", end_color="F3F4F6", fill_type="solid")
+    data_font = Font(name="Microsoft YaHei", size=10)
+    data_align_left = Alignment(horizontal="left", vertical="center")
+    data_align_right = Alignment(horizontal="right", vertical="center")
+
+    # ── 写表头 ──────────────────────────────────
+    for col_idx, col_name in enumerate(columns, 1):
+        cell = ws.cell(row=1, column=col_idx, value=col_name)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = header_align
+        cell.border = thin_border
+
+    # ── 判定数字列 ──────────────────────────────
+    numeric_cols: set[int] = set()
+    for row_data in data[:100]:
+        for col_idx, col_name in enumerate(columns, 1):
+            val = row_data.get(col_name)
+            if isinstance(val, (int, float)) and not isinstance(val, bool):
+                numeric_cols.add(col_idx)
+
+    # ── 写数据行 ─────────────────────────────────
+    for row_idx, row_data in enumerate(data, 2):
+        is_even = row_idx % 2 == 0
+        for col_idx, col_name in enumerate(columns, 1):
+            val = row_data.get(col_name)
+            if isinstance(val, datetime):
+                val = val.strftime("%Y-%m-%d %H:%M:%S")
+            cell = ws.cell(row=row_idx, column=col_idx, value=val)
+            cell.font = data_font
+            cell.border = thin_border
+            cell.alignment = data_align_right if col_idx in numeric_cols else data_align_left
+            if is_even:
+                cell.fill = even_fill
+
+    # ── 底部汇总行 ───────────────────────────────
+    summary_row = len(data) + 2
+    summary_fill = PatternFill(start_color="EEF2FF", end_color="EEF2FF", fill_type="solid")
+    summary_cell = ws.cell(row=summary_row, column=1, value=f"共 {len(data)} 条记录")
+    summary_cell.font = Font(name="Microsoft YaHei", bold=True, size=10, color="6366F1")
+    summary_cell.fill = summary_fill
+    summary_cell.border = thin_border
+
+    # ── 自动列宽 ────────────────────────────────
+    for col_idx, col_name in enumerate(columns, 1):
+        header_width = sum(2 if ord(c) > 127 else 1 for c in str(col_name))
+        max_width = header_width
+        for row_data in data[:50]:
+            val = str(row_data.get(col_name, ""))[:80]
+            val_width = sum(2 if ord(c) > 127 else 1 for c in val)
+            max_width = max(max_width, val_width)
+        ws.column_dimensions[get_column_letter(col_idx)].width = max(10, min(max_width + 4, 40))
+
+    ws.freeze_panes = "A2"
+
+    output = io.BytesIO()
+    wb.save(output)
+    return output.getvalue()

@@ -1,12 +1,15 @@
 <script setup lang="ts">
 /**
  * App 根组件
- * 采用全屏 Flex 布局：顶部标题栏（含导航链接）+ 中间内容区（路由页面）
+ * 采用全屏 Flex 布局：顶部标题栏（含导航链接 + 用户信息）+ 中间内容区（路由页面）
  * 设计风格：深色主题 + Apple 极简美学
  */
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
+import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
+const router = useRouter()
+const auth = useAuthStore()
 
 /* 构建导航项，active 根据当前路由计算 */
 interface NavItem {
@@ -15,11 +18,17 @@ interface NavItem {
   icon: string
 }
 
-const navItems: NavItem[] = [
+const authNavItems: NavItem[] = [
   { path: '/', label: '首页', icon: 'home' },
   { path: '/chat', label: '智能对话', icon: 'chat' },
   { path: '/approval', label: '审批管理', icon: 'approval' },
 ]
+
+/* 退出登录 */
+function handleLogout() {
+  auth.logout()
+  router.push('/login')
+}
 </script>
 
 <template>
@@ -41,10 +50,10 @@ const navItems: NavItem[] = [
         </div>
         <h1 class="app-title">DataAgent Pro</h1>
       </div>
-      
-      <nav class="app-nav">
+
+      <nav v-if="auth.isLoggedIn" class="app-nav">
         <router-link
-          v-for="item in navItems"
+          v-for="item in authNavItems"
           :key="item.path"
           :to="item.path"
           class="nav-link"
@@ -66,12 +75,17 @@ const navItems: NavItem[] = [
           <span class="nav-label">{{ item.label }}</span>
         </router-link>
       </nav>
-      
-      <div class="header-right">
-        <button class="icon-btn">
+
+      <div v-if="auth.isLoggedIn" class="header-right">
+        <span class="user-info">
+          <span class="user-avatar">{{ (auth.user?.nick_name || auth.user?.user_name || 'U')[0].toUpperCase() }}</span>
+          <span class="user-name">{{ auth.user?.nick_name || auth.user?.user_name }}</span>
+        </span>
+        <button class="icon-btn" title="退出登录" @click="handleLogout">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-            <circle cx="12" cy="12" r="3"/>
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+            <polyline points="16,17 21,12 16,7"/>
+            <line x1="21" y1="12" x2="9" y2="12"/>
           </svg>
         </button>
       </div>
@@ -199,6 +213,40 @@ html, body, #app {
   gap: var(--space-3);
 }
 
+.user-info {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-full);
+  background-color: rgba(99, 102, 241, 0.08);
+  border: 1px solid rgba(99, 102, 241, 0.15);
+}
+
+.user-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--color-primary), var(--color-primary-dark));
+  color: white;
+  font-size: 13px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.user-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .icon-btn {
   display: flex;
   align-items: center;
@@ -222,6 +270,7 @@ html, body, #app {
 .app-main {
   flex: 1;
   min-height: 0;
+  overflow-y: auto;
   background-color: var(--color-bg);
 }
 </style>

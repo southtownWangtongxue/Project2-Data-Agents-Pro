@@ -1,6 +1,8 @@
 # 前端二次开发指南
 
-本文档面向需要二次开发 DataAgent Pro 前端的功能开发者，涵盖项目结构、组件开发、SSE 集成等核心内容。
+本文档面向前端开发者，说明前端架构、关键组件、SSE 流式处理和任务清单机制。
+
+> **最后更新**: 2026-06-26 — 重构为任务清单 UI、新增 node_started 事件处理。
 
 ---
 
@@ -8,355 +10,191 @@
 
 | 技术 | 版本 | 用途 |
 |------|------|------|
-| Vue | 3.x | 前端框架（Composition API） |
-| Vite | 5.x | 构建工具 |
-| Element Plus | 2.x | UI 组件库 |
-| ECharts | 5.x | 数据可视化 |
-| Pinia | 2.x | 状态管理 |
-| Vue Router | 4.x | 路由管理 |
-| TypeScript | 5.x | 类型系统 |
-
----
+| Vue 3 | ^3.4 | SFC 框架 |
+| TypeScript | ^5.x | 类型安全 |
+| Pinia | ^2.x | 状态管理 |
+| Vite | ^5.x | 构建工具 |
+| Element Plus | ^2.x | UI 组件（el-table） |
+| ECharts | ^5.x | 图表渲染 |
+| marked | ^9.x | Markdown → HTML |
+| sql-formatter | ^15.x | SQL 格式化 |
 
 ## 目录结构
 
 ```
-frontend/
-├── src/
-│   ├── api/                    # API 调用封装
-│   │   ├── chat.ts             # 对话接口 (SSE 流式)
-│   │   ├── approve.ts          # 审批接口
-│   │   ├── datasource.ts       # 数据源接口
-│   │   └── export.ts           # 文件导出接口
-│   ├── components/             # 通用组件
-│   │   ├── ChatBox.vue         # 聊天输入/输出组件
-│   │   ├── ChatMessage.vue     # 单条消息组件
-│   │   ├── ChartRenderer.vue   # ECharts 图表渲染组件
-│   │   ├── DataTable.vue       # 数据表格组件
-│   │   ├── SqlDisplay.vue      # SQL 展示组件
-│   │   └── ApprovalPanel.vue   # 审批管理组件
-│   ├── composables/            # 组合式函数
-│   │   ├── useSSE.ts           # SSE 事件流处理
-│   │   ├── useChat.ts          # 对话逻辑封装
-│   │   └── useAuth.ts          # 鉴权逻辑（预留）
-│   ├── views/                  # 页面视图
-│   │   ├── HomeView.vue        # 首页（对话）
-│   │   ├── AdminView.vue       # 审批管理页
-│   │   └── HistoryView.vue     # 对话历史页
-│   ├── stores/                 # Pinia 状态管理
-│   │   ├── chat.ts             # 对话状态
-│   │   ├── approval.ts         # 审批状态
-│   │   └── user.ts             # 用户状态
-│   ├── router/                 # Vue Router 路由配置
-│   │   └── index.ts
-│   ├── types/                  # TypeScript 类型定义
-│   │   └── index.ts
-│   ├── App.vue                 # 根组件
-│   └── main.ts                 # 应用入口
-├── public/                     # 静态资源
-├── index.html                  # HTML 入口
-├── package.json
-├── tsconfig.json
-└── vite.config.ts              # Vite 配置
+frontend/src/
+├── api/
+│   └── client.ts          # axios 实例 + 下载工具
+├── components/
+│   ├── ChatInput.vue       # 底部输入区（含停止按钮）
+│   ├── ChatSidebar.vue     # 左侧会话列表
+│   ├── ClarifierCard.vue   # 追问卡片
+│   ├── ExecutionCard.vue   # 执行计划卡片
+│   └── NodeSeparator.vue   # 多轮对话分隔线
+├── composables/
+│   └── useSSE.ts           # SSE fetch + ReadableStream 消费
+├── router/
+│   └── index.ts            # 路由表
+├── stores/
+│   ├── chat.ts             # 核心状态管理（消息/任务/会话）
+│   └── approval.ts         # 审批任务管理
+└── views/
+    ├── Chat.vue            # 聊天主页面
+    ├── Home.vue            # 首页
+    ├── Login.vue           # 登录
+    └── Approval.vue        # 审批管理
 ```
 
----
+## 核心架构
 
-## 组件开发
+### SSE 流式接收 (`useSSE.ts`)
 
-### ChatBox 组件
+使用 `fetch + ReadableStream` 而非 EventSource（需要 POST 请求体）：
 
-`ChatBox` 是核心对话组件，负责接收用户输入、展示对话流。
+```typescript
+const response = await fetch(url, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ...' },
+  body: JSON.stringify(body),
+  signal: abortController.signal,
+})
 
-```vue
-<!-- src/components/ChatBox.vue — 结构示意 -->
-<template>
-  <div class="chat-box">
-    <!-- 消息列表 -->
-    <div class="message-list" ref="messageListRef">
-      <ChatMessage
-        v-for="msg in messages"
-        :key="msg.id"
-        :message="msg"
-      />
-    </div>
+const reader = response.body!.getReader()
+const decoder = new TextDecoder()
+let buffer = ''
 
-    <!-- 输入区域 -->
-    <div class="input-area">
-      <el-input
-        v-model="inputText"
-        type="textarea"
-        :rows="3"
-        placeholder="输入你的问题，例如：上个月销售额最高的10个产品"
-        @keydown.enter.exact="handleSend"
-      />
-      <el-button type="primary" @click="handleSend" :loading="isStreaming">
-        发送
-      </el-button>
+while (true) {
+  const { done, value } = await reader.read()
+  if (done) break
+  buffer += decoder.decode(value, { stream: true })
+  const lines = buffer.split('\n')
+  buffer = lines.pop() || ''
+  for (const line of lines) {
+    if (line.startsWith('data: ')) {
+      const event = JSON.parse(line.slice(6))
+      dispatchEvent(event, callbacks)
+    }
+  }
+}
+```
+
+### 事件分发
+
+```typescript
+function dispatchEvent(event, callbacks) {
+  switch (event.type) {
+    case 'node_started':  callbacks.onNodeStarted(event.agent, event.label); break
+    case 'thinking':      callbacks.onThinking(event.agent, event.phase, event.content); break
+    case 'token':         callbacks.onToken(event.content); break
+    case 'tool_call':     callbacks.onToolCall(event.tool_name, meta); break
+    case 'tool_result':   callbacks.onToolResult(event.tool_name, meta); break
+    case 'sql':           callbacks.onSQL(event.content); break
+    case 'result':        callbacks.onResult(event.data, event.columns); break
+    case 'chart':         callbacks.onChart(event.config); break
+    case 'plan':          callbacks.onPlan(event.intent, event.intent_label, event.steps, ...); break
+    case 'clarification': callbacks.onClarification(event.text, event.options, ...); break
+    case 'title':         callbacks.onTitle(event.thread_id, event.content, ...); break
+    case 'error':         callbacks.onError(event.error, event.code, event.recoverable); break
+    case 'done':          callbacks.onDone(); break
+  }
+}
+```
+
+## 任务清单（替代旧水平管道）
+
+### 数据模型 (`chat.ts`)
+
+```typescript
+interface TaskItem {
+  key: string           // Agent 名称，如 "sql_coder"
+  label: string         // 显示名称，如 "生成SQL"
+  status: 'pending' | 'running' | 'completed'
+  startedAt?: number
+}
+
+const tasks = ref<TaskItem[]>([])
+const tasksCollapsed = ref(false)
+```
+
+### 更新时机
+
+```
+onNodeStarted  → 将任务标记为 running（旋转 spinner）
+onThinking     → 将任务标记为 completed（绿色对勾）
+onDone         → completeAllTasks() → 2s 后自动折叠
+```
+
+### 组件模板 (`Chat.vue`)
+
+```html
+<div class="task-list" :class="{ 'is-collapsed': store.tasksCollapsed }">
+  <div class="task-list-header" @click="store.tasksCollapsed = !store.tasksCollapsed">
+    <span class="task-list-title">
+      <svg>📋</svg> 任务清单
+    </span>
+    <span class="task-list-count">
+      {{ completedCount }}/{{ tasks.length }}
+      <svg class="chevron">▼</svg>
+    </span>
+  </div>
+  <div v-if="!store.tasksCollapsed" class="task-list-body">
+    <div v-for="task in tasks" class="task-item" :class="statusClass(task)">
+      <div class="task-item-icon">
+        <!-- running → spinner SVG -->
+        <!-- completed → checkmark SVG -->
+      </div>
+      <span class="task-item-label">{{ task.label }}</span>
     </div>
   </div>
-</template>
+</div>
 ```
 
-### ChartRenderer 组件
+完成后自动折叠为一行绿色提示：`✅ 任务清单 (8/8) ▼`
 
-接收 ECharts JSON 配置并渲染图表：
-
-```vue
-<!-- src/components/ChartRenderer.vue -->
-<template>
-  <div ref="chartRef" class="chart-container"></div>
-</template>
-
-<script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted } from 'vue'
-import * as echarts from 'echarts'
-
-const props = defineProps<{
-  option: object  // ECharts 配置对象
-}>()
-
-const chartRef = ref<HTMLElement>()
-let chartInstance: echarts.ECharts | null = null
-
-onMounted(() => {
-  if (chartRef.value) {
-    chartInstance = echarts.init(chartRef.value)
-    chartInstance.setOption(props.option)
-  }
-})
-
-watch(() => props.option, (newOption) => {
-  chartInstance?.setOption(newOption, true)  // true = 不合并，完全替换
-})
-
-onUnmounted(() => {
-  chartInstance?.dispose()
-})
-</script>
-```
-
----
-
-## SSE 集成
-
-### useSSE 组合式函数
-
-核心 SSE 事件处理逻辑：
+### 去重逻辑
 
 ```typescript
-// src/composables/useSSE.ts
-
-export interface SSEEvent {
-  event: string
-  data: any
+// onToken: sql_coder/rag_agent 活跃时跳过 token 文本输出
+setCurrentAgent(agent) { this.currentAgent = agent }
+onToken(content) {
+  if (this.currentAgent === 'sql_coder' || this.currentAgent === 'rag_agent') return
+  // ... 正常流式追加
 }
 
-export function useSSE() {
-  const isConnected = ref(false)
-  const eventHandlers = new Map<string, Set<Function>>()
-
-  function on(eventType: string, handler: Function) {
-    if (!eventHandlers.has(eventType)) {
-      eventHandlers.set(eventType, new Set())
-    }
-    eventHandlers.get(eventType)!.add(handler)
-  }
-
-  function off(eventType: string, handler: Function) {
-    eventHandlers.get(eventType)?.delete(handler)
-  }
-
-  async function connect(url: string, body: object) {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'text/event-stream',
-      },
-      body: JSON.stringify(body),
-    })
-
-    const reader = response.body!.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-
-    isConnected.value = true
-
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      let currentEvent = ''
-      for (const line of lines) {
-        if (line.startsWith('event: ')) {
-          currentEvent = line.slice(7).trim()
-        } else if (line.startsWith('data: ')) {
-          const data = JSON.parse(line.slice(6))
-          // 触发对应事件处理器
-          eventHandlers.get(currentEvent)?.forEach(handler => handler(data))
-          eventHandlers.get('*')?.forEach(handler => handler({ event: currentEvent, data }))
-        }
-      }
-    }
-
-    isConnected.value = false
-  }
-
-  function disconnect() {
-    // 可通过 AbortController 中断 fetch
-  }
-
-  return { isConnected, on, off, connect, disconnect }
+// onToolCall/onToolResult: 过滤空值 + sql/sql_preview 字段
+const cleanMeta = {}
+for (const [k, v] of Object.entries(meta)) {
+  if (v !== undefined && v !== null && v !== '' && k !== 'sql' && k !== 'sql_preview')
+    cleanMeta[k] = v
 }
 ```
 
-### 在 Chat Store 中使用
+## 消息渲染
 
-```typescript
-// src/stores/chat.ts
+### 消息类型映射
 
-import { defineStore } from 'pinia'
-import { useSSE } from '@/composables/useSSE'
+| msg.type | 渲染组件 |
+|----------|---------|
+| `text` (user) | `message-bubble--user` |
+| `text` (assistant) | `message-bubble--assistant` + `marked` Markdown |
+| `sql` | `message-sql` (SQL 格式化 + 复制按钮) |
+| `result` | `message-result` (el-table + CSV/Excel 导出) |
+| `chart` | `message-chart` (VChart + ECharts) |
+| `thinking` | `thinking-card` (可折叠) |
+| `tool_call` / `tool_result` | `tool-card` (紧凑型，可展开查看详情) |
+| `clarification` | `ClarifierCard` (追问按钮) |
+| `plan` | `ExecutionCard` (执行计划卡片) |
+| `error` | `message-error-row` (错误信息 + 重试按钮) |
 
-export const useChatStore = defineStore('chat', () => {
-  const messages = ref<Message[]>([])
-  const currentSQL = ref('')
-  const currentChart = ref(null)
-  const { on, connect } = useSSE()
+## Store 核心方法
 
-  async function sendMessage(query: string) {
-    // 添加用户消息
-    messages.value.push({ role: 'user', content: query })
-
-    // 添加助手消息占位
-    const assistantMsg: Message = { role: 'assistant', content: '', status: 'streaming' }
-    messages.value.push(assistantMsg)
-
-    // 注册事件处理器
-    on('status', (data) => {
-      assistantMsg.status = data.stage
-    })
-    on('sql_generation', (data) => {
-      currentSQL.value = data.sql
-    })
-    on('result_data', (data) => {
-      assistantMsg.tableData = data
-    })
-    on('insights', (data) => {
-      assistantMsg.content += data.text
-    })
-    on('chart', (data) => {
-      currentChart.value = data.echartsConfig
-    })
-    on('done', () => {
-      assistantMsg.status = 'done'
-    })
-
-    // 发起 SSE 连接
-    await connect('/api/v1/chat/completions', { query })
-  }
-
-  return { messages, currentSQL, currentChart, sendMessage }
-})
-```
-
----
-
-## 审批管理页面
-
-```vue
-<!-- src/views/AdminView.vue — 示意 -->
-<template>
-  <div class="admin-page">
-    <h2>审批管理</h2>
-
-    <el-table :data="pendingTasks" stripe>
-      <el-table-column prop="task_id" label="任务 ID" />
-      <el-table-column prop="user" label="申请人" />
-      <el-table-column prop="sql" label="SQL 语句">
-        <template #default="{ row }">
-          <code>{{ row.sql }}</code>
-        </template>
-      </el-table-column>
-      <el-table-column prop="risk_level" label="风险等级">
-        <template #default="{ row }">
-          <el-tag :type="riskTagType(row.risk_level)">
-            {{ row.risk_level }}
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="操作" width="200">
-        <template #default="{ row }">
-          <el-button type="success" @click="handleApprove(row.task_id)">通过</el-button>
-          <el-button type="danger" @click="handleReject(row.task_id)">驳回</el-button>
-        </template>
-      </el-table-column>
-    </el-table>
-  </div>
-</template>
-
-<script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { approveTask, rejectTask, fetchPendingTasks } from '@/api/approve'
-
-const pendingTasks = ref([])
-
-onMounted(async () => {
-  pendingTasks.value = await fetchPendingTasks()
-})
-
-async function handleApprove(taskId: string) {
-  await approveTask(taskId)
-  pendingTasks.value = pendingTasks.value.filter(t => t.task_id !== taskId)
-}
-
-async function handleReject(taskId: string) {
-  await rejectTask(taskId)
-  pendingTasks.value = pendingTasks.value.filter(t => t.task_id !== taskId)
-}
-</script>
-```
-
----
-
-## Vite 配置
-
-```typescript
-// vite.config.ts
-import { defineConfig } from 'vite'
-import vue from '@vitejs/plugin-vue'
-import { resolve } from 'path'
-
-export default defineConfig({
-  plugins: [vue()],
-  resolve: {
-    alias: {
-      '@': resolve(__dirname, 'src'),
-    },
-  },
-  server: {
-    port: 5173,
-    proxy: {
-      '/api': {
-        target: 'http://localhost:8000',
-        changeOrigin: true,
-      },
-    },
-  },
-})
-```
-
----
-
-## 开发建议
-
-1. **TypeScript 严格模式**：所有新增组件建议使用 TypeScript，开启 `strict: true`
-2. **组件粒度**：功能组件保持单一职责，可复用的 UI 片段抽离为独立组件
-3. **SSE 错误处理**：监听 `error` 事件，向用户展示友好的错误提示
-4. **ECharts 按需引入**：避免全量引入 ECharts，按图表类型按需加载以减小包体积
-5. **响应式设计**：页面布局应考虑不同屏幕尺寸的适配
+| 方法 | 功能 |
+|------|------|
+| `sendMessage(text)` | 发送消息→SSE 连接→事件处理 |
+| `loadSession(threadId)` | 从 API 加载历史会话 |
+| `loadSessions()` | 加载会话列表 |
+| `loadSuggestions(force)` | 加载建议问题（8s 超时→默认模板兜底） |
+| `stopGeneration()` | 中止 SSE 连接 |
+| `newSession()` | 新建会话（清空消息） |
+| `retryLastMessage()` | 重试最后的失败消息 |
+| `exportData(data, cols, format)` | 导出 CSV/Excel |

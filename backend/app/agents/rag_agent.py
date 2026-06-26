@@ -11,6 +11,7 @@ import logging
 from app.rag.retriever import search_similar
 from app.core.llm import get_llm
 from app.core.config import settings
+from app.core.stream import get_stream_context
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +96,7 @@ async def answer_with_rag(question: str) -> str:
             "如果涉及系统操作，建议用户查阅帮助文档或联系管理员。"
         )
 
-    # 3. 调用 LLM
+    # 3. 调用 LLM（流式输出，实时推送 token）
     try:
         client = get_llm()
         response = await client.chat.completions.create(
@@ -105,8 +106,17 @@ async def answer_with_rag(question: str) -> str:
                 {"role": "user", "content": question},
             ],
             temperature=0.3,
+            stream=True,
         )
-        answer = response.choices[0].message.content.strip()
+        ctx = get_stream_context()
+        content_chunks = []
+        async for chunk in response:
+            if chunk.choices and chunk.choices[0].delta.content:
+                token = chunk.choices[0].delta.content
+                content_chunks.append(token)
+                if ctx.queue:
+                    await ctx.push_token(token)
+        answer = "".join(content_chunks).strip()
         logger.info("[RAGAgent] LLM 回答生成完成: %s", answer[:80])
         return answer
 

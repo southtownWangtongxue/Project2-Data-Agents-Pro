@@ -8,6 +8,14 @@ export interface SSEEventCallbacks {
   onSchema?: (content: string) => void
   /* 自然语言文本（分析/回答） */
   onText?: (content: string) => void
+  /* 流式 Token 输出（逐字渲染） */
+  onToken?: (content: string) => void
+  /* Agent 推理/思考过程 */
+  onThinking?: (agent: string, phase: string, content: string) => void
+  /* 工具调用事件 */
+  onToolCall?: (toolName: string, meta: Record<string, unknown>) => void
+  /* 工具调用结果 */
+  onToolResult?: (toolName: string, meta: Record<string, unknown>) => void
   /* 生成的 SQL 语句 */
   onSQL?: (content: string) => void
   /* 查询结果数据 */
@@ -16,12 +24,22 @@ export interface SSEEventCallbacks {
   onAnalysis?: (content: string) => void
   /* ECharts 图表配置 */
   onChart?: (config: Record<string, unknown>) => void
-  /* 错误信息 */
-  onError?: (error: string) => void
+  /* 错误信息（含错误码 + 可重试标识） */
+  onError?: (error: string, code?: string, recoverable?: boolean) => void
   /* 流正常结束 */
   onDone?: () => void
   /* 高危 SQL 需要审批 */
   onApprovalRequired?: (threadId: string, question: string, sql: string, reason: string) => void
+  /* 会话 thread_id（流开始时推送） */
+  onThreadId?: (threadId: string) => void
+  /* Clarifier 意图确认追问 */
+  onClarification?: (content: string, options: string[], clarifyId: string) => void
+  /* Planner 执行计划 */
+  onPlan?: (intent: string, intentLabel: string, steps: string[], chartSuitable: boolean) => void
+  /* 会话标题（SSE 实时推送，无需额外 HTTP 请求） */
+  onTitle?: (threadId: string, title: string, nodeIndex: number) => void
+  /* 节点开始：实时通知前端管道进度（节点开始而非完成） */
+  onNodeStarted?: (agent: string, label: string) => void
 }
 
 /* SSE 事件数据格式（后端推送的 JSON 结构） */
@@ -37,6 +55,25 @@ interface SSEEventData {
   question?: string
   sql?: string
   reason?: string
+  /* thinking 事件专用字段 */
+  agent?: string
+  phase?: string
+  /* tool_call / tool_result 事件专用字段 */
+  tool_name?: string
+  /* error 增强字段 */
+  code?: string
+  recoverable?: boolean
+  /* clarification 追问事件专用字段 */
+  text?: string
+  options?: string[]
+  clarify_id?: string
+  /* plan 执行计划事件专用字段 */
+  intent?: string
+  intent_label?: string
+  steps?: string[]
+  chart_suitable?: boolean
+  /* title 标题事件专用字段 */
+  node_index?: number
 }
 
 /**
@@ -67,16 +104,30 @@ export function useSSE() {
     connecting.value = true
     abortController = new AbortController()
     let hasError = false
+    let doneReceived = false  // 防止 SSE done 事件和 finally 块重复调用 onDone
 
     try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      const token = localStorage.getItem('token')
+      if (token) {
+        headers.Authorization = `Bearer ${token}`
+      }
+
       const response = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(body),
         signal: abortController.signal,
       })
 
       if (!response.ok) {
+        if (response.status === 401) {
+          localStorage.removeItem('token')
+          if (window.location.pathname !== '/login') {
+            window.location.href = '/login'
+          }
+          return
+        }
         throw new Error(`SSE 连接失败: HTTP ${response.status}`)
       }
       if (!response.body) {
@@ -126,11 +177,11 @@ export function useSSE() {
       hasError = true
       const errMsg =
         error instanceof Error ? error.message : '未知网络错误'
-      callbacks.onError?.(errMsg)
+      callbacks.onError?.(errMsg, 'NETWORK_ERROR', false)
     } finally {
       connecting.value = false
-      // 只有非错误、非取消的情况才触发 onDone
-      if (!hasError && abortController && !abortController.signal.aborted) {
+      // 只有非错误、非取消、且未通过 done 事件触发过的情况才调用 onDone
+      if (!hasError && !doneReceived && abortController && !abortController.signal.aborted) {
         callbacks.onDone?.()
       }
       abortController = null
@@ -151,6 +202,32 @@ export function useSSE() {
       case 'schema':
         callbacks.onSchema?.(event.content || '')
         break
+      case 'token':
+        callbacks.onToken?.(event.content || '')
+        break
+      case 'thinking':
+        callbacks.onThinking?.(
+          event.agent || '',
+          event.phase || '',
+          event.content || '',
+        )
+        break
+      case 'tool_call': {
+        // 只传递有值的字段，避免前端显示 "key: undefined"
+        const meta: Record<string, unknown> = {}
+        if (event.sql) meta.sql = (event.sql as string).slice(0, 200)
+        if (event.content) meta.info = event.content
+        if (event.agent) meta.agent = event.agent
+        if (event.phase) meta.phase = event.phase
+        callbacks.onToolCall?.(event.tool_name || '', meta)
+        break
+      }
+      case 'tool_result': {
+        const meta: Record<string, unknown> = {}
+        if (event.content) meta.result = (event.content as string).slice(0, 200)
+        callbacks.onToolResult?.(event.tool_name || '', meta)
+        break
+      }
       case 'sql':
         callbacks.onSQL?.(event.content || '')
         break
@@ -161,9 +238,14 @@ export function useSSE() {
         callbacks.onResult?.(event.data || [], event.columns || [])
         break
       case 'error':
-        callbacks.onError?.(event.error || event.content || '未知错误')
+        callbacks.onError?.(
+          event.error || event.content || '未知错误',
+          event.code,
+          event.recoverable,
+        )
         break
       case 'done':
+        doneReceived = true
         callbacks.onDone?.()
         break
       case 'analysis':
@@ -179,6 +261,34 @@ export function useSSE() {
           event.sql || '',
           event.reason || '',
         )
+        break
+      case 'thread_id':
+        callbacks.onThreadId?.(event.thread_id || '')
+        break
+      case 'clarification':
+        callbacks.onClarification?.(
+          event.text || event.content || '',
+          event.options || [],
+          event.clarify_id || '',
+        )
+        break
+      case 'plan':
+        callbacks.onPlan?.(
+          event.intent || '',
+          event.intent_label || '',
+          event.steps || [],
+          event.chart_suitable || false,
+        )
+        break
+      case 'title':
+        callbacks.onTitle?.(
+          event.thread_id || '',
+          event.content || '',
+          event.node_index || 0,
+        )
+        break
+      case 'node_started':
+        callbacks.onNodeStarted?.(event.agent || '', event.label || event.agent || '')
         break
       default:
         console.warn('[SSE] 未知事件类型:', event.type)

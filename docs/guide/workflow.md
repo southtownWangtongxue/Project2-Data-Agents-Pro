@@ -1,97 +1,188 @@
 # 工作流与状态机详解
 
-本文档详细描述 LangGraph 工作流的 `AgentState` 字段定义、节点拓扑、Human-in-the-loop 中断/恢复流程以及 SSE 事件流时序。
+本文档详细描述 LangGraph 工作流的 `AgentState` 字段定义、节点拓扑、实时任务清单、SSE 流式架构及 Human-in-the-loop 中断/恢复流程。
+
+> **最后更新**: 2026-06-26 — 反映 clarify_plan 合并、node_started 实时推送、任务清单 UI 等最新优化。
 
 ---
 
 ## AgentState 字段定义
 
-`AgentState` 是 LangGraph 全局状态对象，在工作流的各节点间流转。定义于 `backend/app/graph/state.py`：
+`AgentState` 是 LangGraph 全局状态对象，在工作流各节点间流转。定义于 `backend/app/graph/state.py`：
 
 ```python
-from typing import TypedDict, List, Optional, Any
-from langgraph.graph import MessagesState
-
 class AgentState(MessagesState):
     """全局工作流状态"""
 
     # === 用户输入 ===
-    user_query: str              # 用户原始自然语言问题
+    user_question: str            # 用户原始自然语言问题
 
-    # === 意图解析 ===
-    intent: str                  # 意图分类：query / analysis / export / write
-    task_plan: List[dict]        # 拆解后的子任务列表
-
-    # === RAG 检索 ===
-    rag_context: str             # 检索到的业务规范/指标定义文本
+    # === 意图澄清 + 执行计划（clarify_plan 合并节点） ===
+    is_clear: bool                # 意图是否明确
+    clarification_text: str       # 追问文本（不明确时）
+    clarification_options: list   # 追问选项列表
+    clarifier_count: int          # 追问次数（防止死循环，上限2次）
+    intent: str                   # query_data / ask_help / write_data / chart_interaction / other_questions
+    intent_confidence: float      # 意图分类置信度
+    plan_steps: list[dict]        # 执行计划：[{"step": "load_schema", "agent": "schema", "priority": 1}, ...]
+    chart_suitable: bool          # Planner 阶段判断是否适合生成图表
 
     # === 表结构 ===
-    relevant_tables: List[str]   # Schema Agent 筛选出的相关表名
-    table_schemas: str           # 相关表的 DDL 信息（精简版）
+    schema_info: str              # 筛选后相关表的 DDL 信息
+    relevant_tables: list[str]    # Schema Agent 筛选出的相关表名
 
     # === SQL 生成 ===
-    generated_sql: str           # SQL Coder 生成的 SQL
-    sql_dialect: str             # 目标数据库方言 (mysql/pg/oracle/sqlserver)
-    sql_retry_count: int         # SQL 执行失败重试次数（最多 2 次）
-
-    # === 安全审计 ===
-    sql_risk_level: str          # read / write / dangerous
-    sql_audit_comment: str       # 审计说明
+    generated_sql: str            # SQL Coder 生成的 SQL
+    sql_category: str             # safe / dangerous
 
     # === 执行结果 ===
-    query_result: Optional[List[dict]]  # SQL 执行结果（行列表）
-    execution_error: Optional[str]      # 执行异常信息
+    query_result: list[dict]      # SQL 执行结果（行列表）
+    query_columns: list[str]      # 列名列表
+
+    # === 质量评估 ===
+    query_quality: str            # good / insufficient（ReAct 反馈）
+    quality_feedback: str         # 质量评估反馈
 
     # === 分析结果 ===
-    analysis_insights: str              # Analyst Agent 自然语言洞察
-    chart_config: Optional[dict]        # Reporter 生成的 ECharts JSON 配置
-    export_file_path: Optional[str]     # 导出文件路径
+    analysis_text: str            # Analyst 实时流式输出的 Markdown 分析文本
+    dynamic_chart_suitable: bool  # Analyst 动态判断是否适合图表
 
-    # === 审批流 ===
-    approval_required: bool             # 是否需要人工审批
-    approval_task_id: Optional[str]     # 审批任务 ID
-    approval_status: Optional[str]      # pending / approved / rejected
+    # === 图表 ===
+    chart_config: dict            # Reporter 生成的 ECharts JSON 配置
 
-    # === 错误处理 ===
-    error_message: Optional[str]        # 全局错误信息
-    final_response: str                 # 最终返回给用户的文本
+    # === 缓存（多轮对话用）===
+    _cached_query_result: list    # 上一轮查询结果缓存
+    _cached_query_columns: list   # 上一轮查询列名缓存
+
+    # === 流程控制 ===
+    stage: str                    # 当前流程阶段标识
+    error_message: str            # 错误信息
+    node_index: int               # 对话轮次索引
 ```
 
 ---
 
-## 完整 10 节点 Graph 拓扑
+## 工作流节点拓扑
 
-工作流由以下节点组成（定义于 `backend/app/graph/workflow.py`）：
+当前为 **Plan-and-Execute + ReAct** 架构，共 **13 个节点**：
 
-| 序号 | 节点函数 | 职责 | 条件边 |
-|------|---------|------|--------|
-| 1 | `orchestrator_node` | 意图解析、任务拆解 | → RAG |
-| 2 | `rag_node` | 检索知识库获取业务规范 | → Schema |
-| 3 | `schema_node` | 加载相关表结构 | → SQL Coder |
-| 4 | `sql_coder_node` | Text-to-SQL 生成 | → Security |
-| 5 | `security_node` | SQL 审计分类 | → Execute (SELECT) 或 Interrupt (写操作) |
-| 6 | `execute_node` | 执行 SELECT 查询 | → Analyst / 错误时 → 结束 |
-| 7 | `analyst_node` | 数据分析 | → Reporter |
-| 8 | `reporter_node` | 生成图表配置 | → 结束 |
-| 9 | `interrupt_node` | 挂起工作流，等待人工审批 | → 等待外部 `/approve` 回调 |
-| 10 | `approve_handler_node` | 处理审批结果（通过/拒绝） | → Execute 或结束 |
+| 序号 | 节点名称 | 职责 | 路由去向 |
+|------|---------|------|----------|
+| 1 | `clarify_plan` | **合并** 意图澄清 + 执行计划生成（单次 LLM） | → schema_agent / rag_agent / misc_agent / chart_direct / finish |
+| 2 | `schema_agent` | 加载并筛选相关表结构 | → sql_coder / finish |
+| 3 | `sql_coder` | Text-to-SQL 生成（流式输出） | → security / rag_agent |
+| 4 | `security` | SQL 安全审计（正则 + LLM 双检） | → execute_sql / finish |
+| 5 | `execute_sql` | 执行 SQL（含自纠错重试） | → quality_gate / misc_agent |
+| 6 | `quality_gate` | ReAct 质量评估（LLM 判断结果是否充分） | → analyst / misc_agent |
+| 7 | `analyst` | 数据分析 + 实时流式 Markdown | → reporter / answer |
+| 8 | `reporter` | 生成 ECharts 图表配置 | → finish |
+| 9 | `answer` | 纯文本回答（数据不适合图表时） | → finish |
+| 10 | `misc_agent` | 杂项处理/降级兜底 | → finish |
+| 11 | `rag_agent` | RAG 知识库检索 | → finish |
+| 12 | `chart_direct` | 图表追问快捷路径（复用缓存数据） | → analyst |
+| 13 | `finish` | 结束标记 + 标题生成 | → END |
 
-条件边逻辑：
+### Graph 拓扑图
 
-```python
-def route_after_security(state: AgentState) -> str:
-    """根据安全审计结果路由"""
-    if state["sql_risk_level"] == "read":
-        return "execute_node"
-    else:
-        return "interrupt_node"
-
-def route_after_execute(state: AgentState) -> str:
-    """根据执行结果路由"""
-    if state["execution_error"]:
-        return "end"  # 执行失败，终止流程
-    return "analyst_node"
 ```
+clarify_plan ──┬── schema_agent → sql_coder → security → execute_sql
+               │                                              │
+               ├── rag_agent → finish                     quality_gate
+               │                                              │
+               ├── misc_agent → finish                ┌──────┴──────┐
+               │                                      analyst      misc_agent
+               ├── chart_direct → analyst → reporter       │
+               │                           │           ┌───┴───┐
+               └── finish               finish      reporter  answer
+                                                        │       │
+                                                      finish  finish
+```
+
+### 关键设计变更（vs 初版）
+
+| 初版 | 当前 | 说明 |
+|------|------|------|
+| clarifier → planner 两次 LLM | `clarify_plan` 一次 LLM | 节省 ~2-3s |
+| 10 节点 | 13 节点 | 新增 quality_gate / answer / chart_direct / misc_agent |
+| Analyst 输出 JSON 后回放 | Analyst 实时流式 Markdown | 消除 5-10s 等待 |
+| 水平进度条 | 可折叠任务清单 | 每步 spinner→checkmark 动画 |
+
+---
+
+## 实时任务清单机制
+
+每个节点开始时通过 `StreamContext.push_priority()` 直写 SSE 主循环队列，前端立即显示该节点为 **running** 状态（带旋转 spinner）。节点完成后通过 `thinking` 事件标记为 **completed**。
+
+```
+节点开始 → _push_node_started → push_priority → merge_queue（绕过 token 队列）→ SSE → 前端 🔵 running
+节点完成 → thinking 事件 → 前端 ✅ completed → 下一个节点 🔵 running
+全部完成 → completeAllTasks() → 2 秒后自动折叠任务清单
+```
+
+## SSE 事件流时序
+
+```
+用户点击发送
+    │
+    ▼
+客户端 ←── event: thread_id         ← 会话 ID
+客户端 ←── event: node_started      ← "意图分析" 🔵 running
+    │    (clarify_plan 开始)
+    ▼
+客户端 ←── event: node_started      ← "意图分析" ✅ → "加载表结构" 🔵 running
+客户端 ←── event: thinking           ← 更新管道
+客户端 ←── event: plan               ← 执行计划卡片
+    │
+    ▼
+客户端 ←── event: node_started      ← "加载表结构" ✅ → "生成SQL" 🔵 running
+客户端 ←── event: node_started      ← SQL 流式 token（被抑制，不显示为文本）
+客户端 ←── event: sql               ← 格式化 SQL 卡片（仅一次）
+    │
+    ▼
+客户端 ←── event: node_started      ← "生成SQL" ✅ → "安全审核" 🔵 running → ✅
+客户端 ←── event: node_started      ← "安全审核" ✅ → "执行查询" 🔵 running
+客户端 ←── event: tool_call          ← "调用: execute_sql"
+客户端 ←── event: result             ← 查询结果表格
+客户端 ←── event: tool_result       ← "完成: execute_sql"
+    │
+    ▼
+客户端 ←── event: node_started      ← "执行查询" ✅ → "质量评估" 🔵 running → ✅
+客户端 ←── event: node_started      ← "质量评估" ✅ → "数据分析" 🔵 running
+客户端 ←── event: token × N         ← Markdown 分析文本流式输出
+    │
+    ▼
+客户端 ←── event: node_started      ← "数据分析" ✅ → "生成图表"/"生成回答" 🔵 → ✅
+客户端 ←── event: chart / (无)      ← 图表配置（如有）
+客户端 ←── event: node_started      ← "完成" ✅
+客户端 ←── event: title             ← 会话标题
+客户端 ←── event: done              ← 流结束
+```
+
+### 全部 SSE 事件类型
+
+| 事件类型 | 触发时机 | data 字段 |
+|---------|---------|----------|
+| `thread_id` | 流开始时 | `thread_id` |
+| `node_started` | **每个节点开始时**（实时推送） | `agent`, `label` |
+| `thinking` | 节点完成时 | `agent`, `phase`, `content` |
+| `clarification` | 意图模糊时 | `text`, `options` |
+| `plan` | 执行计划生成后 | `intent`, `intent_label`, `steps`, `chart_suitable` |
+| `tool_call` | 工具调用开始 | `tool_name`, `sql`/`rows`/`cols` 等 |
+| `tool_result` | 工具调用结束 | `tool_name`, `result`/`row_count` 等 |
+| `sql` | SQL 生成完成 | `content` (格式化 SQL) |
+| `result` | 查询执行完成 | `data`, `columns` |
+| `token` | 流式文本输出 | `content` (逐字追加) |
+| `chart` | 图表配置生成 | `config` (ECharts JSON) |
+| `title` | 标题生成完成 | `content`, `thread_id`, `node_index` |
+| `error` | 任意阶段出错 | `error`, `code`, `recoverable` |
+| `approval_required` | 高危 SQL 需审批 | `thread_id`, `sql`, `reason` |
+| `done` | 工作流结束 | — |
+
+### 去重机制
+
+- **SQL**：`sql_coder` 不再通过 `push_token` 推送 token，仅由格式化 `sql` 事件展示一次
+- **分析文本**：`analyst` 的 token 流正常推送（Markdown 逐字渲染），不再有重复的 `tool_call`/`tool_result`
+- **工具卡片**：仅传递有值的 meta 字段，过滤 `undefined`/空值/重复的 `sql_preview`
 
 ---
 
@@ -102,24 +193,24 @@ def route_after_execute(state: AgentState) -> str:
 Security Agent 使用 **正则 + LLM 双重检测** 判断 SQL 类型：
 
 1. **正则快速筛**：匹配 `INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|CREATE`
-2. **LLM 精判**：提交 SQL 给 LLM 做语义分析，避免正则误判（如注释中的 `DELETE` 字样）
+2. **LLM 精判**：提交 SQL 给 LLM 做语义分析，避免正则误判
 
 ### 中断流程
 
 ```
-1. Security Agent 检测到写操作
+1. Security Agent 检测到高危 SQL (category == "dangerous")
        │
        ▼
-2. 调用 graph.interrupt(reason="需要管理员审批")
+2. 调用 interrupt({"type": "approval_required", "sql": "...", "reason": "..."})
        │
        ▼
-3. LangGraph 自动将当前状态快照保存到 Redis
+3. LangGraph 保存检查点到 Redis + 挂起执行
        │
        ▼
-4. 后端返回 SSE 事件: { "event": "approval_required", "task_id": "xxx" }
+4. 后端返回 SSE 事件: { "type": "approval_required", "thread_id": "xxx", "sql": "..." }
        │
        ▼
-5. 前端展示审批提示，通知管理员
+5. 前端展示审批提示
 ```
 
 ### 恢复流程
@@ -128,133 +219,32 @@ Security Agent 使用 **正则 + LLM 双重检测** 判断 SQL 类型：
 1. 管理员在前端审批页面点击"通过"或"驳回"
        │
        ▼
-2. 前端 POST /api/v1/chat/approve
-   { "task_id": "xxx", "action": "approve" }
+2. 后端调用 graph.invoke(Command(resume={"approved": True/False}), config)
        │
        ▼
-3. 后端从 Redis 加载中断快照
+3. LangGraph 从 Redis 恢复状态，重新执行 security_node
        │
        ▼
-4. 调用 Command(resume=...) 恢复 Graph 执行
+4. interrupt() 返回 Command 中的 resume 值
        │
        ▼
-5. 审批通过 → 执行 SQL → Analyst → Reporter → SSE 输出
-   审批驳回 → 返回驳回信息给用户
+5. 审批通过 → 继续 execute_sql 链路
+   审批驳回 → 设置 error_message → 路由至 finish
 ```
-
-### 代码示例
-
-```python
-# workflow.py — 中断节点
-def security_node(state: AgentState) -> AgentState:
-    """SQL 安全审计节点"""
-    result = classify_sql(state["generated_sql"])
-
-    state["sql_risk_level"] = result.risk_level
-    state["sql_audit_comment"] = result.comment
-
-    if result.risk_level != "read":
-        # 标记需要审批，Graph 将在此中断
-        state["approval_required"] = True
-
-    return state
-
-# chat.py — 审批回调处理
-@router.post("/api/v1/chat/approve")
-async def handle_approval(task_id: str, action: str):
-    graph = get_graph()
-    config = {"configurable": {"thread_id": task_id}}
-
-    if action == "approve":
-        # 恢复执行
-        result = await graph.ainvoke(
-            Command(resume={"approved": True}),
-            config
-        )
-    else:
-        # 拒绝，注入拒绝信息
-        result = await graph.ainvoke(
-            Command(resume={"approved": False}),
-            config
-        )
-    return result
-```
-
----
-
-## SSE 事件流时序图
-
-```
-用户发送 "去年每个月的销售额"
-    │
-    ▼
-客户端 ←── SSE 连接建立
-    │
-    ▼
-客户端 ←── event: status
-           data: {"stage":"intent_parsing","message":"正在理解你的问题..."}
-    │
-    ▼
-客户端 ←── event: status
-           data: {"stage":"schema_loading","message":"正在加载表结构..."}
-    │
-    ▼
-客户端 ←── event: sql_generation
-           data: {"sql":"SELECT month, SUM(amount) FROM sales WHERE year=2025 GROUP BY month"}
-    │
-    ▼
-客户端 ←── event: status
-           data: {"stage":"executing","message":"正在执行查询..."}
-    │
-    ▼
-客户端 ←── event: result_data
-           data: {"columns":["month","total"],"rows":[[1,150000],[2,180000],...]}
-    │
-    ▼
-客户端 ←── event: status
-           data: {"stage":"analyzing","message":"正在分析数据..."}
-    │
-    ▼
-客户端 ←── event: insights
-           data: {"text":"2月销售额环比增长20%，为全年最高月份。3月出现明显回落..."}
-    │
-    ▼
-客户端 ←── event: chart
-           data: {"echartsConfig":{...}}  # ECharts 柱状图配置
-    │
-    ▼
-客户端 ←── event: done
-           data: {"message":"分析完成"}
-```
-
-### 全部 SSE 事件类型
-
-| 事件类型 | 触发时机 | data 内容 |
-|---------|---------|----------|
-| `status` | 各阶段开始/完成 | `stage`, `message` |
-| `sql_generation` | SQL Coder 生成 SQL 后 | `sql`, `dialect` |
-| `result_data` | SQL 执行返回结果 | `columns`, `rows`, `row_count` |
-| `insights` | Analyst 分析完成 | `text` (自然语言洞察) |
-| `chart` | Reporter 生成图表配置 | `echartsConfig` (ECharts JSON) |
-| `approval_required` | 检测到写操作，需要审批 | `task_id`, `sql`, `risk_level` |
-| `approval_result` | 审批完成 | `status`, `message` |
-| `export_ready` | 文件导出完成 | `file_url`, `file_name` |
-| `error` | 任意阶段出错 | `stage`, `message`, `detail` |
-| `done` | 工作流结束 | `message` |
 
 ---
 
 ## 审批流生命周期
 
 ```
-┌────────┐   检测到写操作    ┌────────┐   管理员通过    ┌────────┐
-│  idle  │ ────────────────→ │pending │ ─────────────→│approved│
-└────────┘                   └────────┘                └────────┘
-                                  │ 管理员驳回
-                                  ▼
-                             ┌────────┐
-                             │rejected│
-                             └────────┘
+┌────────┐   检测到高危SQL    ┌────────┐   管理员通过    ┌────────┐
+│  idle  │ ─────────────────→ │pending │ ─────────────→│approved│
+└────────┘                    └────────┘                └────────┘
+                                   │ 管理员驳回
+                                   ▼
+                              ┌────────┐
+                              │rejected│
+                              └────────┘
 ```
 
 - **idle**：初始状态，无审批任务
@@ -262,4 +252,4 @@ async def handle_approval(task_id: str, action: str):
 - **approved**：审批通过，SQL 继续执行
 - **rejected**：审批驳回，返回拒绝原因给用户
 
-每个审批任务会在 Redis 中以 `thread_id` 为键保存完整状态快照，审批完成后删除。
+每个审批任务在 Redis 中以 `thread_id` 为键保存完整状态快照。

@@ -37,7 +37,7 @@ export default defineConfig({
       ],
     },
     socialLinks: [
-      { icon: 'github', link: '#' },
+      { icon: 'github', link: 'https://github.com/southtownWangtongxue/Project2-Data-Agents-Pro' },
     ],
   },
 })

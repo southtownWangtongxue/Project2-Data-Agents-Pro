@@ -15,19 +15,22 @@ hero:
 features:
   - icon: 💬
     title: 零门槛交互
-    details: 业务人员无需掌握 SQL，直接用自然语言提问即可获得查询结果、可视化图表和数据分析报告。
+    details: 业务人员无需掌握 SQL，直接用自然语言提问即可获得查询结果、可视化图表和数据分析报告。前端实时任务清单展示每步进度。
   - icon: 🛡️
     title: 安全可控
     details: 读数据随意，改数据必批——所有写操作须经管理员人工审批后执行，搭配正则+LLM 双重 SQL 审计。
-  - icon: 📊
-    title: 深度洞察
-    details: 集成同比/环比分析、异常检测、智能图表推荐，自动生成 ECharts 可视化配置和 Excel 报表导出。
+  - icon: ⚡
+    title: 实时流式体验
+    details: SQL 生成、数据分析全程逐字流式输出，节点进度通过任务清单实时更新（running spinner→completed checkmark），完成后自动折叠。
   - icon: 🔌
     title: 多方言适配
     details: 支持 MySQL、PostgreSQL、SQL Server、Oracle 四种数据库方言，新增数据库仅需配置，无需修改 Agent 核心代码。
   - icon: 🧠
-    title: Hermes 多智能体
-    details: 7 个专职 Agent（编排、RAG、元数据、SQL 编码、安全、分析、报表）通过 LangGraph 工作流协同编排。
+    title: Plan-and-Execute + ReAct
+    details: 13 节点 LangGraph 工作流（意图合并、质量评估、降级兜底），支持多轮对话追问、图表快捷路径、Human-in-the-loop 审批中断。
+  - icon: 📋
+    title: 智能去重展示
+    details: SQL 仅格式化卡片一处展示，分析文本流式 Markdown 输出，工具卡片过滤冗余字段，避免信息重复干扰阅读。
   - icon: ⚡
     title: 流式响应
     details: 基于 FastAPI SSE 流式传输，首字节延迟 < 1s，简单查询端到端 < 5s，复杂查询 < 15s。

@@ -10,10 +10,9 @@ const client: AxiosInstance = axios.create({
   },
 })
 
-/* 请求拦截器：添加认证 Token（占位） */
+/* 请求拦截器：自动附加 JWT Token */
 client.interceptors.request.use(
   (config) => {
-    // TODO: 从本地存储或 Pinia 中获取真实 Token
     const token = localStorage.getItem('token')
     if (token) {
       config.headers.Authorization = `Bearer ${token}`
@@ -22,18 +21,61 @@ client.interceptors.request.use(
   },
   (error) => {
     return Promise.reject(error)
-  }
+  },
 )
 
-/* 响应拦截器：统一错误处理 */
+/* 响应拦截器：401 自动跳转登录页 */
 client.interceptors.response.use(
   (response) => {
     return response.data
   },
   (error) => {
+    if (error.response?.status === 401) {
+      localStorage.removeItem('token')
+      // 防止重复跳转
+      if (window.location.pathname !== '/login') {
+        window.location.href = '/login'
+      }
+    }
     console.error('[API Error]', error.response?.data || error.message)
     return Promise.reject(error)
-  }
+  },
 )
 
 export default client
+
+/**
+ * 文件下载工具函数
+ * 用于导出功能的文件下载（CSV / Excel 等）
+ *
+ * @param url - 接口地址（相对路径）
+ * @param body - 请求体（JSON 序列化）
+ * @param filename - 下载文件名
+ */
+export async function downloadFile(url: string, body: object, filename: string): Promise<void> {
+  const token = localStorage.getItem('token')
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (token) {
+    headers.Authorization = `Bearer ${token}`
+  }
+
+  const response = await fetch(`/api/v1${url}`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  })
+
+  if (!response.ok) {
+    throw new Error(`下载失败: HTTP ${response.status}`)
+  }
+
+  const blob = await response.blob()
+  const downloadUrl = window.URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = downloadUrl
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  window.URL.revokeObjectURL(downloadUrl)
+}
