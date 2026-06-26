@@ -111,6 +111,28 @@ async def clarify_plan_node(state: AgentState) -> dict:
             "stage": "clarify_planned",
         }
 
+    # ── 快速通道：关键词匹配，跳过 LLM 调用（节省 ~15s）──
+    _fast_other = [
+        "你好", "你是谁", "你能做什么", "帮助", "help",
+        "hello", "hi", "what can you do", "who are you",
+        "谢谢", "thanks", "thank you", "再见", "bye",
+        "天气", "今天", "吃饭", "你是谁", "叫什么",
+    ]
+    _question_lower = user_question.strip().lower()
+    if any(kw in _question_lower for kw in _fast_other):
+        logger.info("[ClarifyPlan] 快速通道: 检测到简单对话/问候, 直接路由 misc_agent")
+        return {
+            "is_clear": True,
+            "clarification_text": "",
+            "clarification_options": [],
+            "intent": "other_questions",
+            "intent_confidence": 1.0,
+            "plan_steps": [],
+            "chart_suitable": False,
+            "clarifier_count": clarifier_count,
+            "stage": "clarify_planned",
+        }
+
     # 追问次数超过限制，直接放行（防止死循环）
     if clarifier_count >= MAX_CLARIFIER_COUNT:
         logger.info("[ClarifyPlan] 追问次数已达上限(%d)，直接放行", clarifier_count)
