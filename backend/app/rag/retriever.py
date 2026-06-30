@@ -101,7 +101,7 @@ async def search_similar(
         return formatted
 
     except MilvusException as e:
-        logger.warning("Milvus 搜索失败: %s", e)
+        logger.warning(f"Milvus 搜索失败: {e}")
         return []
 
 

@@ -4,7 +4,8 @@ import { useRouter } from 'vue-router'
 const router = useRouter()
 
 function goToChat() { router.push('/chat') }
-const DOCS_BASE = 'http://localhost:5174'
+// 动态获取 hostname，支持 localhost 和 LAN 访问
+const DOCS_BASE = `http://${window.location.hostname}:5174`
 function openDocs() { window.open(DOCS_BASE + '/', '_blank') }
 
 const features = [

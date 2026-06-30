@@ -393,6 +393,12 @@ async def clarify_and_plan(
         "你是一个智能数据任务协调专家。请同时完成两项任务：\n"
         "1. 分析用户意图的明确程度（是否需要追问）\n"
         "2. 为明确的意图生成结构化的执行计划\n\n"
+        "## 关键规则：多轮对话上下文识别\n"
+        "- **纠正/补充类追问（高优先级）**：如果当前输入是对上一轮查询的纠正或补充（如\"XX是指YY\"、"
+        "\"换成ZZ\"、\"应该是AA\"、\"不是BB是CC\"、\"再查一下\"、\"补充DD条件\"），"
+        "则is_clear必须为true，intent归类为query_data，基于对话历史中上轮SQL和当前纠正重新生成\n"
+        "- **缩小范围补充**：如\"再加个条件\"、\"只看前N条\"、\"改成按月统计\" → query_data\n"
+        "- **追问统计分析**：如\"帮我深入分析\"、\"换个角度分析\" → query_data（重新查询+分析）\n\n"
         "## 意图模糊度判断标准\n"
         "- 高模糊：问题范围太宽泛，缺少关键信息。如\"帮我分析一下\"\n"
         "- 中模糊：主题明确但缺少维度/时间/指标。如\"分析销售趋势\"\n"
@@ -402,11 +408,11 @@ async def clarify_and_plan(
         "  或要求更换图表展示（如\"换一种图表\"），且对话历史中已有数据查询结果，"
         "  则is_clear必须为true，意图归类为chart_interaction\n\n"
         "## 意图分类\n"
-        "1. query_data — 数据查询/统计\n"
+        "1. query_data — 数据查询/统计（含多轮纠正和补充）\n"
         "2. ask_help — 帮助咨询（走知识库检索）\n"
         "3. write_data — 数据写入/修改（需要审批）\n"
         "4. chart_interaction — 图表操作（换图表类型等）\n"
-        "5. other_questions — 其他问题\n\n"
+        "5. other_questions — 其他问题（仅限真正无关的问题）\n\n"
         "## chart_suitable 判断\n"
         "- 用户明确问排行/趋势/占比/对比 → true\n"
         "- 用户问列表/详情/具体值 → false\n"
@@ -434,16 +440,25 @@ async def clarify_and_plan(
         '  "reasoning": "简短推理说明"\n'
         "}\n"
         "3. 如果意图明确，clarification 和 options 留空\n"
-        "4. 如果意图不明确，options 提供 2-4 个具体可点击的选项"
+        "4. 如果意图不明确，options 提供 2-4 个具体可点击的选项\n"
+        "5. **重要**：看到对话历史中有上轮SQL时，优先将纠正/补充类输入识别为query_data"
     )
 
     user_message = f"请分析以下用户问题：\n\n{user_question}"
     if history:
-        history_text = "\n".join(
-            [f"[{_get_msg_role(m)}]: {_get_msg_content(m)[:200]}" for m in history[-6:]]
-        )
+        history_parts = []
+        for m in history[-10:]:
+            role = _get_msg_role(m)
+            content = _get_msg_content(m)
+            if not content:
+                # 尝试从 SQL 字段获取
+                sql = m.get("sql", "") if isinstance(m, dict) else getattr(m, "sql", "")
+                if sql:
+                    content = f"[生成的SQL]: {sql[:300]}"
+            history_parts.append(f"[{role}]: {str(content)[:200]}")
+        history_text = "\n".join(history_parts)
         user_message = (
-            f"## 对话历史\n{history_text}\n\n## 当前问题\n{user_question}"
+            f"## 对话历史（含上轮SQL，用于识别纠正/补充）\n{history_text}\n\n## 当前问题\n{user_question}"
         )
 
     try:

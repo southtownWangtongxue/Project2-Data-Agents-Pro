@@ -79,11 +79,11 @@ class PlainRedisSaver(InMemorySaver):
                 decode_responses=True,
             )
             await self._redis.ping()
-            logger.info("[PlainRedisSaver] Redis 连接成功: %s", self._redis_url)
+            logger.info(f"[PlainRedisSaver] Redis 连接成功: {self._redis_url}")
             await self._load_from_redis()
             self._initialized = True
         except Exception as exc:
-            logger.warning("[PlainRedisSaver] Redis 初始化失败 (%s)，仅使用内存存储", exc)
+            logger.warning(f"[PlainRedisSaver] Redis 初始化失败 ({exc})，仅使用内存存储")
             self._redis = None
             self._initialized = True
 
@@ -148,7 +148,7 @@ class PlainRedisSaver(InMemorySaver):
             logger.warning("[PlainRedisSaver] SCAN 超时，跳过历史加载")
             return
         except Exception as exc:
-            logger.warning("[PlainRedisSaver] SCAN 失败: %s，跳过历史加载", exc)
+            logger.warning(f"[PlainRedisSaver] SCAN 失败: {exc}，跳过历史加载")
             return
 
         while True:
@@ -190,7 +190,7 @@ class PlainRedisSaver(InMemorySaver):
 
                     loaded += 1
                 except Exception as exc:
-                    logger.warning("[PlainRedisSaver] 加载检查点失败 key=%s: %s", key, exc)
+                    logger.warning(f"[PlainRedisSaver] 加载检查点失败 key={key}: {exc}")
 
             if cursor == 0:
                 break
@@ -203,7 +203,7 @@ class PlainRedisSaver(InMemorySaver):
                 break
 
         if loaded > 0:
-            logger.info("[PlainRedisSaver] 从 Redis 加载了 %d 个检查点", loaded)
+            logger.info(f"[PlainRedisSaver] 从 Redis 加载了 {loaded} 个检查点")
 
     # ── 写入重写（同步到 Redis）──────────────────────────
 
@@ -239,7 +239,7 @@ class PlainRedisSaver(InMemorySaver):
                 pipe.zadd(f"{CKPT_ZSET_PREFIX}:{thread_id}:{ns}", {ckpt_id: time.time()})
                 await pipe.execute()
             except Exception as exc:
-                logger.warning("[PlainRedisSaver] Redis 写入失败: %s", exc)
+                logger.warning(f"[PlainRedisSaver] Redis 写入失败: {exc}")
         return result
 
     async def adelete_thread(self, thread_id: str) -> None:
@@ -263,6 +263,6 @@ class PlainRedisSaver(InMemorySaver):
                         await self._redis.delete(*keys)
                     if cursor == 0:
                         break
-                logger.info("[PlainRedisSaver] 线程 %s 已删除", thread_id)
+                logger.info(f"[PlainRedisSaver] 线程 {thread_id} 已删除")
             except Exception as exc:
-                logger.warning("[PlainRedisSaver] 删除失败: %s", exc)
+                logger.warning(f"[PlainRedisSaver] 删除失败: {exc}")

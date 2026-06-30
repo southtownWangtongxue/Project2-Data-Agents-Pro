@@ -38,7 +38,7 @@ def _parse_frontmatter(content: str) -> tuple[dict, str]:
     try:
         metadata = yaml.safe_load(yaml_text) or {}
     except yaml.YAMLError as exc:
-        log.warning("[SkillLoader] YAML 解析失败: %s", exc)
+        log.warning(f"[SkillLoader] YAML 解析失败: {exc}")
         metadata = {}
 
     return metadata, body
@@ -56,7 +56,7 @@ def _import_script(script_path: Path, function_name: str) -> Any | None:
         spec.loader.exec_module(module)
         return getattr(module, function_name, None)
     except Exception as exc:
-        log.warning("[SkillLoader] 导入脚本失败 %s: %s", script_path, exc)
+        log.warning(f"[SkillLoader] 导入脚本失败 {script_path}: {exc}")
         return None
 
 
@@ -90,7 +90,7 @@ class SkillLoader:
         self._loaded = []
 
         if not self.skills_dir.exists():
-            log.warning("[SkillLoader] Skills 目录不存在: %s", self.skills_dir)
+            log.warning(f"[SkillLoader] Skills 目录不存在: {self.skills_dir}")
             return self._loaded
 
         for entry in sorted(self.skills_dir.iterdir()):
@@ -99,13 +99,13 @@ class SkillLoader:
 
             skill_md = entry / "SKILL.md"
             if not skill_md.exists():
-                log.warning("[SkillLoader] 目录 %s 缺少 SKILL.md，跳过", entry.name)
+                log.warning(f"[SkillLoader] 目录 {entry.name} 缺少 SKILL.md，跳过")
                 continue
 
             try:
                 raw = skill_md.read_text(encoding="utf-8")
             except Exception as exc:
-                log.warning("[SkillLoader] 读取 %s 失败: %s", skill_md, exc)
+                log.warning(f"[SkillLoader] 读取 {skill_md} 失败: {exc}")
                 continue
 
             metadata, instructions = _parse_frontmatter(raw)
@@ -114,7 +114,7 @@ class SkillLoader:
             description = metadata.get("description", "")
 
             if not name:
-                log.warning("[SkillLoader] %s 缺少 name 字段，跳过", skill_md)
+                log.warning(f"[SkillLoader] {skill_md} 缺少 name 字段，跳过")
                 continue
 
             # 查找执行器
@@ -136,9 +136,9 @@ class SkillLoader:
             }
 
             self._loaded.append(skill_entry)
-            log.info("[SkillLoader] 已加载 Skill: %s (%s)", name, description[:60])
+            log.info(f"[SkillLoader] 已加载 Skill: {name} ({description[:60]})")
 
-        log.info("[SkillLoader] 扫描完成，共加载 %d 个 Skill", len(self._loaded))
+        log.info(f"[SkillLoader] 扫描完成，共加载 {len(self._loaded)} 个 Skill")
         return self._loaded
 
     def get_loaded(self) -> list[dict]:

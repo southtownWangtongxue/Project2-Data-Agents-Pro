@@ -46,26 +46,59 @@ function onTurnMenuLeave() {
   showTurnMenu.value = false
 }
 
-/* 自动滚动 */
+/* 自动滚动到最新消息 */
 function scrollToBottom() {
   nextTick(() => {
+    const el = messagesContainer.value
+    if (el) el.scrollTop = el.scrollHeight
+  })
+}
+
+/* 强制延时滚动（等 DOM 渲染完再滚一次，适用于历史会话加载等场景） */
+function scrollToBottomDelayed(ms = 100) {
+  scrollToBottom()
+  setTimeout(scrollToBottom, ms)
+  setTimeout(scrollToBottom, ms * 2)
+}
+
+/* 消息数量变化 或 最后一条消息内容变化 → 自动滚动 */
+const lastMsgContent = computed(() => {
+  const msgs = store.messages
+  if (!msgs.length) return ''
+  const last = msgs[msgs.length - 1]
+  return last.type === 'text' ? (last.content || '').slice(-1) : last.id
+})
+
+/* 智能滚动：仅在用户未手动上滚时才自动追底（距离底部 < 120px） */
+function smartScrollToBottom() {
+  const el = messagesContainer.value
+  if (!el) return
+  const distToBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+  if (distToBottom < 120) scrollToBottom()
+}
+
+watch([() => store.messages.length, lastMsgContent], () => smartScrollToBottom())
+
+/* 用户发送消息时 → 无条件滚到底部（flush:post 确保 DOM 渲染后执行） */
+watch(() => store.sentMarker, () => {
+  // requestAnimationFrame 确保动画帧完成后再滚动
+  requestAnimationFrame(() => {
     if (messagesContainer.value) {
       messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
     }
   })
-}
-
-watch(() => store.messages.length, () => scrollToBottom())
+})
 
 onMounted(() => {
   store.loadSessions()
   store.loadSuggestions()
 })
 
-/* 侧边栏选择会话 → 加载历史 */
-function handleSessionSelect(threadId: string) {
+/* 侧边栏选择会话 → 加载历史 + 滚动到底部 */
+async function handleSessionSelect(threadId: string) {
   if (threadId) {
-    store.loadSession(threadId)
+    await store.loadSession(threadId)
+    scrollToBottomDelayed(200)
   }
 }
 
@@ -338,49 +371,52 @@ function scrollToNode(nodeIndex: number) {
         </span>
       </header>
 
-      <!-- ── 任务清单（替代旧水平管道）── -->
-      <div v-if="store.tasks.length > 0" class="task-list" :class="{ 'is-collapsed': store.tasksCollapsed }">
-        <div class="task-list-header" @click="store.tasksCollapsed = !store.tasksCollapsed">
-          <span class="task-list-title">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
-            </svg>
-            任务清单
-          </span>
-          <span class="task-list-count">
-            {{ store.tasksCollapsed ? `${tasksCompletedCount}/${store.tasks.length}` : '' }}
-            <svg class="task-list-chevron" :class="{ 'is-open': !store.tasksCollapsed }"
-              width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <!-- ── 浮动任务面板：默认一行当前节点，点击展开完整链路 ── -->
+      <!-- 运行中 -->
+      <Transition name="task-float-fade">
+        <div v-if="store.hasRunning" class="task-float">
+          <button class="task-float-chip" @click="store.toggleTaskExpanded()">
+            <span class="task-float-ring"></span>
+            <span class="task-float-label">{{ store.currentTask ? store.currentTask.label : '处理中...' }}</span>
+            <span class="task-float-progress">{{ tasksCompletedCount }}/{{ store.tasks.length }}</span>
+            <svg class="task-float-chevron" :class="{ 'is-open': store.taskExpanded }"
+              width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="6 9 12 15 18 9"/>
             </svg>
-          </span>
-        </div>
-        <Transition name="task-list-expand">
-          <div v-if="!store.tasksCollapsed" class="task-list-body">
-            <div
-              v-for="task in store.tasks"
-              :key="task.key"
-              class="task-item"
-              :class="{ 'is-running': task.status === 'running', 'is-done': task.status === 'completed' }"
-            >
-              <div class="task-item-icon">
-                <!-- Running: spinner -->
-                <svg v-if="task.status === 'running'" class="task-spinner" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                  <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
-                </svg>
-                <!-- Completed: checkmark -->
-                <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
-                  <polyline points="20 6 9 17 4 12"/>
-                </svg>
+          </button>
+          <!-- 点击展开 → 完整任务列表 -->
+          <Transition name="task-float-expand">
+            <div v-if="store.taskExpanded" class="task-float-body">
+              <div v-for="task in store.tasks" :key="task.key" class="task-float-item"
+                :class="{ 'is-running': task.status === 'running', 'is-done': task.status === 'completed' }">
+                <div class="task-float-item-icon">
+                  <span v-if="task.status === 'running'" class="task-float-ring-sm"></span>
+                  <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+                </div>
+                <span class="task-float-item-label">{{ task.label }}</span>
               </div>
-              <span class="task-item-label">{{ task.label }}</span>
             </div>
-          </div>
-        </Transition>
-      </div>
+          </Transition>
+        </div>
+      </Transition>
+      <!-- 全部完成 -->
+      <Transition name="task-float-fade">
+        <div v-if="store.tasksCollapsed" class="task-float-done-chip">
+          <span class="task-float-dot task-float-dot--done">✓</span>
+          <span>完成</span>
+        </div>
+      </Transition>
 
       <!-- 消息列表 -->
       <div ref="messagesContainer" class="chat-messages" :class="{ 'is-empty': store.messages.length === 0 }">
+        <!-- 加载历史会话骨架屏 -->
+        <div v-if="store.isLoading && store.messages.length === 0" class="loading-panel">
+          <svg class="loading-spinner" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#6366f1" stroke-width="2.5">
+            <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+          </svg>
+          <span class="loading-text">正在加载会话...</span>
+        </div>
+
         <!-- 空状态 -->
         <div v-if="store.messages.length === 0" class="chat-empty">
           <div class="empty-illustration">
@@ -660,6 +696,13 @@ function scrollToNode(nodeIndex: number) {
           </template>
         </div>
         </template>
+
+        <!-- 流式等待动画（有消息但正在加载） -->
+        <div v-if="store.isLoading && store.messages.length > 0" class="streaming-dots">
+          <span class="streaming-dot-item"></span>
+          <span class="streaming-dot-item"></span>
+          <span class="streaming-dot-item"></span>
+        </div>
       </div>
 
       <!-- 底部输入区 -->
@@ -682,6 +725,7 @@ function scrollToNode(nodeIndex: number) {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  position: relative;
   background-color: var(--color-bg);
 }
 
@@ -863,189 +907,150 @@ function scrollToNode(nodeIndex: number) {
   transform: translateY(-4px);
 }
 
-/* ========== 任务清单 ========== */
-.task-list {
-  margin: var(--space-3) var(--space-4) 0;
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  overflow: hidden;
-  flex-shrink: 0;
-  transition: all 0.35s ease;
-}
-/* 进行中 → 金色左边框 + 阴影，更显眼 */
-.task-list:not(.is-collapsed) {
-  border-left: 3px solid #f59e0b;
-  box-shadow: 0 0 20px rgba(245, 158, 11, 0.08);
-}
-/* 全部完成 → 绿色边框 */
-.task-list.is-collapsed {
-  border-color: rgba(34, 197, 94, 0.25);
-  background: rgba(34, 197, 94, 0.05);
-  border-left: 3px solid #22c55e;
+/* ========== 浮动任务面板（默认仅显示当前节点，点击展开完整链路）========== */
+.task-float-fade-enter-active,
+.task-float-fade-leave-active { transition: all .25s ease; }
+.task-float-fade-enter-from,
+.task-float-fade-leave-to { opacity: 0; transform: translateY(-6px) scale(0.95); }
+
+.task-float {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-4);
+  z-index: 20;
 }
 
-.task-list-header {
+/* 运行中 chip：紫蓝色光晕（与首页主题一致） */
+.task-float-chip {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: var(--space-2) var(--space-3);
+  gap: 6px;
+  padding: 5px 10px 5px 8px;
+  border-radius: var(--radius-full);
+  border: 1px solid rgba(99, 102, 241, 0.5);
+  background: rgba(22, 20, 24, 0.92);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 0 16px rgba(99, 102, 241, 0.18);
   cursor: pointer;
-  user-select: none;
-  transition: background var(--transition-fast);
-}
-.task-list-header:hover {
-  background: var(--color-surface-elevated);
-}
-.task-list-title {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 12px;
   color: var(--color-text-primary);
-  transition: color 0.3s ease;
+  transition: all .25s ease;
+  user-select: none; white-space: nowrap;
 }
-.task-list:not(.is-collapsed) .task-list-title {
-  color: #f59e0b;
-}
-.task-list.is-collapsed .task-list-title {
-  color: #22c55e;
-}
-.task-list-title svg {
-  color: var(--color-text-muted);
-  transition: color 0.3s ease;
-}
-.task-list:not(.is-collapsed) .task-list-title svg {
-  color: #f59e0b;
-}
-.task-list.is-collapsed .task-list-title svg {
-  color: #22c55e;
-}
+.task-float-chip:hover { background: rgba(28, 26, 30, 0.95); box-shadow: 0 0 22px rgba(99, 102, 241, 0.30); }
 
-.task-list-count {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  font-size: 11px;
-  color: var(--color-text-muted);
-  font-family: var(--font-mono);
-  transition: color 0.3s ease;
-}
-.task-list:not(.is-collapsed) .task-list-count {
-  color: #f59e0b;
-}
-
-.task-list-chevron {
-  transition: transform var(--transition-fast);
-}
-.task-list-chevron.is-open {
-  transform: rotate(180deg);
-}
-
-/* 展开/折叠动画 */
-.task-list-expand-enter-active {
-  transition: all 0.25s ease;
-  overflow: hidden;
-}
-.task-list-expand-leave-active {
-  transition: all 0.2s ease;
-  overflow: hidden;
-}
-.task-list-expand-enter-from,
-.task-list-expand-leave-to {
-  max-height: 0;
-  opacity: 0;
-}
-.task-list-expand-enter-to,
-.task-list-expand-leave-from {
-  max-height: 600px;
-  opacity: 1;
-}
-
-.task-list-body {
-  border-top: 1px solid var(--color-border);
-  padding: var(--space-2) 0;
-}
-
-/* 单个任务项 */
-.task-item {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: 6px var(--space-3);
-  font-size: 13px;
-  color: var(--color-text-muted);
-  transition: all 0.3s ease;
-  border-left: 2px solid transparent;
-}
-/* 进行中 → 金色左边框 + 背景渐变 */
-.task-item.is-running {
-  color: #fef3c7;
-  background: linear-gradient(90deg, rgba(245, 158, 11, 0.12), transparent);
-  border-left-color: #f59e0b;
-  animation: taskPulse 1.5s ease-in-out infinite;
-}
-@keyframes taskPulse {
-  0%, 100% { background: linear-gradient(90deg, rgba(245, 158, 11, 0.12), transparent); }
-  50% { background: linear-gradient(90deg, rgba(245, 158, 11, 0.18), transparent); }
-}
-.task-item.is-done {
-  color: var(--color-text-secondary);
-}
-
-/* 新任务出现闪动 */
-.task-item-enter-active {
-  animation: taskIn 0.4s ease-out;
-}
-@keyframes taskIn {
-  0% { opacity: 0; transform: translateX(-8px); }
-  100% { opacity: 1; transform: translateX(0); }
-}
-
-.task-item-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  flex-shrink: 0;
+/* 旋转环（与首页主题一致） */
+.task-float-ring {
+  width: 14px; height: 14px; flex-shrink: 0;
   border-radius: 50%;
-  border: 1.5px solid var(--color-border);
-  transition: all 0.4s ease;
+  border: 2px solid rgba(99, 102, 241, .2);
+  border-top-color: #6366f1;
+  animation: spin .8s linear infinite;
 }
-.task-item.is-running .task-item-icon {
-  border-color: #f59e0b;
-  background: rgba(245, 158, 11, 0.15);
-  color: #fbbf24;
-  box-shadow: 0 0 8px rgba(245, 158, 11, 0.3);
-}
-.task-item.is-done .task-item-icon {
-  border-color: #22c55e;
-  background: rgba(34, 197, 94, 0.08);
-  color: #22c55e;
+@keyframes spin { to { transform: rotate(360deg) } }
+
+.task-float-label { font-weight: 500; }
+
+.task-float-progress {
+  font-size: 10px; color: var(--color-text-muted);
+  font-family: var(--font-mono);
 }
 
-.task-spinner {
-  animation: taskSpin 0.8s linear infinite;
-}
-@keyframes taskSpin {
-  to { transform: rotate(360deg); }
+.task-float-chevron { transition: transform .2s ease; opacity: .5; }
+.task-float-chevron.is-open { transform: rotate(180deg); }
+
+/* 展开的完整列表 */
+.task-float-body {
+  position: absolute; top: calc(100% + 6px); right: 0;
+  min-width: 180px;
+  background: rgba(22, 20, 24, 0.97);
+  backdrop-filter: blur(16px);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-1) 0;
+  box-shadow: 0 8px 32px rgba(0,0,0,.45);
+  overflow: hidden;
 }
 
-.task-item-label {
-  line-height: 1;
-  transition: color 0.3s ease;
+.task-float-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 14px; font-size: 12px;
+  color: var(--color-text-muted); transition: all .15s ease;
 }
+.task-float-item.is-running { color: var(--color-text-primary); background: linear-gradient(90deg, rgba(99, 102, 241, .1), transparent); }
+.task-float-item.is-done { color: var(--color-text-secondary); }
 
-/* 已完成任务对勾弹入动画 */
-.task-item.is-done .task-item-icon {
-  animation: checkPop 0.35s ease-out;
+.task-float-item-icon {
+  display: flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; flex-shrink: 0;
+  border-radius: 50%; border: 1px solid var(--color-border);
+}
+.task-float-item.is-running .task-float-item-icon { border-color: #6366f1; color: #818cf8; }
+.task-float-item.is-done .task-float-item-icon { border-color: #22c55e; color: #22c55e; }
+
+/* 展开列表中的小旋转环 */
+.task-float-ring-sm {
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(99, 102, 241, .2);
+  border-top-color: #6366f1;
+  animation: spin .8s linear infinite;
+}
+.task-float-item-label { line-height: 1; }
+
+.task-float-expand-enter-active { transition: all .2s ease; overflow: hidden; }
+.task-float-expand-leave-active { transition: all .15s ease; overflow: hidden; }
+.task-float-expand-enter-from, .task-float-expand-leave-to { max-height: 0; opacity: 0; }
+.task-float-expand-enter-to, .task-float-expand-leave-from { max-height: 500px; opacity: 1; }
+
+/* 完成绿条 */
+.task-float-done-chip {
+  position: absolute; top: var(--space-2); right: var(--space-4); z-index: 20;
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 10px; border-radius: var(--radius-full);
+  border: 1px solid rgba(34, 197, 94, .3);
+  background: rgba(22, 20, 24, .85); backdrop-filter: blur(10px);
+  font-size: 12px; color: #22c55e;
+}
+.task-float-dot--done {
+  background: #22c55e; color: #fff;
+  width: 16px; height: 16px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 9px; font-weight: 700; line-height: 1;
+  animation: checkPop .4s ease-out;
 }
 @keyframes checkPop {
   0% { transform: scale(0); }
   60% { transform: scale(1.3); }
   100% { transform: scale(1); }
+}
+
+
+
+/* ========== 加载动画 ========== */
+.loading-panel {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: var(--space-3); height: 180px;
+}
+.loading-spinner { animation: spinSlow 1.2s linear infinite; }
+@keyframes spinSlow { to { transform: rotate(360deg); } }
+.loading-text { font-size: 13px; color: var(--color-text-muted); }
+
+/* 流式等待三点 */
+.streaming-dots {
+  display: flex; align-items: center; gap: 4px;
+  padding: var(--space-2) var(--space-4); justify-content: center;
+}
+.streaming-dot-item {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--color-text-muted);
+  animation: dotWave 1.4s ease-in-out infinite;
+}
+.streaming-dot-item:nth-child(2) { animation-delay: .2s; }
+.streaming-dot-item:nth-child(3) { animation-delay: .4s; }
+@keyframes dotWave {
+  0%, 80%, 100% { opacity: .2; transform: scale(.8); }
+  40% { opacity: 1; transform: scale(1.2); }
 }
 
 /* ========== 消息项 ========== */

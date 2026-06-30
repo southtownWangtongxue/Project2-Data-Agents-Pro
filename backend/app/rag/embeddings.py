@@ -157,11 +157,11 @@ async def embed_texts(texts: list[str]) -> list[list[float]]:
         # 不是 OpenAI 风格的 response 对象，不需要 .data / .embedding 属性访问
         embeddings = client.embed_documents(texts)
         dim = len(embeddings[0]) if embeddings else 0
-        logger.info("成功向量化 %d 条文本，维度=%d", len(embeddings), dim)
+        logger.info(f"成功向量化 {len(embeddings)} 条文本，维度={dim}")
         return embeddings
 
     except Exception as e:
-        logger.warning("调用 embeddings 失败（模型=%s）: %s", settings.EMBEDDING_MODEL, e)
+        logger.warning(f"调用 embeddings 失败（模型={settings.EMBEDDING_MODEL}）: {e}")
         return []
 
 
@@ -179,10 +179,10 @@ def _ensure_milvus_connection() -> bool:
                 host=settings.MILVUS_HOST,
                 port=settings.MILVUS_PORT,
             )
-            logger.info("已连接到 Milvus: %s:%d", settings.MILVUS_HOST, settings.MILVUS_PORT)
+            logger.info(f"已连接到 Milvus: {settings.MILVUS_HOST}:{settings.MILVUS_PORT}")
         return True
     except MilvusException as e:
-        logger.warning("连接 Milvus 失败: %s", e)
+        logger.warning(f"连接 Milvus 失败: {e}")
         return False
 
 
@@ -229,7 +229,7 @@ def _get_or_create_collection(collection_name: str, dim: int) -> Optional[Collec
         return collection
 
     except MilvusException as e:
-        logger.warning("操作 Milvus collection 失败: %s", e)
+        logger.warning(f"操作 Milvus collection 失败: {e}")
         return None
 
 
@@ -270,7 +270,7 @@ async def embed_and_store(
         logger.warning("文本切分后无有效内容")
         return 0
 
-    logger.info("文本切分完成: %d 个片段", len(all_chunks))
+    logger.info(f"文本切分完成: {len(all_chunks)} 个片段")
 
     # 2. 向量化
     embeddings = await embed_texts(all_chunks)
@@ -279,7 +279,7 @@ async def embed_and_store(
         return 0
 
     if len(embeddings) != len(all_chunks):
-        logger.warning("向量数量(%d)与文本片段数量(%d)不一致", len(embeddings), len(all_chunks))
+        logger.warning(f"向量数量({len(embeddings)})与文本片段数量({len(all_chunks)})不一致")
         return 0
 
     # 3. 存入 Milvus
@@ -301,5 +301,5 @@ async def embed_and_store(
         return count
 
     except MilvusException as e:
-        logger.warning("写入 Milvus 失败: %s", e)
+        logger.warning(f"写入 Milvus 失败: {e}")
         return 0

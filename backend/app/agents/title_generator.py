@@ -68,7 +68,7 @@ async def generate_node_title(question: str, answer_summary: str = "") -> str:
             logger.info("[TitleGen] 节点标题生成: '%s'", title)
             return title
     except Exception as exc:
-        logger.warning("[TitleGen] 标题生成失败，使用降级标题: %s", exc)
+        logger.warning(f"[TitleGen] 标题生成失败，使用降级标题: {exc}")
 
     # 降级：截取问题前 15 字
     fallback = question.strip()[:15]

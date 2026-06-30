@@ -163,7 +163,7 @@ async def evaluate_query_quality(
         }
 
     except (json.JSONDecodeError, Exception) as exc:
-        logger.warning("[QualityEval] LLM 调用或解析失败，使用规则兜底: %s", exc)
+        logger.warning(f"[QualityEval] LLM 调用或解析失败，使用规则兜底: {exc}")
 
         # 规则兜底：数据量判断
         if row_count == 1:
@@ -294,7 +294,7 @@ async def evaluate_chart_suitability(
         }
 
     except Exception as exc:
-        logger.warning("[QualityEval] 图表评估 LLM 调用失败，使用规则兜底: %s", exc)
+        logger.warning(f"[QualityEval] 图表评估 LLM 调用失败，使用规则兜底: {exc}")
 
         # 规则兜底
         if row_count >= 2 and has_numeric:

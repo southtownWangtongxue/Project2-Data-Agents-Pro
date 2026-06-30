@@ -249,11 +249,11 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                 event_count = 0
                 async for evt in graph.astream(initial_state, config, stream_mode="updates"):
                     event_count += 1
-                    logger.info("[SSE-GRAPH] 收到图事件 #%d keys: %s", event_count, list(evt.keys()))
+                    logger.info(f"[SSE-GRAPH] 收到图事件 #{event_count} keys: {list(evt.keys())}")
                     # 先把已排队的 token 标记插入，确保主循环排空 token
                     await merge_queue.put(("drain", None))
                     await merge_queue.put(("node", evt))
-                logger.info("[SSE-GRAPH] graph.astream() 完成, 共 %d 个事件", event_count)
+                logger.info(f"[SSE-GRAPH] graph.astream() 完成, 共 {event_count} 个事件")
             except GraphInterrupt as gi:
                 # LangGraph human-in-the-loop 中断
                 await merge_queue.put(("interrupt", gi))
@@ -287,7 +287,7 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                 _pending = None
             else:
                 source, data = await merge_queue.get()
-            logger.info("[SSE-LOOP] 事件源: %s", source)
+            logger.info(f"[SSE-LOOP] 事件源: {source}")
 
             if source == "done":
                 logger.info("[SSE-LOOP] 收到 done 信号, 退出主循环")
@@ -345,7 +345,7 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                     break
 
             for node_name, state_update in data.items():
-                logger.info("[SSE-LOOP] 处理节点事件: %s", node_name)
+                logger.info(f"[SSE-LOOP] 处理节点事件: {node_name}")
 
                 # ── clarify_plan: 意图澄清 + 执行计划（合并单次LLM调用）──────
                 if node_name == "clarify_plan":
@@ -358,7 +358,7 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
 
                     if not is_clear and clarification:
                         # 意图模糊：推送追问卡片给前端
-                        logger.info("[SSE] 意图模糊，推送追问: %s", clarification[:80])
+                        logger.info(f"[SSE] 意图模糊，推送追问: {clarification[:80]}")
                         yield _sse_event({
                             "type": "clarification",
                             "text": clarification,
@@ -393,7 +393,7 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                     options = state_update.get("clarification_options", [])
 
                     if not is_clear and clarification:
-                        logger.info("[SSE] 意图模糊，推送追问: %s", clarification[:80])
+                        logger.info(f"[SSE] 意图模糊，推送追问: {clarification[:80]}")
                         yield _sse_event({
                             "type": "clarification",
                             "text": clarification,
@@ -432,7 +432,7 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                     content = state_update.get("analysis_text", "")
                     if content:
                         collected_analysis = str(content)[:200]  # 收集用于标题生成
-                        logger.info("[SSE] misc_agent 结果=%s", content[:80])
+                        logger.info(f"[SSE] misc_agent 结果={content[:80]}")
                         yield _tool_event("tool_call", "misc_agent", args={"question": question[:80]})
                         yield _tool_event("tool_result", "misc_agent", result=content[:200])
                     else:
@@ -454,7 +454,7 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                     yield _thinking_event("schema_agent", "loading_schema", "加载数据表结构...")
                     error = state_update.get("error_message", "")
                     if error:
-                        logger.warning("[SSE] schema_agent 错误: %s", error)
+                        logger.warning(f"[SSE] schema_agent 错误: {error}")
                         yield _error_event(error, code="SCHEMA_LOAD_FAILED", recoverable=True)
 
                 # ── sql_coder: SQL 生成 ──────────────────
@@ -462,13 +462,13 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                     yield _thinking_event("sql_coder", "generating", "正在生成SQL查询...")
                     error = state_update.get("error_message", "")
                     if error:
-                        logger.warning("[SSE] sql_coder 错误: %s", error)
+                        logger.warning(f"[SSE] sql_coder 错误: {error}")
                         yield _error_event(error, code="SQL_GENERATE_FAILED", recoverable=True)
                     else:
                         sql = state_update.get("generated_sql", "")
                         if sql:
                             collected_sql = sql  # 收集用于标题生成
-                            logger.info("[SSE] 推送 SQL: %s", sql[:80])
+                            logger.info(f"[SSE] 推送 SQL: {sql[:80]}")
                             yield _sse_event({
                                 "type": "sql",
                                 "content": sql,
@@ -486,7 +486,7 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                     # 推送执行错误（如有）
                     error = state_update.get("error_message", "")
                     if error:
-                        logger.warning("[SSE] SQL 执行异常: %s", error)
+                        logger.warning(f"[SSE] SQL 执行异常: {error}")
                         yield _error_event(error, code="SQL_EXEC_FAILED", recoverable=False)
 
                     # 推送查询结果
@@ -510,13 +510,13 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                 elif node_name == "quality_gate":
                     quality = state_update.get("query_quality", "good")
                     feedback = state_update.get("quality_feedback", "")
-                    logger.info("[SSE] quality_gate 评估完成: quality=%s", quality)
+                    logger.info(f"[SSE] quality_gate 评估完成: quality={quality}")
 
                     yield _thinking_event("quality_gate", "evaluating", "评估查询结果质量...")
 
                     if quality != "good" and feedback:
                         # 质量不足时推送用户友好反馈
-                        logger.info("[SSE] 质量不足，推送反馈: %s", feedback[:80])
+                        logger.info(f"[SSE] 质量不足，推送反馈: {feedback[:80]}")
                         yield _sse_event({
                             "type": "quality_feedback",
                             "quality": quality,
@@ -548,7 +548,7 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                     chart_config = state_update.get("chart_config")
                     if chart_config:
                         chart_type = chart_config.get("chart_type", "unknown")
-                        logger.info("[SSE] 推送图表配置: type=%s", chart_type)
+                        logger.info(f"[SSE] 推送图表配置: type={chart_type}")
                         yield _tool_event("tool_call", "reporter", chart_type=chart_type)
                         yield _sse_event({
                             "type": "chart",
@@ -566,12 +566,12 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                     text = state_update.get("analysis_text", "")
                     if text:
                         collected_analysis = text[:200]  # 收集用于标题生成
-                        logger.info("[SSE] RAG 检索结果: %s", text[:80])
+                        logger.info(f"[SSE] RAG 检索结果: {text[:80]}")
 
                 # ── finish: 工作流结束 ────────────────────
                 elif node_name == "finish":
                     yield _thinking_event("finish", "completed", "完成")
-                    logger.info("[SSE] 工作流执行完毕, node_index=%d", node_index)
+                    logger.info(f"[SSE] 工作流执行完毕, node_index={node_index}")
 
                     # 先生成并保存标题（在 done 事件之前）
                     try:
@@ -591,7 +591,7 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                             "node_index": node_index,
                         })
                     except Exception as title_exc:
-                        logger.warning("[TitleGen] 标题生成/保存失败（不影响主流程）: %s", title_exc)
+                        logger.warning(f"[TitleGen] 标题生成/保存失败（不影响主流程）: {title_exc}")
 
                     yield _sse_event({"type": "done"})
 
@@ -709,7 +709,7 @@ async def _stream_chat_deepagent(question: str, user_name: str, history: list[di
     try:
         async for event in agent.astream(input_data, config):
             for node_name, state_update in event.items():
-                logger.info("[DeepAgent SSE] 节点: %s", node_name)
+                logger.info(f"[DeepAgent SSE] 节点: {node_name}")
 
                 # DeepAgent 的 LLM 推理阶段
                 if node_name in ("agent", "model"):
@@ -766,13 +766,13 @@ async def _stream_chat_deepagent(question: str, user_name: str, history: list[di
                             "node_index": node_index,
                         })
                     except Exception as title_exc:
-                        logger.warning("[TitleGen] DeepAgent 标题生成/保存失败（不影响主流程）: %s", title_exc)
+                        logger.warning(f"[TitleGen] DeepAgent 标题生成/保存失败（不影响主流程）: {title_exc}")
 
                     yield _sse_event({"type": "done"})
 
     except GraphInterrupt as gi:
         interrupt_data = gi.args[0] if gi.args else {}
-        logger.info("[DeepAgent SSE] 审批中断: thread_id=%s", session_thread_id)
+        logger.info(f"[DeepAgent SSE] 审批中断: thread_id={session_thread_id}")
         yield _sse_event({
             "type": "approval_required",
             "thread_id": session_thread_id,
@@ -822,13 +822,11 @@ async def chat_completions(body: ChatRequest, user: dict = Depends(get_current_u
         for m in body.messages[:-1]
     ] if len(body.messages) > 1 else []
 
-    log.info(
-        "[chat_completions] SSE 流式对话, user=%s, mode=%s, question=%s, history_len=%d, thread_id=%s",
-        user_name,
-        "deepagent" if use_deep_agent() else "legacy",
-        question,
-        len(history_msgs),
-        body.thread_id or "(None — 新建会话)",
+    log.info(f"[chat_completions] SSE 流式对话, "
+             f"user={user_name}, "
+             f"mode={"deepagent" if use_deep_agent() else "legacy"},"
+             f" question={question}, history_len={len(history_msgs)}, "
+             f"thread_id={body.thread_id or "(None — 新建会话)"}"
     )
 
     if use_deep_agent():
@@ -894,7 +892,7 @@ async def get_suggestions(
                 timeout=8.0,
             )
         except (_asyncio.TimeoutError, Exception) as db_exc:
-            logger.warning("[suggestions] 数据库连接超时/失败，使用默认模板: %s", db_exc)
+            logger.warning(f"[suggestions] 数据库连接超时/失败，使用默认模板: {db_exc}")
             return {
                 "questions": [
                     "帮我分析数据库整体概况",
@@ -962,11 +960,11 @@ async def _upsert_chat_session(thread_id: str, user_name: str, title: str = ""):
                     title=title,
                 )
                 db.add(session)
-                logger.info("[sessions] _upsert_chat_session: thread_id=%s 新建会话", thread_id)
+                logger.info(f"[sessions] _upsert_chat_session: thread_id={thread_id} 新建会话")
             await db.commit()
             return
     except Exception as exc:
-        logger.warning("[sessions] MySQL 会话写入失败: %s", exc)
+        logger.warning(f"[sessions] MySQL 会话写入失败: {exc}")
 
 
 async def _save_chat_node(thread_id: str, node_index: int, title: str, question: str, run_id: str = ""):
@@ -987,7 +985,7 @@ async def _save_chat_node(thread_id: str, node_index: int, title: str, question:
             await db.commit()
             return
     except Exception as exc:
-        logger.warning("[sessions] MySQL 节点写入失败: %s", exc)
+        logger.warning(f"[sessions] MySQL 节点写入失败: {exc}")
 
 
 async def _count_nodes(thread_id: str) -> int:
@@ -1004,7 +1002,7 @@ async def _count_nodes(thread_id: str) -> int:
             count = result.scalar() or 0
             return count
     except Exception as exc:
-        logger.warning("[sessions] MySQL 节点计数失败: %s", exc)
+        logger.warning(f"[sessions] MySQL 节点计数失败: {exc}")
         return 0
 
 
@@ -1026,7 +1024,7 @@ async def _get_last_run_state(session_thread_id: str) -> dict | None:
     from sqlalchemy import select
 
     try:
-        logger.info("[cache] 开始恢复上轮缓存: session_thread_id=%s", session_thread_id)
+        logger.info(f"[cache] 开始恢复上轮缓存: session_thread_id={session_thread_id}")
         # 从 MySQL 获取最后一个节点的 run_id
         async for db in get_db():
             result = await db.execute(
@@ -1037,7 +1035,7 @@ async def _get_last_run_state(session_thread_id: str) -> dict | None:
             )
             last_node = result.scalar_one_or_none()
             if not last_node:
-                logger.warning("[cache] 未找到节点: session_thread_id=%s", session_thread_id)
+                logger.warning(f"[cache] 未找到节点: session_thread_id={session_thread_id}")
                 return None
             last_run_id = getattr(last_node, "run_id", "") or ""
             logger.info("[cache] 找到最新节点: node_index=%d, run_id=%s",
@@ -1048,7 +1046,7 @@ async def _get_last_run_state(session_thread_id: str) -> dict | None:
             return None
 
         if not last_run_id:
-            logger.warning("[cache] 节点的 run_id 为空: session_thread_id=%s", session_thread_id)
+            logger.warning(f"[cache] 节点的 run_id 为空: session_thread_id={session_thread_id}")
             return None
 
         # 从 Redis checkpointer 获取状态
@@ -1066,9 +1064,9 @@ async def _get_last_run_state(session_thread_id: str) -> dict | None:
                 "query_result": query_result,
                 "query_columns": query_columns,
             }
-        logger.warning("[cache] Redis 状态为空: run_id=%s", last_run_id)
+        logger.warning(f"[cache] Redis 状态为空: run_id={last_run_id}")
     except Exception as exc:
-        logger.warning("[sessions] 恢复上轮状态失败: %s", exc)
+        logger.warning(f"[sessions] 恢复上轮状态失败: {exc}")
     return None
 
 
@@ -1085,7 +1083,7 @@ async def _delete_session_mysql(thread_id: str):
             await db.commit()
             return
     except Exception as exc:
-        logger.warning("[sessions] MySQL 删除失败: %s", exc)
+        logger.warning(f"[sessions] MySQL 删除失败: {exc}")
 
 
 # ================================================================
@@ -1161,7 +1159,7 @@ async def list_sessions(
 
             return sessions
     except Exception as exc:
-        logger.warning("[sessions] MySQL 查询失败，回退 Redis: %s", exc)
+        logger.warning(f"[sessions] MySQL 查询失败，回退 Redis: {exc}")
 
     # 回退：从 Redis checkpointer 读取（兼容旧数据）
     return await _list_sessions_from_redis(user_name, is_admin, view_all)
@@ -1195,7 +1193,7 @@ async def _list_sessions_from_redis(user_name: str, is_admin: bool, view_all: bo
             elif hasattr(checkpointer, "list"):
                 checkpoints = list(checkpointer.list(None) or [])
         except Exception as exc:
-            logger.warning("[sessions] checkpointer 读取列表失败: %s", exc)
+            logger.warning(f"[sessions] checkpointer 读取列表失败: {exc}")
             return sessions
 
         for ct in checkpoints:
@@ -1378,7 +1376,7 @@ async def get_session_messages(
             latest_run_id = getattr(node_rows[-1], "run_id", "") if node_rows else ""
             break
     except Exception as exc:
-        logger.warning("[sessions] MySQL 节点查询失败: %s", exc)
+        logger.warning(f"[sessions] MySQL 节点查询失败: {exc}")
 
     # 3. 从 Redis checkpointer 获取所有节点的状态
     from app.graph.workflow import get_graph
@@ -1491,7 +1489,7 @@ async def delete_session(thread_id: str, user: dict = Depends(get_current_user))
             elif hasattr(checkpointer, "delete"):
                 checkpointer.delete(cfg)
     except Exception as exc:
-        logger.warning("[sessions] Redis 删除失败（不影响主流程）: %s", exc)
+        logger.warning(f"[sessions] Redis 删除失败（不影响主流程）: {exc}")
 
-    logger.info("[sessions] 用户 %s 删除会话: thread_id=%s", user_name, thread_id)
+    logger.info(f"[sessions] 用户 {user_name} 删除会话: thread_id={thread_id}")
     return {"success": True, "thread_id": thread_id}

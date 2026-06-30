@@ -47,6 +47,9 @@ log = MyLogger().get_logger()
 if __name__ == '__main__':
     # log.debug("This is a debug message.")
     # log.info("This is an info message.")
+
+    log.info("User: {}, Age: {}", "Alice", 25)  # 测试 %s/%d
+
     # log.warning('这是一个警告')
     # log.trace('xxxx')
     print('str.pdf'['str.pdf'.rindex('.'):])

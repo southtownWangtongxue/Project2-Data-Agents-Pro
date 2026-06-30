@@ -25,7 +25,7 @@ class SkillRegistry:
         """
         name = skill_entry["name"]
         self._skills[name] = skill_entry
-        log.debug("[SkillRegistry] 注册 Skill: %s", name)
+        log.debug(f"[SkillRegistry] 注册 Skill: {name}")
 
     def register_all(self, skills: list[dict]) -> None:
         """批量注册 Skills。"""
@@ -146,5 +146,5 @@ async def init_skills() -> SkillRegistry:
     skills = loader.scan()
     skill_registry.register_all(skills)
 
-    log.info("[SkillRegistry] Skills 初始化完成，共 %d 个", skill_registry.count)
+    log.info(f"[SkillRegistry] Skills 初始化完成，共 {skill_registry.count} 个")
     return skill_registry

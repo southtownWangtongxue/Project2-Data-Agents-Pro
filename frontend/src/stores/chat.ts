@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { useSSE } from '@/composables/useSSE'
 import { useApprovalStore } from '@/stores/approval'
 import apiClient from '@/api/client'
@@ -72,6 +72,9 @@ export const useChatStore = defineStore('chat', () => {
   /* 最后一个助手文本消息 ID（用于流式光标动画） */
   const lastAssistantMsgId = ref('')
 
+  /* 用户发送标记（每次发送时切换，Chat.vue watch 后无条件滚到底部） */
+  const sentMarker = ref(0)
+
   /* 当前活跃的 Agent（用于去重：某些 Agent 的 token 流不显示为独立文本） */
   let currentAgent: string | null = null
 
@@ -98,7 +101,12 @@ export const useChatStore = defineStore('chat', () => {
     startedAt?: number
   }
   const tasks = ref<TaskItem[]>([])
-  const tasksCollapsed = ref(false)
+  const tasksCollapsed = ref(false)       // 完成后自动折叠
+  const taskExpanded = ref(false)         // 用户手动展开完整任务列表
+  /* 当前运行的节点 */
+  const currentTask = computed(() => tasks.value.find(t => t.status === 'running') || null)
+  /* 是否有进行中的任务 */
+  const hasRunning = computed(() => tasks.value.some(t => t.status === 'running'))
   const pipelinePhaseMap: Record<string, string> = {
     clarify_plan: '意图分析',
     clarifier: '意图分析',
@@ -120,6 +128,11 @@ export const useChatStore = defineStore('chat', () => {
   function initTasks() {
     tasks.value = []
     tasksCollapsed.value = false
+    taskExpanded.value = false
+  }
+
+  function toggleTaskExpanded() {
+    taskExpanded.value = !taskExpanded.value
   }
 
   function updateTask(key: string, label: string) {
@@ -136,6 +149,7 @@ export const useChatStore = defineStore('chat', () => {
 
   function completeAllTasks() {
     tasks.value.forEach(t => { t.status = 'completed' })
+    taskExpanded.value = false
     // 自动折叠：2 秒后收起
     setTimeout(() => { tasksCollapsed.value = true }, 2000)
   }
@@ -154,14 +168,26 @@ export const useChatStore = defineStore('chat', () => {
       content: text.trim(),
     }
     messages.value.push(userMsg)
+    sentMarker.value++  // 通知 Chat.vue 无条件滚到底部
 
     isLoading.value = true
     initTasks()  // 重置任务清单
 
-    // 构建完整对话历史发送给后端（支持多轮追问）
+    // 构建完整对话历史发送给后端（包含 SQL 上下文，支持多轮追问/纠正）
     const chatMessages = messages.value
       .filter(m => m.role === 'user' || m.role === 'assistant')
-      .map(m => ({ role: m.role, content: m.content || '' }))
+      .map(m => {
+        // SQL消息：content 为空，用 sql 字段补上
+        if (m.type === 'sql' && m.sql) {
+          return { role: m.role, content: `[上轮生成的SQL]: ${m.sql}` }
+        }
+        // 结果消息：附上简要统计
+        if (m.type === 'result' && m.data) {
+          const cols = (m.columns || []).join(', ')
+          return { role: m.role, content: `[查询结果]: ${m.data.length} 条, 列: ${cols}` }
+        }
+        return { role: m.role, content: m.content || '' }
+      })
 
     // 调用 SSE 流式接口
     await sseConnect(
@@ -223,11 +249,6 @@ export const useChatStore = defineStore('chat', () => {
         /* Schema 信息 */
         onSchema(_content: string) {
           // 表结构信息已在 status 消息中体现，此处不再额外展示
-        },
-
-        /* 节点开始 —— 实时更新管道进度（在节点真正开始时触发） */
-        onNodeStarted(agent: string, label: string) {
-          updatePipeline(agent, label)
         },
 
         /* Agent 推理过程 → 更新流水线进度 + 设置活跃 Agent 上下文 */
@@ -612,7 +633,12 @@ export const useChatStore = defineStore('chat', () => {
     currentTurnIndex,
     tasks,
     tasksCollapsed,
+    taskExpanded,
+    currentTask,
+    hasRunning,
+    toggleTaskExpanded,
     lastAssistantMsgId,
+    sentMarker,
     sendMessage,
     retryLastMessage,
     clearMessages,

@@ -180,7 +180,7 @@ def _extract_pdf_text(file_content: bytes) -> str:
     except ImportError:
         logger.debug("PyPDF2 未安装")
     except Exception as e:
-        logger.debug("PyPDF2 解析失败: %s", e)
+        logger.debug(f"PyPDF2 解析失败: {e}")
 
     # 尝试 pdfplumber（备用）
     try:
@@ -199,6 +199,6 @@ def _extract_pdf_text(file_content: bytes) -> str:
     except ImportError:
         logger.warning("PyPDF2 和 pdfplumber 均未安装，无法解析 PDF 文件。请安装: pip install PyPDF2")
     except Exception as e:
-        logger.warning("pdfplumber 解析失败: %s", e)
+        logger.warning(f"pdfplumber 解析失败: {e}")
 
     return ""

@@ -31,10 +31,10 @@ async def _get_redis() -> aioredis.Redis | None:
         )
         # 测试连接可用性
         await _redis_client.ping()
-        logger.info("[Checkpointer] Redis 连接成功: %s", settings.REDIS_URL)
+        logger.info(f"[Checkpointer] Redis 连接成功: {settings.REDIS_URL}")
         return _redis_client
     except Exception as exc:
-        logger.warning("[Checkpointer] Redis 连接失败 (%s)，checkpoint 功能不可用", exc)
+        logger.warning(f"[Checkpointer] Redis 连接失败 ({exc})，checkpoint 功能不可用")
         _redis_client = None
         return None
 

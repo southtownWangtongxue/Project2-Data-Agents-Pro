@@ -39,7 +39,7 @@ async def retrieve_knowledge(query: str, top_k: int = 5) -> str:
         results = await search_similar(query, top_k=top_k)
 
         if not results:
-            logger.info("[RAGAgent] 未检索到相关文档: %s", query[:60])
+            logger.info(f"[RAGAgent] 未检索到相关文档: {query[:60]}")
             return ""
 
         # 将检索结果拼接为 LLM 可用的上下文
@@ -56,7 +56,7 @@ async def retrieve_knowledge(query: str, top_k: int = 5) -> str:
 
     except Exception as exc:
         # 任何异常都不应中断主流程
-        logger.warning("[RAGAgent] 检索异常（已降级）: %s", exc)
+        logger.warning(f"[RAGAgent] 检索异常（已降级）: {exc}")
         return ""
 
 
@@ -117,11 +117,11 @@ async def answer_with_rag(question: str) -> str:
                 if ctx.queue:
                     await ctx.push_token(token)
         answer = "".join(content_chunks).strip()
-        logger.info("[RAGAgent] LLM 回答生成完成: %s", answer[:80])
+        logger.info(f"[RAGAgent] LLM 回答生成完成: {answer[:80]}")
         return answer
 
     except Exception as exc:
-        logger.warning("[RAGAgent] LLM 调用失败: %s", exc)
+        logger.warning(f"[RAGAgent] LLM 调用失败: {exc}")
         return "抱歉，当前服务暂时不可用，请稍后再试。"
 
 
@@ -156,9 +156,9 @@ async def enhance_schema_with_rag(schema_info: str, question: str) -> str:
             f"=== 以下为知识库中相关的业务知识（可辅助 SQL 生成） ===\n"
             f"{knowledge}"
         )
-        logger.info("[RAGAgent] Schema 增强完成，追加 %d 条知识", len(knowledge.split("[参考片段")))
+        logger.info(f"[RAGAgent] Schema 增强完成，追加 {len(knowledge.split("[参考片段"))} 条知识")
         return enhanced
 
     except Exception as exc:
-        logger.warning("[RAGAgent] Schema 增强失败（已降级）: %s", exc)
+        logger.warning(f"[RAGAgent] Schema 增强失败（已降级）: {exc}")
         return schema_info

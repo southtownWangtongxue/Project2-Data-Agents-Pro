@@ -135,7 +135,7 @@ async def clarify_plan_node(state: AgentState) -> dict:
 
     # 追问次数超过限制，直接放行（防止死循环）
     if clarifier_count >= MAX_CLARIFIER_COUNT:
-        logger.info("[ClarifyPlan] 追问次数已达上限(%d)，直接放行", clarifier_count)
+        logger.info(f"[ClarifyPlan] 追问次数已达上限({clarifier_count})，直接放行")
         return {
             "is_clear": True,
             "clarification_text": "",
@@ -164,8 +164,7 @@ async def clarify_plan_node(state: AgentState) -> dict:
     ]
     _question_lower = user_question.strip().lower()
     if cached_result and any(kw in _question_lower for kw in _chart_keywords):
-        logger.info("[ClarifyPlan] 检测到图表追问(有缓存数据%d行), 直接放行: %s",
-                    len(cached_result), user_question[:80])
+        logger.info(f"[ClarifyPlan] 检测到图表追问(有缓存数据{len(cached_result)}行), 直接放行: {user_question[:80]}")
         return {
             "is_clear": True,
             "clarification_text": "",
@@ -178,7 +177,7 @@ async def clarify_plan_node(state: AgentState) -> dict:
             "stage": "clarify_planned",
         }
 
-    logger.info("[ClarifyPlan] 合并分析意图与生成计划: %s", user_question[:80])
+    logger.info(f"[ClarifyPlan] 合并分析意图与生成计划: {user_question[:80]}")
     result = await clarify_and_plan(user_question, history, cached_result)
 
     logger.info(
@@ -237,7 +236,7 @@ async def misc_node(state: AgentState) -> dict:
             "stage": "misc",
         }
 
-    logger.info("[Misc] 调用 misc Agent: %s", user_question[:80])
+    logger.info(f"[Misc] 调用 misc Agent: {user_question[:80]}")
     result = await misc_agent(user_question)
 
     # 提取响应文本（兼容 AIMessage 对象和 dict 回退）
@@ -247,7 +246,7 @@ async def misc_node(state: AgentState) -> dict:
     elif isinstance(result, dict):
         misc_content = result.get("content", "")
 
-    logger.info("[Misc] Agent 完成, 响应长度=%d", len(str(misc_content)))
+    logger.info(f"[Misc] Agent 完成, 响应长度={len(str(misc_content))}")
     from langchain_core.messages import AIMessage
     return {
         "messages": [AIMessage(content=misc_content)],
@@ -286,8 +285,7 @@ async def schema_node(state: AgentState) -> dict:
         schema_text = await get_table_schemas(engine, relevant_tables if relevant_tables else None)
 
         logger.info(
-            "[SchemaAgent] 表结构加载完成，相关表: %s",
-            relevant_tables if relevant_tables else "全部",
+            f"[SchemaAgent] 表结构加载完成，相关表: {relevant_tables if relevant_tables else '全部'}",
         )
 
         return {
@@ -348,7 +346,7 @@ async def sql_coder_node(state: AgentState) -> dict:
             if role in ("user", "human"):
                 prev_question = _safe_get(m, "content", "")
                 if prev_question and prev_question.strip() != user_question.strip():
-                    logger.info("[SQLCoder] 图表追问，使用历史问题: %s", prev_question[:80])
+                    logger.info(f"[SQLCoder] 图表追问，使用历史问题: {prev_question[:80]}")
                     user_question = prev_question
                     break
 
@@ -357,7 +355,7 @@ async def sql_coder_node(state: AgentState) -> dict:
             user_question=user_question,
             schema_info=schema_info,
         )
-        logger.info("[SQLCoder] SQL 生成完成: %s", sql[:120])
+        logger.info(f"[SQLCoder] SQL 生成完成: {sql[:120]}")
         return {
             "generated_sql": sql,
             "stage": "sql_generated",
@@ -414,7 +412,7 @@ async def security_node(state: AgentState) -> dict:
         }
 
     # 调用 Security Agent 进行安全分类（正则 + LLM 双检）
-    logger.info("[Security] 审核 SQL: %s", sql[:120])
+    logger.info(f"[Security] 审核 SQL: {sql[:120]}")
     result = await classify_sql(sql)
     category = result["category"]
 
@@ -516,7 +514,7 @@ def route_schema(state: AgentState) -> str:
     """
     error_message = state.get("error_message", "")
     if error_message:
-        logger.warning("[Schema] 检测到错误，短路到 finish: %s", error_message)
+        logger.warning(f"[Schema] 检测到错误，短路到 finish: {error_message}")
         return "finish"
     return "sql_coder"
 
@@ -537,7 +535,7 @@ def route_sql_coder(state: AgentState) -> str:
     """
     error_message = state.get("error_message", "")
     if error_message:
-        logger.warning("[SQLCoder] SQL 生成失败，回退到 rag_agent: %s", error_message)
+        logger.warning(f"[SQLCoder] SQL 生成失败，回退到 rag_agent: {error_message}")
         return "rag_agent"
     return "security"
 
@@ -574,7 +572,7 @@ async def execute_node(state: AgentState) -> dict:
             "stage": "executed",
         }
 
-    logger.info("[Executor] 执行 SQL（启用自纠错，最多 2 次重试）: %s", sql[:120])
+    logger.info(f"[Executor] 执行 SQL（启用自纠错，最多 2 次重试）: {sql[:120]}")
 
     try:
         # 使用 generate_and_execute_sql 获得自动重试能力
@@ -647,7 +645,7 @@ def route_execute(state: AgentState) -> str:
     if not query_result or error_message:
         logger.info("[Execute] 路由: 空结果或错误 → misc_agent（降级）")
         return "misc_agent"
-    logger.info("[Execute] 路由: 有数据 (%d 行) → quality_gate（ReAct 质量评估）", len(query_result))
+    logger.info(f"[Execute] 路由: 有数据 ({len(query_result)} 行) → quality_gate（ReAct 质量评估）")
     return "quality_gate"
 
 
@@ -679,7 +677,7 @@ async def quality_gate_node(state: AgentState) -> dict:
 
     await _push_node_started("quality_gate")
 
-    logger.info("[QualityGate] 开始 ReAct 质量评估: %s, rows=%d", user_question[:60], len(data))
+    logger.info(f"[QualityGate] 开始 ReAct 质量评估: {user_question[:60]}, rows={len(data)}")
 
     try:
         result = await evaluate_query_quality(
@@ -796,7 +794,7 @@ async def analyst_node(state: AgentState) -> dict:
         # token 已通过 StreamContext.push_token 实时推送到前端，无需再拼装
         analysis_text = result.get("summary", "")
 
-        logger.info("[Analyst] 分析完成: 文本长度 %d, chart_suitable=%s", len(analysis_text), dynamic_chart_suitable)
+        logger.info(f"[Analyst] 分析完成: 文本长度 {len(analysis_text)}, chart_suitable={dynamic_chart_suitable}")
 
         # ── ReAct: 从分析结果中获取动态图表适配性 ──────
         # analyze_results 已在同一 LLM 调用中判断 chart_suitable
@@ -890,7 +888,7 @@ async def reporter_node(state: AgentState) -> dict:
     # 让 LLM 知道用户想换图表类型
     report_question = user_question
     if intent == "chart_interaction":
-        logger.info("[Reporter] 图表追问模式，问题: %s", user_question[:80])
+        logger.info(f"[Reporter] 图表追问模式，问题: {user_question[:80]}")
 
     try:
         logger.info("[Reporter] 开始生成图表配置")
@@ -900,7 +898,7 @@ async def reporter_node(state: AgentState) -> dict:
             columns=query_columns,
         )
 
-        logger.info("[Reporter] 图表生成完成: type=%s", result.get("chart_type", "unknown"))
+        logger.info(f"[Reporter] 图表生成完成: type={result.get("chart_type")}")
 
         return {
             "chart_config": result if result.get("chart_type") != "none" else None,
@@ -931,7 +929,7 @@ async def answer_node(state: AgentState) -> dict:
     """
     analysis_text = state.get("analysis_text", "")
     await _push_node_started("answer")
-    logger.info("[Answer] 纯文本回答: %s", analysis_text[:80] if analysis_text else "无内容")
+    logger.info(f"[Answer] 纯文本回答: {analysis_text[:80] if analysis_text else "无内容"}")
     return {"stage": "answered"}
 
 
@@ -962,9 +960,9 @@ async def rag_node(state: AgentState) -> dict:
         }
 
     try:
-        logger.info("[RAGAgent] 开始 RAG 检索与回答: %s", user_question[:80])
+        logger.info(f"[RAGAgent] 开始 RAG 检索与回答: {user_question[:80]}")
         answer = await answer_with_rag(user_question)
-        logger.info("[RAGAgent] RAG 回答完成: %s", answer[:80])
+        logger.info(f"[RAGAgent] RAG 回答完成: {answer[:80]}")
 
         return {
             "analysis_text": answer,
@@ -1034,7 +1032,7 @@ async def finish_node(state: AgentState) -> dict:
     # 递增节点索引（每轮对话+1，从0开始）
     current_index = state.get("node_index", 0)
     await _push_node_started("finish")
-    logger.info("[Finish] 工作流执行完毕，stage=%s, node_index=%d", state.get("stage", "unknown"), current_index)
+    logger.info(f"[Finish] 工作流执行完毕，stage={state.get("stage")}, node_index={"unknown"}")
     return {"stage": "finished", "node_index": current_index + 1}
 
 # ================================================================
@@ -1058,11 +1056,11 @@ async def init_checkpointer():
     try:
         from app.graph.redis_saver import PlainRedisSaver
 
-        logger.info("[Workflow] PlainRedis 检查点初始化: %s", settings.REDIS_URL)
+        logger.info(f"[Workflow] PlainRedis 检查点初始化: {settings.REDIS_URL}")
         _checkpointer = PlainRedisSaver(redis_url=settings.REDIS_URL)
         await _checkpointer.asetup()
 
-        logger.info("[Workflow] PlainRedis 检查点初始化成功: %s", settings.REDIS_URL)
+        logger.info(f"[Workflow] PlainRedis 检查点初始化成功: {settings.REDIS_URL}")
     except Exception as exc:
         logger.warning(
             "[Workflow] PlainRedis 检查点不可用 (%s)，回退到 MemorySaver",
@@ -1084,7 +1082,7 @@ async def close_checkpointer():
                 await _checkpointer.aclose()
                 logger.info("[Workflow] 检查点已关闭")
             except Exception as exc:
-                logger.warning("[Workflow] 关闭检查点异常: %s", exc)
+                logger.warning(f"[Workflow] 关闭检查点异常: {exc}")
     _checkpointer = None
 # ================================================================
 # Graph 构建与编译

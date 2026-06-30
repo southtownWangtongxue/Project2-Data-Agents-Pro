@@ -87,7 +87,7 @@ async def login(body: LoginRequest, db=Depends(get_db), settings=Depends(get_set
 
     token = _generate_token(user, settings)
 
-    logger.info("[auth] 用户登录成功: %s (type=%s)", user.user_name, user.user_type)
+    logger.info(f"[auth] 用户登录成功: {user.user_name} (type={user.user_type})")
 
     return LoginResponse(
         access_token=token,

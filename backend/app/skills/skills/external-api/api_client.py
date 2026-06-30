@@ -84,8 +84,8 @@ async def call_external_api(
                 "elapsed_seconds": elapsed,
             }
     except httpx.TimeoutException:
-        log.error("[ExternalAPI] 请求超时: %s %s (%ss)", method.upper(), url, timeout)
+        log.error(f"[ExternalAPI] 请求超时: {method.upper()} {url} ({timeout}s)")
         return {"status": "error", "message": f"请求超时 (>{timeout}s): {url}"}
     except Exception as exc:
-        log.error("[ExternalAPI] 请求异常: %s %s - %s", method.upper(), url, exc)
+        log.error(f"[ExternalAPI] 请求异常: {method.upper()} {url} - {exc}")
         return {"status": "error", "message": f"请求失败: {str(exc)}"}

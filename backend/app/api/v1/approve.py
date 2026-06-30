@@ -54,7 +54,7 @@ async def approve_task(body: ApproveRequest):
             Command(resume={"approved": True, "comment": body.comment}),
             config,
         )
-        logger.info("[Approve] task_id=%s 审批通过", body.task_id)
+        logger.info(f"[Approve] task_id={body.task_id} 审批通过")
         return {
             "status": "approved",
             "task_id": body.task_id,
@@ -66,7 +66,7 @@ async def approve_task(body: ApproveRequest):
             Command(resume={"approved": False, "comment": body.comment}),
             config,
         )
-        logger.info("[Approve] task_id=%s 审批驳回: %s", body.task_id, body.comment)
+        logger.info(f"[Approve] task_id={body.task_id} 审批驳回: {body.comment}")
         return {
             "status": "rejected",
             "task_id": body.task_id,
