@@ -153,12 +153,13 @@ def get_dialect_hints(dialect: str) -> str:
 
 | Agent | 说明 |
 |-------|------|
-| **Orchestrator** | 不涉及数据库操作 |
+| **clarify_plan** | 不涉及数据库操作（仅 LLM 调用） |
 | **RAG Agent** | 仅操作 Milvus 向量库 |
 | **Schema Agent** | 使用 SQLAlchemy 通用接口获取元数据 |
 | **Security Agent** | 基于 SQL 文本语法判断，不依赖特定方言 |
 | **Analyst Agent** | 对查询结果（通用数据结构）做分析 |
 | **Reporter Agent** | 对查询结果生成图表，不感知数据来源 |
+| **Misc Agent** | 仅 LLM 文本生成，不涉及数据库 |
 
 唯一需要适配的是 **SQL Coder Agent** 的 LLM 提示词，通过方言模板注入（无需改动代码逻辑）。
 

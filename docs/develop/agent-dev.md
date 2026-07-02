@@ -6,13 +6,14 @@
 
 ## Agent 体系回顾
 
-DataAgent Pro 采用 Hermes 多智能体架构，包含以下 7 个专职 Agent：
+DataAgent Pro 采用 Plan-and-Execute + ReAct 架构，包含 8 个 Agent，通过 13 个 LangGraph 节点协作：
 
 ```
-Orchestrator → RAG → Schema → SQL Coder → Security → Analyst → Reporter
+clarify_plan → schema_agent → sql_coder → security → execute_sql → quality_gate → analyst → reporter/answer → finish
+(+ rag_agent, misc_agent, chart_direct 按 intent 条件路由)
 ```
 
-每个 Agent 在 LangGraph 中对应一个**节点函数**，通过全局 `AgentState` 共享上下文。
+每个 Agent 在 LangGraph 中对应一个**节点函数**，通过全局 `AgentState` 共享上下文。节点开始时通过 `_push_node_started` 实时推送进度到前端。
 
 ---
 

@@ -52,15 +52,15 @@ features:
 └──────────────────────────┬──────────────────────────────────┘
                            │
 ┌──────────────────────────▼──────────────────────────────────┐
-│                  编排层 (LangGraph Workflow)                  │
+│                  编排层 (LangGraph 13 节点)                     │
 │   ┌────────────────────────────────────────────────────┐    │
-│   │  Orchestrator → RAG → Schema → SQL Coder            │    │
-│   │       ↓                         ↓                   │    │
-│   │  Security Agent ←──────── SQL Audit                 │    │
-│   │       ↓                         ↓                   │    │
-│   │  Execute SQL → Analyst → Reporter → Stream Output   │    │
+│   │  clarify_plan → schema → sql_coder → security     │    │
+│   │       ↓                                            │    │
+│   │  execute_sql → quality_gate → analyst             │    │
+│   │       ↓                                            │    │
+│   │  reporter / answer → finish → Stream Output        │    │
 │   │       ↓ (写操作)                                    │    │
-│   │  [中断] → Human Approval → Resume/Reject            │    │
+│   │  [中断] → Human Approval → Resume/Reject           │    │
 │   └────────────────────────────────────────────────────┘    │
 └──────────────────────────┬──────────────────────────────────┘
                            │
