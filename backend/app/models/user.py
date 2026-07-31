@@ -1,5 +1,6 @@
 """
-用户模型 —— sys_user 表 ORM 映射
+用户模型 —— da_sys_user 表 ORM 映射
+（登录账号表，与业务库 jb_bi 中既有的 sys_user 区分，避免列结构冲突）
 """
 from sqlalchemy import String, DateTime, func
 from sqlalchemy.orm import Mapped, mapped_column
@@ -7,7 +8,7 @@ from app.models import Base
 
 
 class SysUser(Base):
-    __tablename__ = "sys_user"
+    __tablename__ = "da_sys_user"
 
     user_name: Mapped[str] = mapped_column(String(30), primary_key=True, comment="登录账号")
     password: Mapped[str] = mapped_column(String(200), nullable=False, comment="密码（sha256:salt:hash）")

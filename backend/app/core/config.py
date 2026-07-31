@@ -23,8 +23,12 @@ class Settings(BaseSettings):
     MILVUS_PORT: int = 19530
     MILVUS_COLLECTION_NAME: str = "knowledge_base"
 
-    # ── Embedding 模型 ─────────────────────────────
-    EMBEDDING_MODEL: str = "BAAI/bge-large-zh-v1.5"
+    # ── Embedding 模型（远程 OpenAI 兼容接口）───────────
+    # 使用任意 OpenAI 兼容的 embeddings 服务（如智谱 embedding-3、DashScope text-embedding-v3 等）。
+    # 通过 EMBEDDING_BASE_URL + EMBEDDING_API_KEY 认证，模型维度由服务端决定。
+    EMBEDDING_MODEL: str = "embedding-3"
+    EMBEDDING_API_KEY: str = ""
+    EMBEDDING_BASE_URL: str = ""
 
     # ── 数据库类型选择 ─────────────────────────────
     DB_TYPE: str = "mysql"  # mysql 或 postgresql

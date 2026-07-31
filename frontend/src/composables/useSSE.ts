@@ -60,6 +60,9 @@ interface SSEEventData {
   phase?: string
   /* tool_call / tool_result 事件专用字段 */
   tool_name?: string
+  name?: string        // 新协议字段（DeepAgent 通用任务模式）
+  args?: string        // tool_call 新增：工具参数
+  status?: string      // tool_result 新增：执行状态
   /* error 增强字段 */
   code?: string
   recoverable?: boolean
@@ -157,14 +160,20 @@ export function useSSE() {
 
           // 解析 "data: {...}" 格式
           if (trimmed.startsWith('data: ')) {
-            const jsonStr = trimmed.slice(6).trim()
+            let jsonStr = trimmed.slice(6).trim()
+            if (!jsonStr) continue
+            // 去除可能混入的尾随控制字符（如 NUL）；trim() 只能清除空白，无法清除控制字符
+            jsonStr = Array.from(jsonStr).filter((ch) => ch.charCodeAt(0) >= 32).join('')
             if (!jsonStr) continue
 
             try {
               const event: SSEEventData = JSON.parse(jsonStr)
               dispatchEvent(event, callbacks)
             } catch {
-              console.warn('[SSE] JSON 解析失败:', jsonStr)
+              // done 等哨兵事件（或控制字符导致）解析失败时不告警，避免噪声
+              if (!/type["']?\s*:\s*["']?done/.test(jsonStr)) {
+                console.warn('[SSE] JSON 解析失败:', jsonStr)
+              }
             }
           }
         }
@@ -213,19 +222,23 @@ export function useSSE() {
         )
         break
       case 'tool_call': {
-        // 只传递有值的字段，避免前端显示 "key: undefined"
+        // 兼容新旧协议: tool_name(旧) / name(新 DeepAgent)
+        const toolName = event.name || event.tool_name || ''
         const meta: Record<string, unknown> = {}
         if (event.sql) meta.sql = (event.sql as string).slice(0, 200)
+        if (event.args) meta.args = event.args  // 新协议：工具参数
         if (event.content) meta.info = event.content
         if (event.agent) meta.agent = event.agent
         if (event.phase) meta.phase = event.phase
-        callbacks.onToolCall?.(event.tool_name || '', meta)
+        callbacks.onToolCall?.(toolName, meta)
         break
       }
       case 'tool_result': {
+        const toolName = event.name || event.tool_name || ''
         const meta: Record<string, unknown> = {}
         if (event.content) meta.result = (event.content as string).slice(0, 200)
-        callbacks.onToolResult?.(event.tool_name || '', meta)
+        if (event.status) meta.status = event.status  // 新协议：执行状态
+        callbacks.onToolResult?.(toolName, meta)
         break
       }
       case 'sql':

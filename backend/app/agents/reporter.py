@@ -5,6 +5,7 @@ Reporter Agent - 报表生成专家
 import json
 
 from app.core.config import settings
+from app.core.llm import get_model_name
 from app.core.llm import get_llm
 from app.core.stream import get_stream_context
 from app.utils.json_encoder import CustomEncoder
@@ -141,7 +142,7 @@ async def generate_chart_config(
     )
 
     response = await client.chat.completions.create(
-        model=settings.LLM_MODEL_NAME,
+        model=get_model_name(),
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},

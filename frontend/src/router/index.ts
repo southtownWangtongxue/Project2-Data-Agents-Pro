@@ -28,6 +28,44 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/Approval.vue'),
     meta: { title: '审批管理', requiresAuth: true },
   },
+  {
+    path: '/admin',
+    component: () => import('@/views/AdminLayout.vue'),
+    meta: { title: '配置中心', requiresAuth: true },
+    redirect: '/admin/llm',
+    children: [
+      {
+        path: 'llm',
+        name: 'LlmConfig',
+        component: () => import('@/views/admin/LlmConfig.vue'),
+        meta: { title: 'LLM 模型管理' },
+      },
+      {
+        path: 'skills',
+        name: 'SkillConfig',
+        component: () => import('@/views/admin/SkillConfig.vue'),
+        meta: { title: 'Skill 技能管理' },
+      },
+      {
+        path: 'mcp',
+        name: 'McpConfig',
+        component: () => import('@/views/admin/McpConfig.vue'),
+        meta: { title: 'MCP 服务管理' },
+      },
+      {
+        path: 'knowledge',
+        name: 'KnowledgeConfig',
+        component: () => import('@/views/admin/KnowledgeConfig.vue'),
+        meta: { title: '知识库管理' },
+      },
+      {
+        path: 'schedule',
+        name: 'ScheduleConfig',
+        component: () => import('@/views/admin/ScheduleConfig.vue'),
+        meta: { title: '定时任务管理' },
+      },
+    ],
+  },
 ]
 
 const router = createRouter({

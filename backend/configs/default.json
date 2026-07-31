@@ -1,0 +1,8 @@
+{
+  "default_mode": "data",
+  "stream_enabled": true,
+  "max_clarifier_count": 2,
+  "quality_gate_max_retries": 2,
+  "suggestions_count": 5,
+  "suggestions_timeout": 8
+}

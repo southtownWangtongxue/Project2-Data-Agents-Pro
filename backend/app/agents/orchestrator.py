@@ -8,6 +8,7 @@ Planner: 生成结构化执行计划，包含 chart_suitable 标志
 import json
 
 from app.core.config import settings
+from app.core.llm import get_model_name
 from app.core.llm import get_llm
 from app.core.stream import get_stream_context
 from app.utils.log_utils import log
@@ -65,7 +66,7 @@ async def clarify_intent(user_question: str, history: list[dict] | None = None) 
 
     try:
         response = await client.chat.completions.create(
-            model=settings.LLM_MODEL_NAME,
+            model=get_model_name(),
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
@@ -158,7 +159,7 @@ async def generate_plan(
 
     try:
         response = await client.chat.completions.create(
-            model=settings.LLM_MODEL_NAME,
+            model=get_model_name(),
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
@@ -261,7 +262,7 @@ async def analyze_intent(user_question: str, history: list[dict] | None = None) 
 
     try:
         response = await client.chat.completions.create(
-            model=settings.LLM_MODEL_NAME,
+            model=get_model_name(),
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
@@ -463,7 +464,7 @@ async def clarify_and_plan(
 
     try:
         response = await client.chat.completions.create(
-            model=settings.LLM_MODEL_NAME,
+            model=get_model_name(),
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},

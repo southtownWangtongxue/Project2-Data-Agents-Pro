@@ -1,14 +1,16 @@
 <script setup lang="ts">
 /**
- * Chat.vue (Phase E.6) — 三区式布局聊天页面
+ * Chat.vue (Redesign) — 集成式对话框布局
  *
- * 布局：持久侧边栏 | 消息面板 | 底部输入区
- * 支持：SSE 流式对话、多轮追问、历史恢复、节点导航
+ * 参考千问/ChatGLM 设计：
+ * - 模型选择器在顶部工具栏
+ * - 模式切换 + 联网搜索 集成在输入框组件中
  */
 import { ref, watch, nextTick, onMounted, computed } from 'vue'
 import { useChatStore, type ChatMessage } from '@/stores/chat'
 import { marked } from 'marked'
 import { format as formatSQLText } from 'sql-formatter'
+import apiClient from '@/api/client'
 import ChatSidebar from '@/components/ChatSidebar.vue'
 import ChatInput from '@/components/ChatInput.vue'
 import ClarifierCard from '@/components/ClarifierCard.vue'
@@ -16,6 +18,63 @@ import ExecutionCard from '@/components/ExecutionCard.vue'
 import NodeSeparator from '@/components/NodeSeparator.vue'
 
 const store = useChatStore()
+
+/* ── 工作模式 + 联网搜索 ── */
+const currentMode = ref('data')
+const webSearchEnabled = ref(false)
+
+/* ── 模型选择（与全局 LLM 配置双向同步）── */
+const STORAGE_KEY = 'selectedModelId'
+const currentModel = ref(localStorage.getItem(STORAGE_KEY) || '')
+const showModelMenu = ref(false)
+let modelMenuTimer: ReturnType<typeof setTimeout> | null = null
+
+interface ChatModel {
+  id: string
+  name: string
+  desc: string
+  tag: string
+}
+const models = ref<ChatModel[]>([])
+const modelsLoading = ref(false)
+
+async function loadModels() {
+  modelsLoading.value = true
+  try {
+    const data = await apiClient.get('/config/llm') as { providers: any[] }
+    const providers = (data.providers || []).filter(p => p.enabled !== false)
+    models.value = providers.map((p: any) => ({
+      id: p.id,
+      name: p.name || p.model || p.id,
+      desc: `${p.model} · ${p.api_base || ''}`,
+      tag: p.is_default ? '默认' : '',
+    }))
+    // 当前选择若不在列表中（或为空），回退到默认模型 → 保证与配置一致
+    const valid = models.value.some(m => m.id === currentModel.value)
+    const def = models.value.find(m => m.tag === '默认') || models.value[0]
+    if (!valid && def) {
+      currentModel.value = def.id
+      localStorage.setItem(STORAGE_KEY, def.id)
+    }
+  } catch {
+    models.value = []
+  } finally {
+    modelsLoading.value = false
+  }
+}
+
+function onModelEnter() {
+  if (modelMenuTimer) { clearTimeout(modelMenuTimer); modelMenuTimer = null }
+  showModelMenu.value = true
+}
+function onModelLeave() {
+  modelMenuTimer = setTimeout(() => { showModelMenu.value = false }, 150)
+}
+function selectModel(id: string) {
+  currentModel.value = id
+  localStorage.setItem(STORAGE_KEY, id)  // 持久化选择，刷新后回显
+  showModelMenu.value = false
+}
 
 /* 消息列表容器 DOM 引用 */
 const messagesContainer = ref<HTMLElement | null>(null)
@@ -92,6 +151,7 @@ watch(() => store.sentMarker, () => {
 onMounted(() => {
   store.loadSessions()
   store.loadSuggestions()
+  loadModels()
 })
 
 /* 侧边栏选择会话 → 加载历史 + 滚动到底部 */
@@ -104,7 +164,7 @@ async function handleSessionSelect(threadId: string) {
 
 /* 发送消息 */
 function handleSend(text: string) {
-  store.sendMessage(text)
+  store.sendMessage(text, currentMode.value, webSearchEnabled.value, currentModel.value || undefined)
 }
 
 /* 中止生成 */
@@ -155,7 +215,7 @@ function messageClass(msg: ChatMessage): Record<string, boolean> {
     'message-status': msg.type === 'status',
     'message-error': msg.type === 'error',
     'message-assistant': msg.role === 'assistant' && msg.type !== 'error',
-    'message-system-card': msg.type === 'thinking' || msg.type === 'tool_call' || msg.type === 'tool_result' || msg.type === 'clarification' || msg.type === 'plan',
+    'message-system-card': msg.type === 'thinking' || msg.type === 'tool_call' || msg.type === 'tool_result' || msg.type === 'tool_chain' || msg.type === 'clarification' || msg.type === 'plan',
   }
 }
 
@@ -165,6 +225,7 @@ function toolInfo(msg: ChatMessage): { label: string; icon: string } {
     case 'thinking': return { label: `${msg.agent || ''} — ${msg.phase || '思考中'}`, icon: '💭' }
     case 'tool_call': return { label: `调用: ${msg.toolName || ''}`, icon: '🔧' }
     case 'tool_result': return { label: `完成: ${msg.toolName || ''}`, icon: '✅' }
+    case 'tool_chain': return { label: `${msg.toolName || '工具'}`, icon: '🔗' }
     default: return { label: '', icon: '📋' }
   }
 }
@@ -185,7 +246,14 @@ function toolExpandContent(msg: ChatMessage): string {
   const meta = msg.toolMeta || {}
   if (msg.type === 'tool_call') {
     if (meta.sql) return `SQL 预览:\n${String(meta.sql)}`
+    if (meta.input) return `输入:\n${String(meta.input)}`
     if (meta.info) return String(meta.info)
+  }
+  if (msg.type === 'tool_chain' || msg.type === 'tool_result') {
+    const parts: string[] = []
+    if (meta.input) parts.push(`输入:\n${String(meta.input)}`)
+    if (meta.result) parts.push(`结果:\n${String(meta.result)}`)
+    if (parts.length) return parts.join('\n\n')
   }
   if (msg.type === 'tool_result') {
     if (meta.result) return String(meta.result)
@@ -322,6 +390,41 @@ function scrollToNode(nodeIndex: number) {
             <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
           </svg>
         </button>
+
+        <!-- 模型选择器（千问风格） -->
+        <div class="model-selector" @mouseenter="onModelEnter" @mouseleave="onModelLeave">
+          <button class="model-trigger" :class="{ 'is-open': showModelMenu }">
+            <span class="model-name">{{ models.find(m => m.id === currentModel)?.name }}</span>
+            <svg class="model-chevron" :class="{ 'is-open': showModelMenu }"
+              width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </button>
+
+          <Transition name="model-menu">
+            <div v-if="showModelMenu" class="model-menu" @mouseenter="onModelEnter" @mouseleave="onModelLeave">
+              <div class="model-menu-header">模型</div>
+              <div
+                v-for="m in models" :key="m.id"
+                class="model-menu-item"
+                :class="{ 'is-active': currentModel === m.id }"
+                @click="selectModel(m.id)"
+              >
+                <div class="model-menu-body">
+                  <div class="model-menu-title-row">
+                    <span class="model-menu-title">{{ m.name }}</span>
+                    <span v-if="m.tag" class="model-menu-tag">{{ m.tag }}</span>
+                  </div>
+                  <span class="model-menu-desc">{{ m.desc }}</span>
+                </div>
+                <svg v-if="currentModel === m.id" class="model-menu-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#6366f1" stroke-width="2.5">
+                  <polyline points="20 6 9 17 4 12"/>
+                </svg>
+              </div>
+            </div>
+          </Transition>
+        </div>
+
         <!-- 多轮对话节点快捷跳转（DeepSeek 风格） -->
         <div
           v-if="store.turns.length > 1"
@@ -650,7 +753,7 @@ function scrollToNode(nodeIndex: number) {
           </template>
 
           <!-- 工具卡片（可展开查看详情） -->
-          <template v-else-if="msg.type === 'tool_call' || msg.type === 'tool_result'">
+          <template v-else-if="msg.type === 'tool_call' || msg.type === 'tool_result' || msg.type === 'tool_chain'">
             <div class="tool-card" :class="msg.type" @click="toggleCollapse(msg)">
               <div class="tool-header">
                 <span class="tool-icon">{{ toolInfo(msg).icon }}</span>
@@ -705,8 +808,14 @@ function scrollToNode(nodeIndex: number) {
         </div>
       </div>
 
-      <!-- 底部输入区 -->
-      <ChatInput :loading="store.isLoading" @send="handleSend" @cancel="handleCancel" />
+      <!-- 底部输入区（集成模式切换+联网搜索） -->
+      <ChatInput
+        v-model="currentMode"
+        v-model:webSearch="webSearchEnabled"
+        :loading="store.isLoading"
+        @send="handleSend"
+        @cancel="handleCancel"
+      />
     </div>
   </div>
 </template>
@@ -767,6 +876,148 @@ function scrollToNode(nodeIndex: number) {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* ── 模型选择器（千问风格）── */
+.model-selector {
+  position: relative;
+  margin-left: var(--space-2);
+}
+
+.model-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  font-family: var(--font-sans);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.model-trigger:hover,
+.model-trigger.is-open {
+  background: var(--color-surface-elevated);
+  border-color: var(--color-border-light);
+}
+
+.model-name {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.model-chevron {
+  transition: transform var(--transition-fast);
+  opacity: 0.5;
+  flex-shrink: 0;
+}
+.model-chevron.is-open {
+  transform: rotate(180deg);
+}
+
+/* 模型下拉菜单 */
+.model-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 320px;
+  max-width: 380px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+  z-index: 100;
+  padding: var(--space-1) 0;
+}
+
+.model-menu-header {
+  padding: var(--space-2) var(--space-3);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.model-menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+.model-menu-item:hover {
+  background: var(--color-surface-elevated);
+}
+.model-menu-item.is-active {
+  background: rgba(99, 102, 241, 0.06);
+}
+
+.model-menu-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.model-menu-title-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: 2px;
+}
+
+.model-menu-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.model-menu-tag {
+  font-size: 10px;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  background: rgba(99, 102, 241, 0.12);
+  color: var(--color-primary-light);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.model-menu-desc {
+  display: block;
+  font-size: 11px;
+  color: var(--color-text-muted);
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.model-menu-check {
+  flex-shrink: 0;
+}
+
+/* 模型菜单过渡 */
+.model-menu-enter-active {
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.model-menu-leave-active {
+  transition: opacity 0.1s ease, transform 0.1s ease;
+}
+.model-menu-enter-from {
+  opacity: 0;
+  transform: translateY(-4px) scale(0.98);
+}
+.model-menu-leave-to {
+  opacity: 0;
+  transform: translateY(-4px) scale(0.98);
 }
 
 /* ── 多轮对话下拉导航（DeepSeek 风格）── */
@@ -881,7 +1132,6 @@ function scrollToNode(nodeIndex: number) {
   color: var(--color-text-primary);
   margin-bottom: 2px;
 }
-
 .turn-menu-question {
   display: block;
   font-size: 12px;
@@ -1388,6 +1638,11 @@ function scrollToNode(nodeIndex: number) {
   border-left-color: var(--color-primary-light);
   background: var(--color-surface-elevated);
 }
+.tool-card.tool_chain {
+  border-left-color: var(--color-primary);
+  background: rgba(99, 102, 241, 0.04);
+}
+.tool-card.tool_chain:hover { border-left-color: var(--color-primary-light); }
 .tool-card.tool_result {
   border-left-color: #22c55e;
   background: rgba(34, 197, 94, 0.03);

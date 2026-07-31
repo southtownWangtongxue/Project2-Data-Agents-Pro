@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from langgraph.errors import GraphInterrupt
 
 from app.api.deps import get_current_user
-from app.graph.workflow import get_graph, get_graph_async, use_deep_agent
+from app.graph.workflow import get_graph, get_graph_async, use_deep_agent, get_deep_agent
 from app.agents.title_generator import generate_node_title
 from app.agents.question_suggester import generate_question_suggestions, get_cached_suggestions
 from app.agents.schema_agent import get_table_schemas
@@ -57,6 +57,19 @@ class ChatRequest(BaseModel):
     thread_id: str | None = Field(
         default=None,
         description="会话 thread_id（同一会话多轮对话复用，新建会话时不传）",
+    )
+    mode: str = Field(
+        default="data",
+        description="工作模式: data（数据分析）| report（研究报告）| doc（文档智读）| task（通用任务）",
+        pattern="^(data|report|doc|task)$",
+    )
+    web_search: bool = Field(
+        default=False,
+        description="是否启用联网搜索（百度搜索 API）",
+    )
+    model: str | None = Field(
+        default=None,
+        description="模型 provider id（对应 LLM 配置中的 id）；为空则使用默认 provider。界面切换模型时动态路由实际调用",
     )
 
 
@@ -162,7 +175,7 @@ def _error_event(message: str, code: str = "UNKNOWN", recoverable: bool = False)
 # ================================================================
 
 
-async def _stream_chat(question: str, user_name: str, history: list[dict] | None = None, existing_thread_id: str | None = None):
+async def _stream_chat(question: str, user_name: str, history: list[dict] | None = None, existing_thread_id: str | None = None, model: str | None = None, mode: str = "data", web_search: bool = False):
     """
     SSE 流式对话生成器 —— 异步生成 SSE 事件流。
 
@@ -181,12 +194,22 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
     产出:
         SSE 事件字符串，每个事件一行 "data: {...}\n\n"
     """
-    graph = get_graph()
+    from app.graph.mode_router import get_graph as get_graph_by_mode
+    from app.core.llm import set_provider, describe_route
+    from app.core.config_manager import get_config_manager
+    # 解析并锁定当前模型 provider（动态路由：界面所选模型 → 实际 API 调用）
+    provider = get_config_manager().get_llm_config(model)
+    set_provider(provider)
+    logger.info("[LLM路由] 实际调用: %s", describe_route())
 
-    # 构造初始状态（含多轮对话历史，供 Agent 参考上下文）
+    graph = get_graph_by_mode(mode)
+
+    # 构造初始状态（含多轮对话历史 + 模式参数，供 Agent 参考上下文）
     initial_state = {
         "user_question": question,
         "messages": history or [],
+        "mode": mode,
+        "enable_web_search": web_search,
     }
 
     # 会话级 thread_id：多轮对话复用，新建会话生成新的
@@ -624,9 +647,10 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
             "reason": interrupt_data.get("reason", "") if isinstance(interrupt_data, dict) else "",
         })
     except Exception as exc:
-        logger.exception("[SSE] 流式对话异常")
+        from app.core.llm import describe_route, get_model_name
+        logger.exception("[SSE] 流式对话异常 | 路由: %s", describe_route())
         yield _error_event(
-            f"处理异常: {str(exc)}",
+            f"处理异常: {str(exc)}（实际模型: {get_model_name()}）",
             code="INTERNAL_ERROR",
             recoverable=True,
         )
@@ -644,7 +668,7 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
         set_stream_context(StreamContext())
 
 
-async def _stream_chat_deepagent(question: str, user_name: str, history: list[dict] | None = None, existing_thread_id: str | None = None):
+async def _stream_chat_deepagent(question: str, user_name: str, history: list[dict] | None = None, existing_thread_id: str | None = None, model: str | None = None, mode: str = "data", web_search: bool = False):
     """
     DeepAgent 模式 SSE 流式生成器 —— 基于 deepagents 库的智能调度。
 
@@ -668,7 +692,13 @@ async def _stream_chat_deepagent(question: str, user_name: str, history: list[di
     产出:
         SSE 事件字符串流
     """
-    agent = await get_graph_async()
+    # 锁定当前模型 provider（动态路由：界面所选模型 → 实际 API 调用）
+    from app.core.llm import set_provider, describe_route
+    from app.core.config_manager import get_config_manager
+    set_provider(get_config_manager().get_llm_config(model))
+    logger.info("[LLM路由] 实际调用(DeepAgent): %s", describe_route())
+
+    agent = await get_deep_agent()
 
     # 会话级 thread_id：多轮对话复用，新建会话生成新的
     session_thread_id = existing_thread_id if existing_thread_id else f"{user_name}:{uuid.uuid4()}"
@@ -698,6 +728,14 @@ async def _stream_chat_deepagent(question: str, user_name: str, history: list[di
     previous_msgs = history or []
     input_data = {"messages": [*previous_msgs, {"role": "user", "content": question}]}
 
+    # ── 联网搜索提示：web_search=True 时注入系统指令 ──
+    if web_search:
+        input_data["messages"][-1]["content"] += (
+            "\n\n[提示] 你可以使用 web_search_tool 工具搜索互联网获取实时信息（天气、新闻、股价等）。"
+            "对于需要最新数据的问题，请优先使用该工具进行搜索，然后基于搜索结果给出回答并注明信息来源。"
+        )
+        yield _sse_event({"type": "status", "content": "联网搜索已开启"})
+
     yield _sse_event({
         "type": "status",
         "content": "DeepAgent 正在分析您的请求...",
@@ -707,68 +745,115 @@ async def _stream_chat_deepagent(question: str, user_name: str, history: list[di
     collected_deep_text = ""
 
     try:
-        async for event in agent.astream(input_data, config):
-            for node_name, state_update in event.items():
-                logger.info(f"[DeepAgent SSE] 节点: {node_name}")
+        # stream_mode=["updates", "messages"] → 双模式：
+        #  - "messages": (AIMessageChunk, metadata) 元组 — 逐 token 实时流式
+        #  - "updates":  {node_name: state_update} — 节点完成事件（工具调用/完成）
+        async for event in agent.astream(input_data, config, stream_mode=["updates", "messages"]):
+            mode, data = event
 
-                # DeepAgent 的 LLM 推理阶段
-                if node_name in ("agent", "model"):
-                    msgs = state_update.get("messages", [])
-                    if msgs:
-                        last_msg = msgs[-1]
-                        content = getattr(last_msg, "content", "")
-                        if content and not collected_deep_text:
-                            collected_deep_text = str(content)[:200]
-                        # 检查是否包含工具调用
-                        tool_calls = getattr(last_msg, "tool_calls", None)
-                        if tool_calls:
-                            tool_names = [tc.get("name", "?") for tc in tool_calls]
-                            yield _sse_event({
-                                "type": "status",
-                                "content": f"正在调用: {', '.join(tool_names)}",
-                            })
-                        elif content:
-                            yield _sse_event({
-                                "type": "text",
-                                "content": content,
-                            })
+            if mode == "messages":
+                # ── 逐 token 流式文本 ──
+                chunk, metadata = data
+                node = metadata.get("langgraph_node", "")
 
-                # 工具/子Agent 执行阶段
-                elif node_name == "tools":
-                    msgs = state_update.get("messages", [])
-                    for msg in msgs:
-                        msg_content = getattr(msg, "content", "")
-                        msg_name = getattr(msg, "name", "")
-                        if msg_name == "task":
-                            yield _sse_event({
-                                "type": "status",
-                                "content": f"子Agent执行中...",
-                            })
-                        elif msg_content:
-                            yield _sse_event({
-                                "type": "status",
-                                "content": str(msg_content)[:200],
-                            })
+                # 只处理 agent/model 节点的文本块
+                if node in ("agent", "model"):
+                    content = getattr(chunk, "content", "")
+                    if content and isinstance(content, str) and content.strip():
+                        # 收集用于标题生成的首段文本
+                        if not collected_deep_text:
+                            collected_deep_text = content[:200]
+                        yield _sse_event({"type": "token", "content": content})
 
-                elif node_name == "__end__":
-                    # 先生成并推送标题，再发送 done
-                    try:
-                        node_title = await generate_node_title(question, collected_deep_text)
-                        await _save_chat_node(session_thread_id, node_index, node_title, question, run_id)
-                        if node_index == 0:
-                            await _upsert_chat_session(session_thread_id, user_name, node_title)
-                        logger.info("[TitleGen] DeepAgent 标题已保存: session=%s, title='%s'",
-                                    session_thread_id, node_title)
-                        yield _sse_event({
-                            "type": "title",
-                            "content": node_title,
-                            "thread_id": session_thread_id,
-                            "node_index": node_index,
-                        })
-                    except Exception as title_exc:
-                        logger.warning(f"[TitleGen] DeepAgent 标题生成/保存失败（不影响主流程）: {title_exc}")
+                    # 工具调用块（增量）→ 结构化事件，前端渲染为可折叠卡片
+                    tool_call_chunks = getattr(chunk, "tool_call_chunks", None)
+                    if tool_call_chunks:
+                        for tc in tool_call_chunks:
+                            name = tc.get("name")
+                            if name:
+                                args = tc.get("args") or ""
+                                if isinstance(args, (dict, list)):
+                                    import json as _json
+                                    args = _json.dumps(args, ensure_ascii=False)
+                                yield _sse_event({
+                                    "type": "tool_call",
+                                    "name": name,
+                                    "args": str(args)[:500],
+                                })
 
-                    yield _sse_event({"type": "done"})
+            elif mode == "updates":
+                for node_name, state_update in data.items():
+                    logger.info(f"[DeepAgent SSE] 节点: {node_name}")
+
+                    # agent/model 节点：仅处理工具调用（文本由 messages 模式流式处理）
+                    if node_name in ("agent", "model"):
+                        msgs = state_update.get("messages", [])
+                        if msgs:
+                            last_msg = msgs[-1]
+                            content = getattr(last_msg, "content", "")
+                            # 兜底：如果没有 messages 模式的文本被捕获，补充收集标题文本
+                            if content and not collected_deep_text:
+                                collected_deep_text = str(content)[:200]
+                            # 工具调用（完整列表）→ 结构化事件
+                            tool_calls = getattr(last_msg, "tool_calls", None)
+                            if tool_calls and len(tool_calls) > 0:
+                                for tc in tool_calls:
+                                    name = tc.get("name", "?")
+                                    args = tc.get("args", "")
+                                    if isinstance(args, (dict, list)):
+                                        import json as _json
+                                        args = _json.dumps(args, ensure_ascii=False)
+                                    yield _sse_event({
+                                        "type": "tool_call",
+                                        "name": name,
+                                        "args": str(args)[:500],
+                                    })
+
+                    # 工具/子Agent 执行阶段 → 结构化结果事件
+                    elif node_name == "tools":
+                        msgs = state_update.get("messages", [])
+                        for msg in msgs:
+                            msg_content = getattr(msg, "content", "")
+                            msg_name = getattr(msg, "name", "")
+                            if msg_name == "task":
+                                yield _sse_event({
+                                    "type": "tool_result",
+                                    "name": "subagent",
+                                    "status": "running",
+                                    "content": "子Agent 执行中...",
+                                })
+                            elif msg_content:
+                                yield _sse_event({
+                                    "type": "tool_result",
+                                    "name": msg_name or "tool",
+                                    "status": "done",
+                                    "content": str(msg_content)[:800],
+                                })
+
+                    elif node_name == "__end__":
+                        logger.info("[DeepAgent] __end__ 到达: thread_id=%s node_index=%d text_len=%d",
+                                    session_thread_id, node_index, len(collected_deep_text) if collected_deep_text else 0)
+                        # 先生成并推送标题，再发送 done
+                        try:
+                            node_title = await generate_node_title(question, collected_deep_text)
+                            logger.info("[DeepAgent] 标题生成: %s", node_title)
+                            await _save_chat_node(session_thread_id, node_index, node_title, question, run_id)
+                            logger.info("[DeepAgent] 节点已保存: thread_id=%s node_index=%d",
+                                        session_thread_id, node_index)
+                            if node_index == 0:
+                                await _upsert_chat_session(session_thread_id, user_name, node_title)
+                                logger.info("[DeepAgent] 会话已创建: session=%s title=%s",
+                                            session_thread_id, node_title)
+                            yield _sse_event({
+                                "type": "title",
+                                "content": node_title,
+                                "thread_id": session_thread_id,
+                                "node_index": node_index,
+                            })
+                        except Exception as title_exc:
+                            logger.warning("[DeepAgent] 标题/保存失败: %s", title_exc, exc_info=True)
+
+                        yield _sse_event({"type": "done"})
 
     except GraphInterrupt as gi:
         interrupt_data = gi.args[0] if gi.args else {}
@@ -781,9 +866,10 @@ async def _stream_chat_deepagent(question: str, user_name: str, history: list[di
             "reason": interrupt_data.get("reason", "") if isinstance(interrupt_data, dict) else "",
         })
     except Exception as exc:
-        logger.exception("[DeepAgent SSE] 流式对话异常")
+        from app.core.llm import describe_route, get_model_name
+        logger.exception("[DeepAgent SSE] 流式对话异常 | 路由: %s", describe_route())
         yield _error_event(
-            f"处理异常: {str(exc)}",
+            f"处理异常: {str(exc)}（实际模型: {get_model_name()}）",
             code="INTERNAL_ERROR",
             recoverable=True,
         )
@@ -829,9 +915,11 @@ async def chat_completions(body: ChatRequest, user: dict = Depends(get_current_u
              f"thread_id={body.thread_id or "(None — 新建会话)"}"
     )
 
-    if use_deep_agent():
+    # 通用任务（task）模式始终走 DeepAgent：具备 TodoList 任务拆解、子 Agent 委派
+    # 与 Skills/MCP 工具调用能力，可真正执行通用任务；不受全局 USE_DEEP_AGENT 开关限制。
+    if use_deep_agent() or body.mode == "task":
         return StreamingResponse(
-            _stream_chat_deepagent(question, user_name, history_msgs, body.thread_id),
+            _stream_chat_deepagent(question, user_name, history_msgs, body.thread_id, body.model, body.mode, body.web_search),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -841,7 +929,7 @@ async def chat_completions(body: ChatRequest, user: dict = Depends(get_current_u
         )
 
     return StreamingResponse(
-        _stream_chat(question, user_name, history_msgs, body.thread_id),
+        _stream_chat(question, user_name, history_msgs, body.thread_id, body.model, body.mode, body.web_search),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -1149,10 +1237,24 @@ async def list_sessions(
                 )
                 node_count = node_result.scalar() or 0
 
+                # 取最早的用户提问作为侧边栏快捷跳转文本
+                question = ""
+                try:
+                    q_result = await db.execute(
+                        select(ChatNode.question)
+                        .where(ChatNode.thread_id == s.thread_id, ChatNode.node_index == 0)
+                        .limit(1)
+                    )
+                    q_row = q_result.scalar_one_or_none()
+                    if q_row:
+                        question = q_row or ""
+                except Exception:
+                    pass
+
                 sessions.append({
                     "thread_id": s.thread_id,
                     "title": s.title,
-                    "question": "",
+                    "question": question,
                     "created_at": s.created_at.isoformat() if s.created_at else "",
                     "message_count": node_count,
                 })

@@ -10,6 +10,7 @@ import json
 import logging
 from app.core.llm import get_llm
 from app.core.config import settings
+from app.core.llm import get_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +75,7 @@ async def generate_question_suggestions(
 
     try:
         response = await client.chat.completions.create(
-            model=settings.LLM_MODEL_NAME,
+            model=get_model_name(),
             messages=[
                 {"role": "system", "content": SUGGESTER_SYSTEM_PROMPT},
                 {"role": "user", "content": f"以下是数据库的表结构信息：\n\n{schema_text}"},

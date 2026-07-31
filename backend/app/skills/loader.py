@@ -72,6 +72,8 @@ class SkillLoader:
         "wechat-notify": ("wechat-notify/notify.py", "send_wechat_notification"),
         "scheduled-report": ("scheduled-report/report.py", "create_scheduled_report"),
         "external-api": ("external-api/api_client.py", "call_external_api"),
+        "summarizer": ("summarizer/summarize.py", "summarize_text"),
+        "translator": ("translator/translate.py", "translate_text"),
     }
 
     def scan(self) -> list[dict]:

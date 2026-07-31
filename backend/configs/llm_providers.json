@@ -1,0 +1,23 @@
+{
+  "providers": [
+    {
+      "id": "qwen-flash",
+      "name": "qwen3.7-max",
+      "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "api_key_env": "DASHSCOPE_API_KEY",
+      "api_key": "",
+      "key_mode": "env",
+      "model": "qwen3.7-max",
+      "temperature": 0.3,
+      "max_tokens": 4096,
+      "is_default": false,
+      "enabled": true
+    }
+  ],
+  "mode_defaults": {
+    "data": "zhipu-glm4-flash",
+    "report": "zhipu-glm4-flash",
+    "doc": "zhipu-glm4-flash",
+    "task": "zhipu-glm4-flash"
+  }
+}

@@ -65,7 +65,7 @@ async def login(body: LoginRequest, db=Depends(get_db), settings=Depends(get_set
     用户登录 —— 验证 user_name + password，返回 JWT token。
 
     验证流程:
-        1. 查 sys_user 表中 user_name 匹配且 status='0' 且 del_flag='0'
+        1. 查 da_sys_user 表中 user_name 匹配且 status='0' 且 del_flag='0'
         2. 使用 sha256 加盐哈希验证密码
         3. 更新 login_ip / login_date
         4. 生成并返回 JWT

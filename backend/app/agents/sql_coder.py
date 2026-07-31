@@ -7,6 +7,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.core.config import settings
+from app.core.llm import get_model_name
 from app.core.llm import get_llm
 from app.core.stream import get_stream_context
 
@@ -47,7 +48,7 @@ async def generate_sql(
     )
 
     response = await client.chat.completions.create(
-        model=settings.LLM_MODEL_NAME,
+        model=get_model_name(),
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
@@ -206,7 +207,7 @@ async def _generate_sql_with_error(
     )
 
     response = await client.chat.completions.create(
-        model=settings.LLM_MODEL_NAME,
+        model=get_model_name(),
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},

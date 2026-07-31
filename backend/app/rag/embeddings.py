@@ -5,7 +5,6 @@
 import re
 import logging
 from typing import Optional
-from langchain_huggingface.embeddings import HuggingFaceEmbeddings
 from openai import AsyncOpenAI
 
 from app.core.config import settings
@@ -128,34 +127,38 @@ def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list[str]
 
 async def embed_texts(texts: list[str]) -> list[list[float]]:
     """
-    调用 OpenAI 兼容 API 的 embeddings 接口将文本转为向量。
+    调用远程 OpenAI 兼容 embeddings 接口将文本转为向量。
 
     使用 settings.EMBEDDING_MODEL 指定的模型名称，通过
-    settings.LLM_BASE_URL 和 settings.LLM_API_KEY 进行认证。
-    若 LLM API 不支持 embeddings 端点，捕获异常并返回空列表。
+    settings.EMBEDDING_BASE_URL 和 settings.EMBEDDING_API_KEY 进行认证。
+    支持批量输入（一次请求多段文本）。任何异常（未配置、网络、服务端错误）
+    都会被捕获并返回空列表，由上层决定是否降级，而不会抛出 500。
 
     参数:
         texts: 待向量化的文本列表
 
     返回:
-        向量列表，每个向量为 float 列表；如果 API 不支持或调用失败则返回空列表。
+        向量列表，每个向量为 float 列表；如果未配置或调用失败则返回空列表。
     """
     if not texts:
         return []
 
-    client = HuggingFaceEmbeddings(
-        model_name='BAAI/bge-large-zh-v1.5',
-        model_kwargs={
-            'device': 'cuda',
-            # 'device': 'cpu',
-        },
-        encode_kwargs={'normalize_embeddings': True}  # set True to compute cosine similarity
-    )
+    if not settings.EMBEDDING_BASE_URL or not settings.EMBEDDING_API_KEY:
+        logger.warning("未配置 EMBEDDING_BASE_URL / EMBEDDING_API_KEY，跳过向量化")
+        return []
 
     try:
-        # ── 注意：HuggingFaceEmbeddings.embed_documents() 直接返回 List[List[float]] ──
-        # 不是 OpenAI 风格的 response 对象，不需要 .data / .embedding 属性访问
-        embeddings = client.embed_documents(texts)
+        # 构造放在 try 内：避免依赖缺失或配置错误时向上抛出 500
+        client = AsyncOpenAI(
+            api_key=settings.EMBEDDING_API_KEY,
+            base_url=settings.EMBEDDING_BASE_URL,
+        )
+        # OpenAI 兼容接口支持批量输入，直接传入文本列表
+        response = await client.embeddings.create(
+            model=settings.EMBEDDING_MODEL,
+            input=texts,
+        )
+        embeddings = [item.embedding for item in response.data]
         dim = len(embeddings[0]) if embeddings else 0
         logger.info(f"成功向量化 {len(embeddings)} 条文本，维度={dim}")
         return embeddings

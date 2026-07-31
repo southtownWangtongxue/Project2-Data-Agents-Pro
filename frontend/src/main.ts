@@ -6,6 +6,8 @@ import VueECharts from 'vue-echarts'
 import * as echarts from 'echarts'
 import App from './App.vue'
 import router from './router'
+// 引入 Element Plus 深色主题适配样式
+import '@/styles/element-dark-theme.css'
 
 const app = createApp(App)
 

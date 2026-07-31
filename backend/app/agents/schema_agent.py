@@ -6,6 +6,7 @@ Schema Agent - 元数据专家
 from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import AsyncEngine
 from app.core.config import settings
+from app.core.llm import get_model_name
 from app.core.llm import get_llm
 from app.utils.log_utils import log
 
@@ -109,7 +110,7 @@ async def match_tables_by_llm(
 
     try:
         response = await client.chat.completions.create(
-            model=settings.LLM_MODEL_NAME,
+            model=get_model_name(),
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": f"## 可用表名\n{table_list}\n\n## 用户问题\n{user_intent}"},

@@ -1,0 +1,95 @@
+{
+  "skills": [
+    {
+      "id": "sql_generation",
+      "name": "SQL 生成",
+      "description": "自然语言转 SQL 查询",
+      "icon": "database",
+      "enabled": true,
+      "modes": [
+        "data"
+      ],
+      "is_global": false,
+      "params": {
+        "retry_count": 2
+      },
+      "type": "builtin",
+      "installed": true
+    },
+    {
+      "id": "chart_generation",
+      "name": "图表生成",
+      "description": "自动生成 ECharts 图表配置",
+      "icon": "chart",
+      "enabled": true,
+      "modes": [
+        "data",
+        "report"
+      ],
+      "is_global": false,
+      "params": {},
+      "type": "builtin",
+      "installed": true
+    },
+    {
+      "id": "external-api",
+      "name": "外部 API 调用",
+      "description": "调用外部 HTTP API（GET/POST/PUT/DELETE）获取实时数据或触发外部系统",
+      "icon": "🌐",
+      "enabled": false,
+      "modes": [
+        "all"
+      ],
+      "is_global": true,
+      "params": {},
+      "type": "folder",
+      "installed": false
+    },
+    {
+      "id": "scheduled-report",
+      "name": "定时报告",
+      "description": "创建并管理定时报表任务，按 cron 周期执行 SQL 并推送结果",
+      "icon": "📊",
+      "enabled": true,
+      "modes": [
+        "task"
+      ],
+      "is_global": false,
+      "params": {},
+      "type": "folder",
+      "installed": true
+    },
+    {
+      "id": "summarizer",
+      "name": "文本摘要",
+      "description": "对长文本生成简洁中文摘要，提炼核心要点",
+      "icon": "📝",
+      "enabled": false,
+      "modes": [
+        "all"
+      ],
+      "is_global": true,
+      "params": {
+        "max_length": 200
+      },
+      "type": "folder",
+      "installed": false
+    },
+    {
+      "id": "translator",
+      "name": "翻译",
+      "description": "将文本翻译为目标语言，支持中英互译及多语种",
+      "icon": "🌍",
+      "enabled": false,
+      "modes": [
+        "all"
+      ],
+      "is_global": true,
+      "params": {
+        "target_lang": "en"
+      },
+      "type": "folder",
+      "installed": false
+    }
+  ]
+}

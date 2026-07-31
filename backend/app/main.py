@@ -17,6 +17,8 @@ async def lifespan(app: FastAPI):
     """应用生命周期管理：启动时打印日志，关闭时清理资源。"""
     log.info("[DataAgent Pro] 服务启动中...")
     await create_tables()
+    from app.core.config_manager import get_config_manager
+    get_config_manager().start_watcher()  # 启动配置文件热更新监听
     log.info("[DataAgent Pro] API 文档: http://localhost:8000/docs")
     log.info("[DataAgent Pro] 前端开发地址: http://localhost:5173")
     await init_checkpointer()  # ✅ 启动时初始化（async 环境）
@@ -45,7 +47,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 挂载 /api/v1 路由
+# 挂载 /api/v1 路由（所有子路由统一通过 v1_router 注册）
 app.include_router(v1_router, prefix="/api/v1")
 
 

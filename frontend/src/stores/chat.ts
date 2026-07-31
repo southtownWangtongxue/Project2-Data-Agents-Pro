@@ -9,7 +9,7 @@ import { downloadFile } from '@/api/client'
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant' | 'system'
-  type?: 'text' | 'sql' | 'result' | 'chart' | 'analysis' | 'status' | 'error' | 'thinking' | 'tool_call' | 'tool_result' | 'clarification' | 'plan'
+  type?: 'text' | 'sql' | 'result' | 'chart' | 'analysis' | 'status' | 'error' | 'thinking' | 'tool_call' | 'tool_result' | 'tool_chain' | 'clarification' | 'plan'
   content?: string
   sql?: string
   data?: any[]
@@ -155,7 +155,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   /* 发送消息：添加用户消息 -> 调用 SSE -> 处理各类事件 -> 添加对应消息 */
-  async function sendMessage(text: string) {
+  async function sendMessage(text: string, mode = 'data', webSearch = false, model?: string) {
     if (!text.trim() || isLoading.value) return
 
     lastQuestion.value = text.trim()
@@ -195,6 +195,9 @@ export const useChatStore = defineStore('chat', () => {
       {
         messages: [...chatMessages, { role: 'user', content: text.trim() }],
         stream: true,
+        mode,                   // 工作模式
+        web_search: webSearch,  // 联网搜索
+        model,                  // 模型 provider id（动态路由实际 API 调用）
         // 多轮对话：复用当前会话的 thread_id
         thread_id: currentThreadId.value || undefined,
       },
@@ -295,13 +298,16 @@ export const useChatStore = defineStore('chat', () => {
           }
         },
 
-        /* 工具调用 —— 紧凑型卡片（无内容预览，纯管道指示器） */
+        /* 工具调用 —— 紧凑型卡片 */
         onToolCall(toolName: string, meta: Record<string, unknown>) {
           activeTokenMsgId = null
-          // 过滤出有用字段（去重后的简单预览）
           const cleanMeta: Record<string, unknown> = {}
+          // 优先展示结构化 args（DeepAgent 新协议）
+          if (meta.args) {
+            cleanMeta.input = String(meta.args).slice(0, 300)
+          }
           for (const [k, v] of Object.entries(meta)) {
-            if (v !== undefined && v !== null && v !== '' && k !== 'sql' && k !== 'sql_preview') {
+            if (v !== undefined && v !== null && v !== '' && k !== 'sql' && k !== 'sql_preview' && k !== 'args') {
               cleanMeta[k] = v
             }
           }
@@ -315,26 +321,37 @@ export const useChatStore = defineStore('chat', () => {
           })
         },
 
-        /* 工具调用结果 —— 紧凑型卡片 */
+        /* 工具调用结果 —— 与最近 tool_call 合并为单个卡片 */
         onToolResult(toolName: string, meta: Record<string, unknown>) {
-          // 清理当前 Agent 上下文
           if (toolName === 'sql_coder' || toolName === 'analyst' || toolName === 'rag_agent') {
             currentAgent = null
           }
-          const cleanMeta: Record<string, unknown> = {}
-          for (const [k, v] of Object.entries(meta)) {
-            if (v !== undefined && v !== null && v !== '' && k !== 'sql_preview') {
-              cleanMeta[k] = v
-            }
+          // 查找最近同名的 tool_call 并合并结果
+          const recent = [...messages.value].reverse().find(
+            m => m.type === 'tool_call' && m.toolName === toolName
+          )
+          if (recent) {
+            // 合并：将 tool_call 升级为 tool_chain，带结果
+            recent.type = 'tool_chain'
+            const merged = { ...(recent.toolMeta || {}) }
+            if (meta.result) merged.result = String(meta.result).slice(0, 400)
+            if (meta.status) merged.status = meta.status
+            recent.toolMeta = Object.keys(merged).length ? merged : undefined
+            // 标记完成
+            recent.collapsed = true
+          } else {
+            // 降级：无对应 tool_call，单独展示
+            const cleanMeta: Record<string, unknown> = {}
+            if (meta.result) cleanMeta.result = String(meta.result).slice(0, 400)
+            messages.value.push({
+              id: generateId(),
+              role: 'system',
+              type: 'tool_result',
+              toolName,
+              toolMeta: Object.keys(cleanMeta).length ? cleanMeta : undefined,
+              collapsed: true,
+            })
           }
-          messages.value.push({
-            id: generateId(),
-            role: 'system',
-            type: 'tool_result',
-            toolName,
-            toolMeta: Object.keys(cleanMeta).length ? cleanMeta : undefined,
-            collapsed: true,
-          })
         },
 
         /* 自然语言文本（分析/回答） */

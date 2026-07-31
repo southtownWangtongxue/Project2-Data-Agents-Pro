@@ -6,6 +6,7 @@ TitleGenerator Agent —— 异步生成节点标题和会话标题
 """
 import logging
 from app.core.config import settings
+from app.core.llm import get_model_name
 from app.core.llm import get_llm
 
 logger = logging.getLogger(__name__)
@@ -50,7 +51,7 @@ async def generate_node_title(question: str, answer_summary: str = "") -> str:
 
     try:
         response = await client.chat.completions.create(
-            model=settings.LLM_MODEL_NAME,
+            model=get_model_name(),
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": context},

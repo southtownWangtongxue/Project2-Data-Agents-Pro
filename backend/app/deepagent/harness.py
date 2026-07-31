@@ -13,9 +13,13 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.config import settings
+from app.core.llm import get_current_provider, get_model_name, _resolve_key_and_base
+from app.core.config_manager import get_config_manager
 from app.skills.loader import SkillLoader
 from app.skills.registry import skill_registry
 from app.utils.log_utils import log
+from langchain.chat_models import init_chat_model
+from app.deepagent.tools import get_fixed_tools
 
 
 async def create_skill_tools() -> tuple[list[Any], str]:
@@ -33,15 +37,26 @@ async def create_skill_tools() -> tuple[list[Any], str]:
         skills = loader.scan()
         skill_registry.register_all(skills)
 
-    # 提取所有可用的执行器作为工具
+    # 同步 skills.json 中的 enabled 状态（使 UI 启用/禁用真正生效）
+    mgr = get_config_manager()
+    enabled_map = {s["id"]: s.get("enabled", True) for s in mgr.skills}
+    for name, entry in skill_registry._skills.items():
+        entry["enabled"] = enabled_map.get(name, entry.get("enabled", True))
+
+    # 仅提取「已启用」技能的执行器作为工具
     tools = []
     for skill in skill_registry.list_all(enabled_only=True):
         executor = skill_registry.get_executor(skill["name"])
         if executor is not None:
             tools.append(executor)
 
-    # 拼接所有 SKILL.md 指令
-    instructions = loader.build_instructions_text()
+    # 拼接「已启用」技能的 SKILL.md 指令（注入 system_prompt）
+    parts = []
+    for skill in skill_registry.list_all(enabled_only=True):
+        instructions_text = skill.get("instructions", "")
+        if instructions_text:
+            parts.append(f"## {skill['name']}\n{instructions_text}")
+    instructions = "\n\n".join(parts)
 
     log.info(
         "[DeepAgent] Skills 工具加载完成: %d 个工具, %d 个 Skill",
@@ -51,14 +66,30 @@ async def create_skill_tools() -> tuple[list[Any], str]:
     return tools, instructions
 
 
-def _build_model_string() -> str:
-    """将配置中的模型名转换为 DeepAgent 所需的 provider:model 格式。"""
-    model = settings.LLM_MODEL_NAME
-    # 如果已经是 provider:model 格式，直接返回
-    if ":" in model:
-        return model
-    # 否则按 OpenAI 格式
-    return f"openai:{model}"
+def _build_model():
+    """
+    构建 DeepAgent 实际使用的 ChatModel 实例。
+
+    关键修复：显式注入当前 provider 的 api_key / base_url，避免 DeepAgent 底层
+    langchain `init_chat_model("openai:...")` 回退读取 OPENAI_API_KEY / OPENAI_BASE_URL
+    环境变量——而 .env 中这两个变量指向 DashScope（sk-8250... / 默认 api.openai.com），
+    会导致 task 模式调用智谱 glm-4.5-air 时 Connection error。
+    同时禁用 Responses API（智谱 BigModel 不兼容），改用 Chat Completions。
+    """
+    model_name = get_model_name()
+    provider = get_current_provider()
+    # 复用与 legacy 模式一致的解析逻辑：provider 为空（如未指定 model 且无默认
+    # provider 时 get_llm_config(None) 返回 None）时回退到全局 settings，
+    # 避免 task 模式（DeepAgent 分支）在此处崩 AttributeError 中断 SSE 流。
+    key, base = _resolve_key_and_base(provider)
+    return init_chat_model(
+        model=model_name,
+        model_provider="openai",
+        temperature=1.0,
+        api_key=key,
+        base_url=base,
+        use_responses_api=False,
+    )
 
 
 def create_deep_agent(
@@ -86,7 +117,7 @@ def create_deep_agent(
             "deepagents 库未安装，请执行: pip install deepagents>=0.5.0"
         ) from exc
 
-    model = _build_model_string()
+    model = _build_model()
     subagents = subagents or []
     tools = tools or []
 
@@ -100,9 +131,10 @@ def create_deep_agent(
 
     agent_kwargs.update(kwargs)
 
+    _model_id = getattr(model, "model_name", None) or getattr(model, "model", None) or "unknown"
     log.info(
         "[DeepAgent] 创建 Agent: model=%s, tools=%d, subagents=%d",
-        model,
+        _model_id,
         len(tools),
         len(subagents),
     )

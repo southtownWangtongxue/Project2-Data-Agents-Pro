@@ -35,6 +35,7 @@ from app.agents.schema_agent import get_table_schemas, filter_relevant_tables
 from app.agents.sql_coder import generate_sql, execute_sql, generate_and_execute_sql
 from app.agents.security import classify_sql
 from app.agents.analyst import analyze_results
+from app.graph.mode_router import register_mode
 from app.agents.reporter import generate_chart_config
 from app.agents.quality_evaluator import evaluate_query_quality
 from app.db.session import get_engine
@@ -1084,37 +1085,22 @@ async def close_checkpointer():
             except Exception as exc:
                 logger.warning(f"[Workflow] 关闭检查点异常: {exc}")
     _checkpointer = None
+
+
+def get_checkpointer():
+    """返回全局检查点实例（供 ModeRouter 等外部模块使用）。"""
+    return _checkpointer
 # ================================================================
 # Graph 构建与编译
 # ================================================================
 
 # 全局编译后的 Graph 单例
 _graph = None
+_data_graph_cache = None  # data 模式单例（保持向后兼容）
 
 
-def get_graph():
-    """
-    获取已编译的 LangGraph 工作流实例（全局单例）。
-
-    首次调用时：
-        1. 构建 StateGraph 并注册所有节点和边
-        2. 创建检查点保存器（优先 Redis，回退 MemorySaver）
-        3. 编译 Graph 并缓存为全局单例
-
-    后续调用直接返回缓存实例，避免重复编译开销。
-
-    检查点策略：
-        - 优先尝试 Redis AsyncRedisSaver（支持持久化、分布式、中断恢复）
-        - 若 Redis 不可用（依赖未安装或连接失败），回退到 MemorySaver
-        - 检查点是 interrupt() 中断/恢复机制的必要依赖
-
-    返回:
-        编译好的 StateGraph 实例，可通过 .invoke() / .astream() 执行
-    """
-    global _graph
-    if _graph is not None:
-        return _graph
-
+def _build_data_graph() -> StateGraph:
+    """构建数据分析模式 StateGraph（不编译，供 ModeRouter 和 get_graph 复用）。"""
     # ── 构建状态图（Phase E.3 Plan-and-Execute 架构） ──
     builder = StateGraph(AgentState)
 
@@ -1134,108 +1120,74 @@ def get_graph():
     builder.add_node("finish", finish_node)
 
     # ── 注册边（定义节点间的流转关系） ────────────────
-
-    # 入口：clarify_plan 为起始节点（合并 Clarifier + Planner）
     builder.set_entry_point("clarify_plan")
+    builder.add_conditional_edges("clarify_plan", route_clarify_plan, {
+        "finish": "finish", "schema_agent": "schema_agent",
+        "rag_agent": "rag_agent", "misc_agent": "misc_agent", "chart_direct": "chart_direct",
+    })
+    return builder
 
-    # ① clarify_plan → 条件路由：模糊→finish，明确→按意图分发
-    builder.add_conditional_edges(
-        "clarify_plan",
-        route_clarify_plan,
-        {
-            "finish": "finish",
-            "schema_agent": "schema_agent",
-            "rag_agent": "rag_agent",
-            "misc_agent": "misc_agent",
-            "chart_direct": "chart_direct",
-        },
-    )
 
-    # ③ schema_agent → 条件路由：加载失败 → finish，成功 → sql_coder
-    builder.add_conditional_edges(
-        "schema_agent",
-        route_schema,
-        {
-            "sql_coder": "sql_coder",
-            "finish": "finish",
-        },
-    )
-
-    # ④ sql_coder → 条件路由：生成失败 → rag_agent（知识库兜底），成功 → security
-    builder.add_conditional_edges(
-        "sql_coder",
-        route_sql_coder,
-        {
-            "security": "security",
-            "rag_agent": "rag_agent",
-        },
-    )
-
-    # ⑤ security → 条件路由：安全/审批通过 → execute_sql，驳回 → finish
-    builder.add_conditional_edges(
-        "security",
-        route_security,
-        {
-            "execute_sql": "execute_sql",
-            "finish": "finish",
-        },
-    )
-
-    # ⑥ execute_sql → 条件路由：空结果/错误 → misc_agent（降级），有数据 → quality_gate（ReAct质量门）
-    builder.add_conditional_edges(
-        "execute_sql",
-        route_execute,
-        {
-            "quality_gate": "quality_gate",
-            "misc_agent": "misc_agent",
-        },
-    )
-
-    # ⑥½ quality_gate → 条件路由：good → analyst，insufficient/empty → misc_agent（ReAct质量门）
-    builder.add_conditional_edges(
-        "quality_gate",
-        route_quality_gate,
-        {
-            "analyst": "analyst",
-            "misc_agent": "misc_agent",
-        },
-    )
-
-    # ⑦ analyst → 条件路由：dynamic_chart_suitable=true → reporter，false → answer（纯文本）
-    builder.add_conditional_edges(
-        "analyst",
-        route_analyst,
-        {
-            "reporter": "reporter",
-            "answer": "answer",
-        },
-    )
-
-    # ⑧ reporter → finish（图表生成完毕）
+def _compile_data_edges(builder: StateGraph):
+    """为 data 模式 builder 注册所有条件边和固定边。"""
+    # ② schema_agent → 条件路由
+    builder.add_conditional_edges("schema_agent", route_schema, {
+        "sql_coder": "sql_coder", "finish": "finish",
+    })
+    # ③ sql_coder → 条件路由
+    builder.add_conditional_edges("sql_coder", route_sql_coder, {
+        "security": "security", "rag_agent": "rag_agent",
+    })
+    # ④ security → 条件路由
+    builder.add_conditional_edges("security", route_security, {
+        "execute_sql": "execute_sql", "misc_agent": "misc_agent", "finish": "finish",
+    })
+    # ⑤ execute_sql → 条件路由
+    builder.add_conditional_edges("execute_sql", route_execute, {
+        "quality_gate": "quality_gate", "misc_agent": "misc_agent",
+    })
+    # ⑥ quality_gate → 条件路由
+    builder.add_conditional_edges("quality_gate", route_quality_gate, {
+        "analyst": "analyst", "misc_agent": "misc_agent",
+    })
+    # ⑦ analyst → 条件路由
+    builder.add_conditional_edges("analyst", route_analyst, {
+        "reporter": "reporter", "answer": "answer",
+    })
+    # 固定边
     builder.add_edge("reporter", "finish")
-
-    # ⑧½ chart_direct → analyst → reporter（chart_interaction 快捷路径）
     builder.add_edge("chart_direct", "analyst")
-
-    # ⑨ answer → finish（纯文本回答完毕）
     builder.add_edge("answer", "finish")
-
-    # ⑩ misc_agent → finish（杂项处理完毕）
     builder.add_edge("misc_agent", "finish")
-
-    # ⑪ rag_agent → finish（知识库检索完毕）
     builder.add_edge("rag_agent", "finish")
-
-    # ⑫ finish → END（终止节点）
     builder.add_edge("finish", END)
 
-    # ✅ 使用全局已初始化的检查点实例
-    if _checkpointer is None:
-        logger.warning("[Workflow] 检查点未初始化，使用 None（不支持中断恢复）")
 
-    _graph = builder.compile(checkpointer=_checkpointer)
-    logger.info("[Workflow] LangGraph 工作流编译完成")
-    return _graph
+# 在 mode_router 中注册 data 模式
+@register_mode("data")
+def get_data_workflow() -> StateGraph:
+    builder = _build_data_graph()
+    _compile_data_edges(builder)
+    return builder
+
+
+def get_graph():
+    """
+    获取已编译的 data 模式 LangGraph 工作流实例（全局单例，向后兼容）。
+
+    返回:
+        编译好的 StateGraph 实例
+    """
+    global _data_graph_cache
+    if _data_graph_cache is not None:
+        return _data_graph_cache
+
+    builder = _build_data_graph()
+    _compile_data_edges(builder)
+
+    _data_graph_cache = builder.compile(checkpointer=_checkpointer)
+    logger.info("[Workflow] Data 模式工作流编译完成")
+    return _data_graph_cache
 
 
 # ================================================================
@@ -1273,6 +1225,7 @@ async def get_deep_agent():
         return _deep_agent
 
     from app.deepagent.harness import create_deep_agent, create_skill_tools
+    from app.deepagent.tools import get_fixed_tools
     from app.deepagent.prompts import build_system_prompt
     from app.graph.subagents import (
         build_sql_pipeline_subagent,
@@ -1291,10 +1244,11 @@ async def get_deep_agent():
     # 3. 构建系统提示词（含 Skills 指令）
     system_prompt = build_system_prompt(skills_instructions)
 
-    # 4. 创建 DeepAgent
+    # 4. 创建 DeepAgent（含 Skills 工具 + 固定工具如百度搜索）
+    all_tools = skill_tools + get_fixed_tools()
     _deep_agent = create_deep_agent(
         subagents=[sql_sub, rag_sub],
-        tools=skill_tools,
+        tools=all_tools,
         system_prompt=system_prompt,
     )
 

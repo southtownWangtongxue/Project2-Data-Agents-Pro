@@ -13,6 +13,7 @@ import json
 import logging
 
 from app.core.config import settings
+from app.core.llm import get_model_name
 from app.core.llm import get_llm
 from app.utils.json_encoder import CustomEncoder
 
@@ -123,7 +124,7 @@ async def evaluate_query_quality(
 
     try:
         response = await client.chat.completions.create(
-            model=settings.LLM_MODEL_NAME,
+            model=get_model_name(),
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
@@ -262,7 +263,7 @@ async def evaluate_chart_suitability(
 
     try:
         response = await client.chat.completions.create(
-            model=settings.LLM_MODEL_NAME,
+            model=get_model_name(),
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
