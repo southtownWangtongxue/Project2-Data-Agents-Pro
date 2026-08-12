@@ -73,7 +73,8 @@ const steps = computed(() => props.msg.planSteps || [])
 
 <style scoped>
 .execution-card {
-  max-width: 82%;
+  max-width: 100%;
+  width: 100%;
   background: rgba(24, 24, 27, 0.8);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);

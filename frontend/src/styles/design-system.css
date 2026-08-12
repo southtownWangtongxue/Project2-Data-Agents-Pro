@@ -1,26 +1,28 @@
 /* DataAgent Pro Design System - Dark Theme
  * 基于 Apple 风格 + 深色科技感设计
+ * 2026-08-05: 品牌色切换为 Ant Design X Ultramodern 紫色系（#7056F8），
+ * 提升文字对比度以满足 WCAG AA。
  */
 
 :root {
-  /* === Primary Colors === */
-  --color-primary: #6366f1;
-  --color-primary-light: #818cf8;
-  --color-primary-dark: #4f46e5;
+  /* === Primary Colors（Ultramodern 紫色系）=== */
+  --color-primary: #7056f8;
+  --color-primary-light: #b5a4ff;
+  --color-primary-dark: #5b45e0;
 
   /* === Background & Surface === */
-  --color-bg: #09090b;
-  --color-surface: #18181b;
-  --color-surface-elevated: #27272a;
+  --color-bg: #0a0a0a;
+  --color-surface: #0f0f11;
+  --color-surface-elevated: #1a1a1d;
 
   /* === Border === */
-  --color-border: #3f3f46;
-  --color-border-light: #52525b;
+  --color-border: rgba(255, 255, 255, 0.08);
+  --color-border-light: rgba(255, 255, 255, 0.15);
 
-  /* === Text Colors === */
-  --color-text-primary: #fafafa;
-  --color-text-secondary: #a1a1aa;
-  --color-text-muted: #71717a;
+  /* === Text Colors（对比度 AA+）=== */
+  --color-text-primary: rgba(255, 255, 255, 0.88);
+  --color-text-secondary: rgba(255, 255, 255, 0.65);
+  --color-text-muted: rgba(255, 255, 255, 0.45);
 
   /* === Status Colors === */
   --color-success: #22c55e;

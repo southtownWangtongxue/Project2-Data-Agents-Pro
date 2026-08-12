@@ -9,7 +9,10 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@ant-design/icons-vue": "^7.0.1",
     "@vueuse/core": "^10.7",
+    "ant-design-vue": "^4.2.6",
+    "ant-design-x-vue": "^1.6.0",
     "axios": "^1.6",
     "echarts": "^5.5",
     "element-plus": "^2.5",

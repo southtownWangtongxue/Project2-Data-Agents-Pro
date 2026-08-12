@@ -42,7 +42,8 @@ const emit = defineEmits<{
 
 <style scoped>
 .clarifier-card {
-  max-width: 82%;
+  max-width: 100%;
+  width: 100%;
   background: linear-gradient(135deg, rgba(99, 102, 241, 0.08), rgba(139, 92, 246, 0.05));
   border: 1px solid rgba(99, 102, 241, 0.2);
   border-radius: var(--radius-lg);

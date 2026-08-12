@@ -84,6 +84,7 @@ features:
 | [安全机制](./advanced/security.md) | SQL 审计、数据脱敏、审批流 |
 | [前端开发](./develop/frontend-dev.md) | Vue 3 组件开发、SSE 集成 |
 | [Agent 开发](./develop/agent-dev.md) | 新增 Worker Agent、Graph 注册 |
+| [AntDesignX Vue 改造开发计划](./plans/2026-08-05-ant-design-x-vue-integration.md) | AntDesignX Vue 渐进式接入的 6 阶段计划与提示词 |
 
 ## 核心原则
 

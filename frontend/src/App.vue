@@ -21,6 +21,7 @@ interface NavItem {
 const authNavItems: NavItem[] = [
   { path: '/', label: '首页', icon: 'home' },
   { path: '/chat', label: '智能对话', icon: 'chat' },
+  { path: '/chat-x', label: 'AI 对话 (X)', icon: 'chatx' },
   { path: '/approval', label: '审批管理', icon: 'approval' },
   { path: '/admin', label: '配置中心', icon: 'admin' },
 ]
@@ -67,6 +68,11 @@ function handleLogout() {
             </svg>
             <svg v-else-if="item.icon === 'chat'" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+            </svg>
+            <svg v-else-if="item.icon === 'chatx'" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path d="M12 2a7 7 0 0 0-7 7c0 2.4 1.2 4.5 3 5.7V17a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-2.3c1.8-1.2 3-3.3 3-5.7a7 7 0 0 0-7-7z"/>
+              <circle cx="9" cy="9" r="1"/><circle cx="15" cy="9" r="1"/>
+              <path d="M9.5 12.5a2.5 2.5 0 0 0 5 0"/>
             </svg>
             <svg v-else-if="item.icon === 'approval'" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
               <path d="M9 11l3 3L22 4"/>

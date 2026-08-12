@@ -14,42 +14,42 @@
    ============================================ */
 
 :root {
-  /* 覆盖 Element Plus 主要颜色变量 */
-  --el-color-primary: #6366f1;
-  --el-color-primary-light-3: #818cf8;
-  --el-color-primary-light-5: #a5b4fc;
-  --el-color-primary-light-7: #c7d2fe;
+  /* 覆盖 Element Plus 主要颜色变量（Ultramodern 紫色系） */
+  --el-color-primary: #7056f8;
+  --el-color-primary-light-3: #8b6fff;
+  --el-color-primary-light-5: #b5a4ff;
+  --el-color-primary-light-7: #d2c7ff;
   --el-color-primary-light-8: #ddd6fe;
   --el-color-primary-light-9: #ede9fe;
-  --el-color-primary-dark-2: #4f46e5;
+  --el-color-primary-dark-2: #5b45e0;
 
   /* 背景色 */
-  --el-bg-color: #18181b;
-  --el-bg-color-overlay: #1f1f23;
-  --el-bg-color-page: #09090b;
+  --el-bg-color: #0f0f11;
+  --el-bg-color-overlay: #1a1a1d;
+  --el-bg-color-page: #0a0a0a;
 
   /* 文字颜色 */
-  --el-text-color-primary: #fafafa;
-  --el-text-color-regular: #a1a1aa;
-  --el-text-color-secondary: #71717a;
-  --el-text-color-placeholder: #52525b;
-  --el-text-color-disabled: #3f3f46;
+  --el-text-color-primary: rgba(255, 255, 255, 0.88);
+  --el-text-color-regular: rgba(255, 255, 255, 0.65);
+  --el-text-color-secondary: rgba(255, 255, 255, 0.45);
+  --el-text-color-placeholder: rgba(255, 255, 255, 0.35);
+  --el-text-color-disabled: rgba(255, 255, 255, 0.25);
 
   /* 边框 */
-  --el-border-color: #3f3f46;
-  --el-border-color-light: #3f3f46;
-  --el-border-color-lighter: #27272a;
-  --el-border-color-extra-light: #1f1f23;
-  --el-border-color-dark: #52525b;
+  --el-border-color: rgba(255, 255, 255, 0.08);
+  --el-border-color-light: rgba(255, 255, 255, 0.08);
+  --el-border-color-lighter: rgba(255, 255, 255, 0.06);
+  --el-border-color-extra-light: rgba(255, 255, 255, 0.04);
+  --el-border-color-dark: rgba(255, 255, 255, 0.15);
 
   /* 填充色 */
-  --el-fill-color: rgba(39, 39, 42, 0.6);
-  --el-fill-color-light: rgba(39, 39, 42, 0.4);
-  --el-fill-color-lighter: rgba(39, 39, 42, 0.2);
-  --el-fill-color-extra-light: rgba(39, 39, 42, 0.1);
-  --el-fill-color-dark: rgba(63, 63, 70, 0.5);
-  --el-fill-color-darker: rgba(63, 63, 70, 0.7);
-  --el-fill-color-blank: #18181b;
+  --el-fill-color: rgba(255, 255, 255, 0.06);
+  --el-fill-color-light: rgba(255, 255, 255, 0.04);
+  --el-fill-color-lighter: rgba(255, 255, 255, 0.02);
+  --el-fill-color-extra-light: rgba(255, 255, 255, 0.01);
+  --el-fill-color-dark: rgba(255, 255, 255, 0.08);
+  --el-fill-color-darker: rgba(255, 255, 255, 0.12);
+  --el-fill-color-blank: #0f0f11;
 
   /* 遮罩 */
   --el-mask-color: rgba(0, 0, 0, 0.6);

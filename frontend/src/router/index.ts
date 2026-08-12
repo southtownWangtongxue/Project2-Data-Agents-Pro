@@ -23,6 +23,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '智能对话', requiresAuth: true },
   },
   {
+    path: '/chat-x',
+    name: 'ChatX',
+    component: () => import('@/views/ChatXVue.vue'),
+    meta: { title: 'AI 对话 (X)', requiresAuth: true },
+  },
+  {
     path: '/approval',
     name: 'Approval',
     component: () => import('@/views/Approval.vue'),

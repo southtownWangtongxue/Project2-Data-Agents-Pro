@@ -32,6 +32,7 @@ export default defineConfig({
       ],
       '/': [
         { text: '开发计划', link: '/开发计划' },
+        { text: 'AntDesignX Vue 改造开发计划', link: '/plans/2026-08-05-ant-design-x-vue-integration' },
         { text: 'V2.0 需求规格说明书', link: '/项目需求规格说明书-V2' },
         { text: 'V2.0 配置体系说明书', link: '/配置体系说明书' },
         { text: '项目需求规格说明书 (V1)', link: '/项目需求规格说明书' },

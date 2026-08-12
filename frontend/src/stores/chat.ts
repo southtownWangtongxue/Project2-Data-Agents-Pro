@@ -84,6 +84,9 @@ export const useChatStore = defineStore('chat', () => {
   /* 会话列表加载状态 */
   const sessionsLoading = ref(false)
 
+  /* 当前选中的模型 provider id（从 localStorage 读取，旧界面 Chat.vue 共用同一 key） */
+  const currentModel = ref(localStorage.getItem('selectedModelId') || '')
+
   /* 动态问题建议（基于表结构） */
   const suggestions = ref<string[]>([])
   const suggestionsLoading = ref(false)
@@ -154,9 +157,17 @@ export const useChatStore = defineStore('chat', () => {
     setTimeout(() => { tasksCollapsed.value = true }, 2000)
   }
 
+  /* 设置当前模型（写 store + localStorage，与旧界面保持同步） */
+  function setCurrentModel(modelId: string) {
+    currentModel.value = modelId
+    localStorage.setItem('selectedModelId', modelId)
+  }
+
   /* 发送消息：添加用户消息 -> 调用 SSE -> 处理各类事件 -> 添加对应消息 */
   async function sendMessage(text: string, mode = 'data', webSearch = false, model?: string) {
     if (!text.trim() || isLoading.value) return
+    // 未显式指定模型时，统一使用 store 中记录的当前模型（与旧界面 Chat.vue 一致）
+    const activeModel = model || currentModel.value || undefined
 
     lastQuestion.value = text.trim()
 
@@ -197,7 +208,7 @@ export const useChatStore = defineStore('chat', () => {
         stream: true,
         mode,                   // 工作模式
         web_search: webSearch,  // 联网搜索
-        model,                  // 模型 provider id（动态路由实际 API 调用）
+        model: activeModel,     // 模型 provider id（动态路由实际 API 调用）
         // 多轮对话：复用当前会话的 thread_id
         thread_id: currentThreadId.value || undefined,
       },
@@ -642,6 +653,8 @@ export const useChatStore = defineStore('chat', () => {
     messages,
     isLoading,
     currentThreadId,
+    currentModel,
+    setCurrentModel,
     sessions,
     sessionsLoading,
     suggestions,
