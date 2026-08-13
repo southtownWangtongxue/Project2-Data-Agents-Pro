@@ -17,7 +17,7 @@ WORKDIR /app
 
 # 系统依赖：gcc（编译 asyncmy/asyncpg 等二进制依赖兜底）、curl（健康检查）
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc curl ca-certificates && \
+    build-essential curl ca-certificates python3-dev && \
     rm -rf /var/lib/apt/lists/*
 
 # 安装 uv（Python 依赖管理器）
