@@ -77,6 +77,8 @@ interface SSEEventData {
   chart_suitable?: boolean
   /* title 标题事件专用字段 */
   node_index?: number
+  /* node_started 事件专用字段 */
+  label?: string
 }
 
 /**
@@ -89,6 +91,10 @@ export function useSSE() {
 
   /* AbortController 用于取消请求 */
   let abortController: AbortController | null = null
+
+  /* 防止 SSE done 事件与 finally 块重复调用 onDone
+   * （提升到 useSSE 作用域，供 dispatchEvent 访问） */
+  let doneReceived = false
 
   /**
    * 建立 SSE 连接并持续读取流数据
@@ -107,7 +113,7 @@ export function useSSE() {
     connecting.value = true
     abortController = new AbortController()
     let hasError = false
-    let doneReceived = false  // 防止 SSE done 事件和 finally 块重复调用 onDone
+    doneReceived = false  // 每次连接重置
 
     try {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }

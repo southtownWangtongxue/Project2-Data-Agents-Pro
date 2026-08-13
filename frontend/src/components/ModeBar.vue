@@ -16,10 +16,10 @@ const emit = defineEmits<{
 }>()
 
 const modes = [
-  { key: 'data',   icon: '📊', label: '数据分析' },
-  { key: 'report', icon: '📝', label: '研究报告' },
-  { key: 'doc',    icon: '📖', label: '文档智读' },
-  { key: 'task',   icon: '🤖', label: '通用任务' },
+  { key: 'data',   icon: '📊', label: '数据分析', disabled: false },
+  { key: 'report', icon: '📝', label: '研究报告', disabled: false },
+  { key: 'doc',    icon: '📖', label: '文档智读', disabled: false },
+  { key: 'task',   icon: '🤖', label: '通用任务', disabled: false },
 ]
 
 function selectMode(key: string) {

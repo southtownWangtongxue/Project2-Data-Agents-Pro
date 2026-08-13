@@ -4,7 +4,7 @@
  * 重构：精简统计卡片、优化表格布局、模式名称中文显示、表单防空+自动生成ID
  */
 import { ref, computed, onMounted, watch } from 'vue'
-import { ElMessage, ElMessageBox, type FormInstance } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import apiClient from '@/api/client'
 
 interface LLMProvider {
@@ -34,15 +34,7 @@ const modeDefaults = ref<Record<string, string>>({})
 const dialogVisible = ref(false)
 const editing = ref<LLMProvider | null>(null)
 const form = ref<LLMProvider>({ id: '', name: '', api_base: '', api_key_env: '', api_key: '', key_mode: 'env', model: '', temperature: 0.3, max_tokens: 4096, is_default: false, enabled: true })
-const formRef = ref<FormInstance>()
 const submitting = ref(false)
-
-/* 表单校验规则 */
-const formRules = {
-  name: [{ required: true, message: '请输入模型名称', trigger: 'blur' }],
-  api_base: [{ required: true, message: '请输入 API 地址', trigger: 'blur' }],
-  model: [{ required: true, message: '请输入模型标识名', trigger: 'blur' }],
-}
 
 /* 统计数据 */
 const stats = computed(() => ({

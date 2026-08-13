@@ -1,8 +1,8 @@
 import axios from 'axios'
-import type { AxiosInstance } from 'axios'
+import type { AxiosRequestConfig } from 'axios'
 
 /* 创建 axios 实例 */
-const client: AxiosInstance = axios.create({
+const client = axios.create({
   baseURL: '/api/v1',
   timeout: 30000,
   headers: {
@@ -42,7 +42,18 @@ client.interceptors.response.use(
   },
 )
 
-export default client
+/* 响应拦截器已在运行时解包 response.data，
+ * 此处重写类型让 get/post/put/patch/delete 返回 data 而非 AxiosResponse，
+ * 避免调用方访问 .documents/.providers 等字段时产生 TS2339 误报。 */
+interface DataApiClient {
+  get<T = any>(url: string, config?: AxiosRequestConfig): Promise<T>
+  post<T = any>(url: string, data?: any, config?: AxiosRequestConfig): Promise<T>
+  put<T = any>(url: string, data?: any, config?: AxiosRequestConfig): Promise<T>
+  patch<T = any>(url: string, data?: any, config?: AxiosRequestConfig): Promise<T>
+  delete<T = any>(url: string, config?: AxiosRequestConfig): Promise<T>
+}
+
+export default client as unknown as DataApiClient
 
 /**
  * 文件下载工具函数

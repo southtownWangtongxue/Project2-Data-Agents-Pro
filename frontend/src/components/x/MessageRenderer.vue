@@ -82,18 +82,6 @@ async function copySQL(sql: string) {
 function onClarifySelect(option: string) {
   store.sendMessage(option)
 }
-
-/* toolMeta 摘要格式化 */
-function formatToolMeta(meta?: Record<string, unknown>): string {
-  if (!meta) return ''
-  return Object.entries(meta)
-    .filter(([, v]) => v !== undefined && v !== null && v !== '')
-    .map(([k, v]) => {
-      const val = typeof v === 'string' ? v : JSON.stringify(v)
-      return `${k}: ${val.length > 80 ? val.slice(0, 80) + '...' : val}`
-    })
-    .join(' | ')
-}
 </script>
 
 <template>

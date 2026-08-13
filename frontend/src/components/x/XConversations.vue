@@ -70,7 +70,7 @@ const menuConfig: NonNullable<ConversationsProps['menu']> = (conv: any) => ({
     { key: 'rename', label: '重命名' },
     { key: 'delete', label: '删除', danger: true },
   ],
-  onClick: ({ key }: { key: string }) => {
+  onClick: ({ key }: { key: string | number }) => {
     if (key === 'rename') startRename(conv.key)
     if (key === 'delete') store.deleteSession(conv.key)
   },

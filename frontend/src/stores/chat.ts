@@ -483,9 +483,13 @@ export const useChatStore = defineStore('chat', () => {
   async function retryLastMessage() {
     if (!lastQuestion.value) return
     // 移除最后一条用户消息和之后的所有消息
-    const idx = messages.value.findLastIndex(
-      m => m.role === 'user' && m.content === lastQuestion.value,
-    )
+    let idx = -1
+    for (let i = messages.value.length - 1; i >= 0; i--) {
+      if (messages.value[i].role === 'user' && messages.value[i].content === lastQuestion.value) {
+        idx = i
+        break
+      }
+    }
     if (idx >= 0) {
       messages.value.splice(idx)
     }

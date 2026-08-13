@@ -21,12 +21,6 @@ function formatTime(ts: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
 
-/* 截断过长的用户问题 */
-function shortQuestion(q: string): string {
-  if (q.length > 50) return q.slice(0, 50) + '...'
-  return q
-}
-
 /* 截断过长的 SQL 语句 */
 function shortSQL(sql: string): string {
   if (sql.length > 80) return sql.slice(0, 80) + '...'

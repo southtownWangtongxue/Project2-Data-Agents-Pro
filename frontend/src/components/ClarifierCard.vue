@@ -5,7 +5,7 @@
  */
 import type { ChatMessage } from '@/stores/chat'
 
-const props = defineProps<{
+defineProps<{
   msg: ChatMessage
 }>()
 
