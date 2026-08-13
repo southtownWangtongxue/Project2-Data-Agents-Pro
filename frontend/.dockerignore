@@ -1,0 +1,19 @@
+# 依赖与构建产物
+node_modules/
+dist/
+
+# 日志与临时文件
+*.log
+
+# 环境与密钥
+.env
+.env.*
+!.env.example
+
+# 版本控制
+.git/
+.gitignore
+
+# 编辑器
+.vscode/
+.idea/

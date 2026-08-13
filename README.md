@@ -82,7 +82,7 @@
 | 向量库 | Milvus 2.x（RAG 知识库） |
 | 缓存 / 状态 | Redis（Graph 中断状态快照） |
 | LLM | 私有部署 Qwen / GLM |
-| 部署 | Docker Compose（开发）· Nginx（前端静态托管） |
+| 部署 | Docker / Docker Compose · Nginx · GitHub Actions（镜像发布） |
 | 文档 | VitePress |
 
 ## 🚀 快速开始
@@ -129,6 +129,60 @@ npm run dev                   # 开发服务器，默认 http://localhost:5173
 
 > 「统计数据库总表数」「帮我分析各区域销售额的同比变化」
 
+## 🐳 Docker 部署
+
+### 本地构建镜像
+
+项目提供前后端两个独立镜像：
+
+```bash
+# 后端（FastAPI + uv，含配置热加载目录）
+docker build -t data-agent-backend ./backend
+
+# 前端（Node 构建 → Nginx 托管，反代 /api 到后端、SSE 关闭缓冲）
+docker build -t data-agent-frontend ./frontend
+```
+
+### 使用 GitHub Actions 自动发布到 Docker Hub
+
+仓库内置 `.github/workflows/docker-publish.yml`，推送 `v*` tag 即自动构建并发布到 Docker Hub（多架构 `amd64` + `arm64`）。
+
+**① 配置 Secrets**（GitHub 仓库 → Settings → Secrets and variables → Actions）：
+
+| Secret | 值 |
+|---|---|
+| `DOCKERHUB_USERNAME` | Docker Hub 用户名 |
+| `DOCKERHUB_TOKEN` | Docker Hub Access Token（勿用登录密码） |
+
+**② 推送 tag 触发构建**：
+
+```bash
+git tag v1.0.0
+git push origin --tags
+```
+
+**③ 构建产物镜像**：
+
+```
+<username>/data-agent-backend:latest
+<username>/data-agent-frontend:latest
+```
+
+### 生产部署
+
+基础设施（Redis / Milvus / MySQL / PostgreSQL）与应用层（backend + frontend）分开编排：
+
+```bash
+# 1. 启动基础设施
+docker-compose up -d
+
+# 2. 启动应用层（复用 .env 中的 LLM/Redis/Milvus/DB 连接配置）
+export DOCKERHUB_USERNAME=<你的用户名>
+docker-compose -f docker-compose.prod.yml up -d
+```
+
+部署完成后：前端 `http://localhost`，后端 API 文档 `http://localhost:8000/docs`。
+
 ## 📁 项目结构
 
 ```
@@ -152,7 +206,9 @@ DataAgent-Pro/
 │       └── composables/useSSE.ts  # SSE 事件路由
 ├── docs/                     # VitePress 文档（开发计划、需求规格、配置体系）
 ├── init-scripts/             # 数据库初始化 SQL
-└── docker-compose.yml        # 基础设施编排
+├── .github/workflows/        # GitHub Actions（镜像自动发布到 Docker Hub）
+├── docker-compose.yml        # 基础设施编排（Redis/Milvus/MySQL/PG）
+└── docker-compose.prod.yml   # 生产编排（backend + frontend 应用镜像）
 ```
 
 ## 🔌 核心 API
