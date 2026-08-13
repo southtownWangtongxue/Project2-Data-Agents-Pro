@@ -30,7 +30,7 @@ COPY pyproject.toml uv.lock ./
 COPY app/ ./app/
 
 # 安装生产依赖：--frozen 严格按 uv.lock 复现；--no-group dev 排除测试依赖组
-RUN uv sync --frozen --no-group dev
+RUN uv sync --frozen --no-group dev --verbose
 
 # 复制配置（ConfigManager 热加载目录）与资源
 COPY configs/ ./configs/
