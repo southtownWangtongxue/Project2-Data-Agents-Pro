@@ -17,6 +17,8 @@ name: Publish Docker Images
 # ==========================================================================
 on:
   push:
+    branches:
+      - data_agent_pro
     tags:
       - 'v*'
   workflow_dispatch:
