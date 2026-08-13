@@ -38,5 +38,16 @@
     - `__end__` 分步诊断日志：抵达、标题生成、节点保存、会话创建各阶段独立日志。
     - 文件：`useSSE.ts`(事件路由)、`chat.ts`(store)、`Chat.vue`(渲染)、`chat.py`(SSE事件)。
 
+## AntDesignX Vue 新对话页（2026-08-05 完成，浏览器验证通过）
+- **目标**：渐进式接入 `ant-design-x-vue`，新增 `/chat-x` 路由 → `frontend/src/views/ChatXVue.vue`（XProvider 包裹），后端零改动、前端数据层复用 `stores/chat.ts` + `composables/useSSE.ts`。
+- **依赖**：`ant-design-x-vue@1.6.0` / `ant-design-vue@4.2.6` / `@ant-design/icons-vue@7.0.1`。⚠️ **包内无 CSS 文件**，样式由 cssinjs 在 `XProvider` 内运行时注入，勿 `import 'ant-design-x-vue/dist/index.css'`。
+- **组件目录** `frontend/src/components/x/`：`XConversations.vue`(+`XConvLabel.vue` 内联重命名)、`XBubbleList.vue`、`MessageRenderer.vue`、`XSender.vue`、`XWelcome.vue`、`XThoughtChain.vue`。
+- **官方 API 修正（集成方案文档原有误）**：Welcome 无 `suggestions`/`click`（建议用 `Prompts`，item 主字段 `label`）；Sender 无 `disableSend`/`clear`（`loading` 自动切停止按钮触发 `@cancel`）；ThoughtChainItem 无 `children`；`Sender.Header` 是 `Sender` 静态子组件（props `open/title/closable/onOpenChange`，需 `:open`+`@open-change` 双向绑定，`open=false` 时 DOM 移除除非 `forceRender`）。
+- **样式根因（关键！）**：`XProvider` 必须显式传 `:theme="{ algorithm: theme.darkAlgorithm, token: {...} }"`（`theme` 从 `ant-design-vue` 导入），否则 X 组件内部用 antdv 默认浅色 token（白底白字，与深色页面冲突）。品牌色紫色 `#7056F8`（ultramodern 风格）。
+- **占满右侧**：清除所有 `max-width` 残留（`XBubbleList` roles、`XWelcome` `.xw-prompts`/提示卡、`ClarifierCard`/`ExecutionCard` `82%`、`.xr-thought` `82%`），容器已全宽 1640px。
+- **模型路由（修复 403）**：`stores/chat.ts` 新增 `currentModel`（从 `localStorage.selectedModelId` 读）+ `setCurrentModel()`；`sendMessage` 内 `activeModel = model || currentModel.value`，所有发送入口统一走 `store.sendMessage`。
+- **模式切换/联网搜索** 移入 `Sender.Header` 弹出面板，prefix 仅留模型选择器 + 设置按钮。
+- 开发计划文档：`docs/plans/2026-08-05-ant-design-x-vue-integration.md`（6 阶段 + 提示词 + 实施记录 4.7/4.8/4.8.1/4.8.2）；已集成到 `docs/.vitepress/config.mts` 与 `docs/index.md`。
+
 ## 用户约定
 - 规则要求：创造性工作前先走 brainstorming 探索；代码改动后须用 Chrome DevTools MCP 做端到端浏览器验证（前后端都需启动）。
