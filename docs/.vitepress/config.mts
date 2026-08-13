@@ -16,6 +16,7 @@ export default defineConfig({
         { text: '快速开始', link: '/guide/quick-start' },
         { text: '架构设计', link: '/guide/architecture' },
         { text: '工作流详解', link: '/guide/workflow' },
+        { text: 'Docker 部署', link: '/guide/deployment' },
       ],
       '/api/': [
         { text: '鉴权说明', link: '/api/introduction' },

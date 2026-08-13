@@ -1,19 +1,24 @@
-name: Publish Docker Images
+name: Publish Docker Image
 
 # ==========================================================================
-# DataAgent Pro — 镜像自动构建与发布到 Docker Hub
+# DataAgent Pro — 单体镜像自动构建与发布到 Docker Hub
 #
 # 触发条件：
-#   1. 推送 tag（v*，如 v1.2.0）→ 构建并推送 :v1.2.0 与 :latest
-#   2. 手动触发（workflow_dispatch）
+#   1. 推送分支 data_agent_pro（每次 push 都构建，tag 用 sha 短哈希）
+#   2. 推送 tag（v*，如 v1.2.0）→ 构建并推送 :v1.2.0 与 :latest
+#   3. 手动触发（workflow_dispatch）
 #
 # 前置配置（GitHub 仓库 Settings → Secrets and variables → Actions）：
 #   - DOCKERHUB_USERNAME  Docker Hub 用户名
 #   - DOCKERHUB_TOKEN     Docker Hub Access Token（非登录密码）
 #
 # 产物镜像：
-#   <username>/data-agent-backend
-#   <username>/data-agent-frontend
+#   <username>/data-agent:latest       （仅 tag 触发时生成）
+#   <username>/data-agent:v<版本号>    （仅 tag 触发时生成）
+#   <username>/data-agent:sha-<短哈希>（每次 push/tag 都生成，可追溯）
+#
+# 说明：单体镜像同时包含前端（nginx 托管 dist）与后端（uvicorn），
+#       相关配置见根目录 Dockerfile 与 deploy/ 目录。
 # ==========================================================================
 on:
   push:
@@ -26,6 +31,11 @@ on:
 env:
   # 多架构：amd64 与 arm64（若 arm64 编译慢或失败，可删除 arm64）
   PLATFORMS: linux/amd64,linux/arm64
+
+concurrency:
+  # 同一分支/tag 的并发构建只保留最新，避免镜像 tag 互相覆盖
+  group: docker-publish-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   publish:
@@ -50,48 +60,26 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # ── 后端镜像 ────────────────────────────────────────────────
-      - name: Extract metadata (backend)
-        id: meta-backend
+      # ── 单体镜像 metadata ─────────────────────────────────────────
+      - name: Extract metadata (data-agent)
+        id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ secrets.DOCKERHUB_USERNAME }}/data-agent-backend
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/data-agent
           tags: |
             type=ref,event=tag
             type=sha,format=short
             type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
 
-      - name: Build and push backend
+      - name: Build and push data-agent
         uses: docker/build-push-action@v6
         with:
-          context: ./backend
-          file: ./backend/Dockerfile
+          # 构建上下文为项目根目录（Dockerfile 需要同时访问 frontend/ 与 backend/）
+          context: .
+          file: ./Dockerfile
           platforms: ${{ env.PLATFORMS }}
           push: true
-          tags: ${{ steps.meta-backend.outputs.tags }}
-          labels: ${{ steps.meta-backend.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # ── 前端镜像 ────────────────────────────────────────────────
-      - name: Extract metadata (frontend)
-        id: meta-frontend
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ secrets.DOCKERHUB_USERNAME }}/data-agent-frontend
-          tags: |
-            type=ref,event=tag
-            type=sha,format=short
-            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
-
-      - name: Build and push frontend
-        uses: docker/build-push-action@v6
-        with:
-          context: ./frontend
-          file: ./frontend/Dockerfile
-          platforms: ${{ env.PLATFORMS }}
-          push: true
-          tags: ${{ steps.meta-frontend.outputs.tags }}
-          labels: ${{ steps.meta-frontend.outputs.labels }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

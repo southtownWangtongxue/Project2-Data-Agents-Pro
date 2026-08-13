@@ -1,0 +1,41 @@
+# ==========================================================================
+# 根构建上下文忽略文件（构建上下文为项目根目录）
+# ==========================================================================
+
+# 版本控制
+.git/
+.gitignore
+
+# 环境与密钥（生产通过 env_file 注入）
+.env
+.env.*
+!.env.example
+
+# 文档与测试
+docs/
+scripts/
+测试报告.md
+
+# 前端依赖与产物
+frontend/node_modules/
+frontend/dist/
+frontend/preview.html
+
+# 后端缓存与产物
+backend/.venv/
+backend/**/__pycache__/
+backend/**/*.py[cod]
+backend/.pytest_cache/
+backend/.mypy_cache/
+backend/.ruff_cache/
+backend/build/
+backend/dist/
+backend/*.egg-info/
+
+# 日志
+**/logs/
+*.log
+
+# 编辑器
+.vscode/
+.idea/

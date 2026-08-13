@@ -5,6 +5,17 @@
 - 后端根目录 `backend/`，入口 `app/main.py`；前端 `frontend/`（`npm run dev` 端口 5173）。
 - 配置由 `backend/configs/*.json` 经 `ConfigManager` 热加载；LLM provider 在 `llm_providers.json`。
 
+## Docker 单体镜像架构（2026-08-13 定稿，重要）
+- **发布形态**：单体镜像 `data-agent`（前端+后端一体），根目录 `Dockerfile` 多阶段构建（node 构建 dist → python uv sync → 合并运行时 `python:3.12-slim` + nginx + supervisor + curl）。
+- **容器内布局**：`/app/.venv`（后端依赖）、`/usr/share/nginx/html`（前端 dist）、nginx 反代 `/api`→`127.0.0.1:8000`（`deploy/nginx.conf`，proxy_buffering off 保 SSE）；supervisord 同时管 backend(uvicorn:8000)+nginx 两进程（`deploy/supervisord.conf`）。
+- **入口脚本** `deploy/entrypoint.sh`：检测空卷则从 `/app/configs.default`、`/app/skills.default`、`/app/resources.default` 复制默认配置，再 `exec supervisord`。
+- **持久化卷（named volume，compose 中定义）**：`agent_configs`→`/app/configs`（4 个 JSON，watchdog 热更新）、`agent_skills`→`/app/app/skills/skills`（skill 实体）、`agent_resources`→`/app/resources`、`agent_logs`→`/app/app/logs`。
+- **compose**：`docker-compose.prod.yml` 单文件全量编排（7 个基础设施 + app 单体）；镜像 `${DOCKERHUB_USERNAME}/data-agent:${IMAGE_TAG:-latest}`；app 用 environment 覆盖 .env 的 localhost → 服务名（mysql/postgres/redis/milvus）。
+- **CI**：`.github/workflows/docker-image.yml`（context=`.`，多架构 amd64+arm64，concurrency 组防并发覆盖；tag 策略 sha-短哈希/latest 仅 tag 时）。
+- **清华源覆盖**：backend/pyproject.toml 的 `[[tool.uv.index]]` 指向清华源（default=true），根 Dockerfile 用 `ENV UV_DEFAULT_INDEX=https://pypi.org/simple` 覆盖，保证海外 runner 稳定（本地开发不受影响）。
+- **热更新边界（重要）**：configs JSON 改文件即生效；skill 安装实时落盘；但 **DeepAgent skill 工具集是全局单例（get_deep_agent()），新 skill 需重启容器才进工具列表**（配置已持久化，重启不丢）。
+- 部署文档：`docs/guide/deployment.md`（已注册 VitePress 导航）。
+
 ## 关键服务/启动
 - 后端启动：`cd backend && uv run uvicorn app.main:app --reload --port 8000`
 - 默认管理员：`admin` / `12345678`（见 `backend/app/models/seed.py`，写入 `da_sys_user` 表）。

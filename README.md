@@ -131,21 +131,24 @@ npm run dev                   # 开发服务器，默认 http://localhost:5173
 
 ## 🐳 Docker 部署
 
-### 本地构建镜像
+DataAgent Pro 采用**单体镜像**（前端 + 后端一体，`nginx + uvicorn + supervisord` 同容器管理），由 GitHub Actions 自动构建并发布到 Docker Hub，生产环境一个 Compose 文件全量部署全部服务。
 
-项目提供前后端两个独立镜像：
+### 本地构建单体镜像
 
 ```bash
-# 后端（FastAPI + uv，含配置热加载目录）
-docker build -t data-agent-backend ./backend
-
-# 前端（Node 构建 → Nginx 托管，反代 /api 到后端、SSE 关闭缓冲）
-docker build -t data-agent-frontend ./frontend
+# 构建上下文为项目根目录（多阶段：前端 dist 构建 + 后端 uv 依赖）
+docker build -t <username>/data-agent:latest .
 ```
 
 ### 使用 GitHub Actions 自动发布到 Docker Hub
 
-仓库内置 `.github/workflows/docker-publish.yml`，推送 `v*` tag 即自动构建并发布到 Docker Hub（多架构 `amd64` + `arm64`）。
+仓库内置 `.github/workflows/docker-image.yml`，触发即自动构建并发布到 Docker Hub（多架构 `amd64` + `arm64`）：
+
+| 触发方式 | 生成的 tag |
+|---|---|
+| push `data_agent_pro` 分支 | `sha-<短哈希>` |
+| push `v*` tag（如 `v1.0.0`） | `v1.0.0` + `latest` |
+| 手动 `workflow_dispatch` | `sha-<短哈希>` |
 
 **① 配置 Secrets**（GitHub 仓库 → Settings → Secrets and variables → Actions）：
 
@@ -164,24 +167,29 @@ git push origin --tags
 **③ 构建产物镜像**：
 
 ```
-<username>/data-agent-backend:latest
-<username>/data-agent-frontend:latest
+<username>/data-agent:latest
+<username>/data-agent:v1.0.0
 ```
 
-### 生产部署
+### 生产部署（一条命令全量）
 
-基础设施（Redis / Milvus / MySQL / PostgreSQL）与应用层（backend + frontend）分开编排：
+`docker-compose.yml` 同时编排基础设施（Redis / etcd / MinIO / Milvus / MySQL / PostgreSQL）与应用单体容器：
 
 ```bash
-# 1. 启动基础设施
-docker-compose up -d
+# 1. 准备 .env（数据库密码 + LLM 密钥）
+cp .env.example .env
 
-# 2. 启动应用层（复用 .env 中的 LLM/Redis/Milvus/DB 连接配置）
+# 2. 设置镜像参数并拉起全部服务
 export DOCKERHUB_USERNAME=<你的用户名>
-docker-compose -f docker-compose.prod.yml up -d
+export IMAGE_TAG=latest          # 或发布版本号 v1.0.0
+docker compose up -d
 ```
 
-部署完成后：前端 `http://localhost`，后端 API 文档 `http://localhost:8000/docs`。
+部署完成后访问 `http://localhost`（默认管理员 `admin` / `12345678`）。
+
+**配置持久化**：应用容器挂载 `agent_configs` / `agent_skills` / `agent_resources` / `agent_logs` 四个卷，MCP/LLM/Skill 配置 JSON 支持 watchdog 热更新（改文件即生效），首次启动自动初始化默认配置，容器重建不丢。
+
+完整部署说明见 [docs/guide/deployment.md](docs/guide/deployment.md)。
 
 ## 📁 项目结构
 
@@ -205,10 +213,11 @@ DataAgent-Pro/
 │       ├── stores/chat.ts         # 对话状态（含 currentModel 路由）
 │       └── composables/useSSE.ts  # SSE 事件路由
 ├── docs/                     # VitePress 文档（开发计划、需求规格、配置体系）
+├── deploy/                   # 单体镜像配套：nginx.conf / supervisord.conf / entrypoint.sh
 ├── init-scripts/             # 数据库初始化 SQL
-├── .github/workflows/        # GitHub Actions（镜像自动发布到 Docker Hub）
-├── docker-compose.yml        # 基础设施编排（Redis/Milvus/MySQL/PG）
-└── docker-compose.prod.yml   # 生产编排（backend + frontend 应用镜像）
+├── .github/workflows/        # GitHub Actions（单体镜像自动发布到 Docker Hub）
+├── Dockerfile                # 单体镜像（前端 dist + 后端 uv 依赖，多阶段构建）
+└── docker-compose.yml        # 单文件全量编排（基础设施 + 单体应用，IMAGE_TAG 参数化）
 ```
 
 ## 🔌 核心 API
