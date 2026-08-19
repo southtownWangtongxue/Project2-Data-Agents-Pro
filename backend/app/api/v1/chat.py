@@ -17,6 +17,7 @@ from langgraph.errors import GraphInterrupt
 
 from app.api.deps import get_current_user
 from app.graph.workflow import get_graph, get_graph_async, use_deep_agent, get_deep_agent
+from app.core.config_manager import get_config_manager
 from app.agents.title_generator import generate_node_title
 from app.agents.question_suggester import generate_question_suggestions, get_cached_suggestions
 from app.agents.schema_agent import get_table_schemas
@@ -24,6 +25,13 @@ from app.db.session import get_engine
 from app.utils.json_encoder import CustomEncoder
 from app.utils.log_utils import log
 from app.core.stream import StreamContext, set_stream_context, get_stream_context
+from app.core.event_sourcing import (
+    SessionEventStore,
+    EventType,
+    event_sourcing_enabled,
+    MAX_RESULT_ROWS,
+)
+from app.core.stream_protocol import SSEEventType, make_event
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -31,6 +39,29 @@ handler = logging.StreamHandler()
 handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
 logger.addHandler(handler)
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+
+def _resolve_enabled_provider(model: str | None = None) -> dict | None:
+    """
+    解析 LLM provider，强制走「前端模型列表」(llm_providers.json 中 enabled 的 provider)。
+
+    规则（与聊天流 _inject_and_set_provider 一致，但绝不回退到 .env 的 settings）：
+        1. model 命中 enabled provider → 返回该 provider
+        2. model 未命中/为空 → 返回第一个 enabled provider（保证仍走前端列表）
+        3. 没有任何 enabled provider → 返回 None（调用方应降级，而不是悄悄用 env）
+    """
+    cm = get_config_manager()
+    if model:
+        provider = cm.get_llm_config(model)
+        if provider and provider.get("enabled", True):
+            return provider
+    # 回退：第一个 enabled provider
+    providers = getattr(cm, "providers", None)
+    if providers:
+        for p in providers.values():
+            if p.get("enabled", True):
+                return p
+    return None
 
 
 # ================================================================
@@ -90,6 +121,49 @@ def _sse_event(data: dict) -> str:
         形如 "data: {...}\n\n" 的 SSE 事件字符串
     """
     return f"data: {json.dumps(data, ensure_ascii=False, cls=CustomEncoder)}\n\n"
+
+
+# ── 流式任务注册表（阶段2 B3：支持停止生成）──────────────
+# thread_id → asyncio.Task，供 POST /chat/cancel 取消运行中的 SSE 流
+_active_stream_tasks: dict[str, _asyncio.Task] = {}
+# thread_id → asyncio.Event 停止标志：cancel 时 set，生成器检测后正常结束 SSE
+_active_stream_events: dict[str, _asyncio.Event] = {}
+
+
+async def _wrap_cancellable(inner_stream):
+    """
+    包装内部 SSE 流生成器：
+
+    - 解析内部流首个 ``thread_id`` 事件，注册运行任务与停止标志
+    - 检测到停止标志时提前 break（正常结束 SSE 流，前端收到 EOF 触发 onDone）
+    - 流结束 / 异常时在 finally 中反注册
+    - 供 ``POST /chat/cancel`` 通过标志 + task.cancel() 中断生成
+    """
+    task = _asyncio.current_task()
+    registered_key: str | None = None
+    stop_event: _asyncio.Event | None = None
+    try:
+        async for chunk in inner_stream:
+            if registered_key is None and isinstance(chunk, str) and chunk.startswith("data: "):
+                try:
+                    payload = json.loads(chunk[len("data: "):].strip())
+                    if payload.get("type") == "thread_id":
+                        tid = payload.get("thread_id")
+                        if tid:
+                            _active_stream_tasks[tid] = task
+                            stop_event = _asyncio.Event()
+                            _active_stream_events[tid] = stop_event
+                            registered_key = tid
+                except Exception:
+                    pass
+            # 停止生成：提前 break，SSE 流正常结束（前端收到 EOF → onDone）
+            if registered_key and stop_event and stop_event.is_set():
+                break
+            yield chunk
+    finally:
+        if registered_key:
+            _active_stream_tasks.pop(registered_key, None)
+            _active_stream_events.pop(registered_key, None)
 
 
 async def _stream_tokens(text: str, delay: float = 0.0):
@@ -260,6 +334,21 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
     else:
         node_index = 0
 
+    # ── 事件溯源双写（Phase 1）：feature flag 开启时，记录业务事件到 session_events ──
+    es_enabled = event_sourcing_enabled()
+
+    async def _track(etype: str, role: str | None = None, content: str = "", payload: dict | None = None):
+        """在事件溯源开启时追加一条事件（失败不阻断主流程）。"""
+        if es_enabled:
+            await SessionEventStore.append(
+                session_thread_id, etype,
+                run_id=run_id, node_index=node_index,
+                role=role, content=content, payload=payload,
+            )
+
+    if es_enabled:
+        await _track(EventType.USER_MESSAGE, role="user", content=question)
+
     try:
         # ── 双任务并发 SSE 流：Token 实时推送 + 图事件顺序处理 ──
         # forward_graph 和 forward_tokens 同时向 merge_queue 推送，
@@ -387,6 +476,8 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                             "text": clarification,
                             "options": options,
                         })
+                        await _track(EventType.CLARIFICATION, role="system",
+                                     content=clarification, payload={"options": options})
                     else:
                         # 意图明确：推送计划和思考
                         intent_labels = {
@@ -402,6 +493,12 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                                               f"分析意图并生成执行计划: {intent_labels.get(intent, intent)}")
                         yield _sse_event({
                             "type": "plan",
+                            "intent": intent,
+                            "intent_label": intent_labels.get(intent, intent),
+                            "steps": step_names,
+                            "chart_suitable": state_update.get("chart_suitable", False),
+                        })
+                        await _track(EventType.PLAN, role="system", payload={
                             "intent": intent,
                             "intent_label": intent_labels.get(intent, intent),
                             "steps": step_names,
@@ -457,7 +554,13 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                         collected_analysis = str(content)[:200]  # 收集用于标题生成
                         logger.info(f"[SSE] misc_agent 结果={content[:80]}")
                         yield _tool_event("tool_call", "misc_agent", args={"question": question[:80]})
+                        # misc_agent() 内部已通过 StreamContext.push_token 逐 token 推送，
+                        # 此处不再二次 _stream_tokens，避免 token 重复推送导致 loading 感知翻倍（遗留1修复）
                         yield _tool_event("tool_result", "misc_agent", result=content[:200])
+                        await _track(EventType.TOOL_CHAIN, role="tool",
+                                     content=str(content)[:200],
+                                     payload={"name": "misc_agent", "status": "done"})
+                        await _track(EventType.ANALYSIS, role="assistant", content=str(content))
                     else:
                         # 尝试从 messages 中提取（兼容旧格式）
                         msg = state_update.get('messages')
@@ -472,6 +575,10 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                                 async for token in _stream_tokens(content):
                                     yield token
                                 yield _tool_event("tool_result", "misc_agent", result=content[:200])
+                                await _track(EventType.TOOL_CHAIN, role="tool",
+                                             content=str(content)[:200],
+                                             payload={"name": "misc_agent", "status": "done"})
+                                await _track(EventType.ANALYSIS, role="assistant", content=str(content))
                 # ── schema_agent: 加载表结构 ──────────────
                 elif node_name == "schema_agent":
                     yield _thinking_event("schema_agent", "loading_schema", "加载数据表结构...")
@@ -496,6 +603,7 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                                 "type": "sql",
                                 "content": sql,
                             })
+                            await _track(EventType.SQL, role="assistant", content=sql)
 
                 # ── security: SQL 安全审核 ───────────────
                 elif node_name == "security":
@@ -511,6 +619,7 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                     if error:
                         logger.warning(f"[SSE] SQL 执行异常: {error}")
                         yield _error_event(error, code="SQL_EXEC_FAILED", recoverable=False)
+                        await _track(EventType.ERROR, role="assistant", content=error)
 
                     # 推送查询结果
                     results = state_update.get("query_result", [])
@@ -528,6 +637,14 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                             "columns": columns,
                         })
                         yield _tool_event("tool_result", "execute_sql", row_count=len(results))
+                        await _track(EventType.TOOL_CHAIN, role="tool",
+                                     content=f"返回 {len(results)} 条记录",
+                                     payload={"name": "execute_sql", "status": "done",
+                                              "result": f"返回 {len(results)} 条记录"})
+                        await _track(EventType.RESULT, role="assistant", payload={
+                            "data": results[:MAX_RESULT_ROWS],
+                            "columns": columns,
+                        })
 
                 # ── quality_gate: ReAct 质量评估（Phase E.9）──
                 elif node_name == "quality_gate":
@@ -564,6 +681,7 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                             analysis_text[:80],
                         )
                         # 分析文本已通过 StreamContext.push_token 实时推送
+                        await _track(EventType.ANALYSIS, role="assistant", content=analysis_text)
 
                 # ── reporter: 图表生成 ────────────────────
                 elif node_name == "reporter":
@@ -578,6 +696,11 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                             "config": chart_config,
                         })
                         yield _tool_event("tool_result", "reporter", chart_type=chart_type)
+                        await _track(EventType.TOOL_CHAIN, role="tool",
+                                     content=f"生成 {chart_type} 图表",
+                                     payload={"name": "reporter", "status": "done",
+                                              "result": f"生成 {chart_type} 图表", "chart_type": chart_type})
+                        await _track(EventType.CHART, role="assistant", payload={"config": chart_config})
 
                 # ── answer: 纯文本回答（Phase E.3）───────────
                 elif node_name == "answer":
@@ -590,6 +713,7 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                     if text:
                         collected_analysis = text[:200]  # 收集用于标题生成
                         logger.info(f"[SSE] RAG 检索结果: {text[:80]}")
+                        await _track(EventType.ANALYSIS, role="assistant", content=text)
 
                 # ── finish: 工作流结束 ────────────────────
                 elif node_name == "finish":
@@ -599,7 +723,7 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                     # 先生成并保存标题（在 done 事件之前）
                     try:
                         answer_summary = collected_analysis or collected_sql or ""
-                        node_title = await generate_node_title(question, answer_summary)
+                        node_title = await generate_node_title(question, answer_summary, provider)
                         # 使用 chat.py 层的 node_index（来自 MySQL count），而非 state_update 中的值
                         await _save_chat_node(session_thread_id, node_index, node_title, question, run_id)
                         if node_index == 0:
@@ -724,9 +848,35 @@ async def _stream_chat_deepagent(question: str, user_name: str, history: list[di
     else:
         node_index = 0
 
+    # ── 事件溯源双写（Phase 1）：feature flag 开启时，记录业务事件到 session_events ──
+    es_enabled = event_sourcing_enabled()
+    # 聚合本轮完整回答文本（messages 模式逐 token 累加，__end__ 时落为 analysis 事件）
+    deep_full_text = ""
+
+    async def _track(etype: str, role: str | None = None, content: str = "", payload: dict | None = None):
+        """在事件溯源开启时追加一条事件（失败不阻断主流程）。"""
+        if es_enabled:
+            await SessionEventStore.append(
+                session_thread_id, etype,
+                run_id=run_id, node_index=node_index,
+                role=role, content=content, payload=payload,
+            )
+
+    if es_enabled:
+        await _track(EventType.USER_MESSAGE, role="user", content=question)
+
     # DeepAgent 使用标准消息格式（含多轮历史）
     previous_msgs = history or []
     input_data = {"messages": [*previous_msgs, {"role": "user", "content": question}]}
+
+    # 阶段4 B6：注入会话长期目标（对齐 Harness /goal 命令）
+    if existing_thread_id:
+        goal_text = await _get_session_goal(existing_thread_id)
+        if goal_text:
+            input_data["messages"] = [
+                {"role": "system", "content": f"[会话长期目标] {goal_text}\n请始终围绕该目标执行任务并回答用户问题。"},
+                *input_data["messages"],
+            ]
 
     # ── 联网搜索提示：web_search=True 时注入系统指令 ──
     if web_search:
@@ -734,7 +884,7 @@ async def _stream_chat_deepagent(question: str, user_name: str, history: list[di
             "\n\n[提示] 你可以使用 web_search_tool 工具搜索互联网获取实时信息（天气、新闻、股价等）。"
             "对于需要最新数据的问题，请优先使用该工具进行搜索，然后基于搜索结果给出回答并注明信息来源。"
         )
-        yield _sse_event({"type": "status", "content": "联网搜索已开启"})
+        # yield _sse_event({"type": "status", "content": "联网搜索已开启"})
 
     yield _sse_event({
         "type": "status",
@@ -759,10 +909,25 @@ async def _stream_chat_deepagent(question: str, user_name: str, history: list[di
                 # 只处理 agent/model 节点的文本块
                 if node in ("agent", "model"):
                     content = getattr(chunk, "content", "")
+
+                    # ── 思考内容（reasoning）：与正文类型化隔离（Phase 4）──
+                    # Qwen/DashScope OpenAI 兼容模式将思考增量放于 additional_kwargs.reasoning_content；
+                    # 部分实现直接暴露 reasoning_content 属性，二者兼容取用。
+                    reasoning = ""
+                    add_kwargs = getattr(chunk, "additional_kwargs", None) or {}
+                    if add_kwargs:
+                        reasoning = add_kwargs.get("reasoning_content", "") or ""
+                    if not reasoning:
+                        reasoning = getattr(chunk, "reasoning_content", "") or ""
+                    if reasoning:
+                        yield _sse_event(make_event(SSEEventType.REASONING, content=reasoning))
+
                     if content and isinstance(content, str) and content.strip():
                         # 收集用于标题生成的首段文本
                         if not collected_deep_text:
                             collected_deep_text = content[:200]
+                        # 累加完整回答文本（事件溯源投影用）
+                        deep_full_text += content
                         yield _sse_event({"type": "token", "content": content})
 
                     # 工具调用块（增量）→ 结构化事件，前端渲染为可折叠卡片
@@ -829,13 +994,19 @@ async def _stream_chat_deepagent(question: str, user_name: str, history: list[di
                                     "status": "done",
                                     "content": str(msg_content)[:800],
                                 })
+                                await _track(EventType.TOOL_CHAIN, role="tool",
+                                             content=str(msg_content)[:800],
+                                             payload={"name": msg_name or "tool", "status": "done"})
 
                     elif node_name == "__end__":
                         logger.info("[DeepAgent] __end__ 到达: thread_id=%s node_index=%d text_len=%d",
                                     session_thread_id, node_index, len(collected_deep_text) if collected_deep_text else 0)
+                        # 事件溯源：落盘本轮完整回答文本为 analysis 事件
+                        if es_enabled and deep_full_text:
+                            await _track(EventType.ANALYSIS, role="assistant", content=deep_full_text)
                         # 先生成并推送标题，再发送 done
                         try:
-                            node_title = await generate_node_title(question, collected_deep_text)
+                            node_title = await generate_node_title(question, collected_deep_text, provider)
                             logger.info("[DeepAgent] 标题生成: %s", node_title)
                             await _save_chat_node(session_thread_id, node_index, node_title, question, run_id)
                             logger.info("[DeepAgent] 节点已保存: thread_id=%s node_index=%d",
@@ -919,7 +1090,9 @@ async def chat_completions(body: ChatRequest, user: dict = Depends(get_current_u
     # 与 Skills/MCP 工具调用能力，可真正执行通用任务；不受全局 USE_DEEP_AGENT 开关限制。
     if use_deep_agent() or body.mode == "task":
         return StreamingResponse(
-            _stream_chat_deepagent(question, user_name, history_msgs, body.thread_id, body.model, body.mode, body.web_search),
+            _wrap_cancellable(
+                _stream_chat_deepagent(question, user_name, history_msgs, body.thread_id, body.model, body.mode, body.web_search)
+            ),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -929,7 +1102,9 @@ async def chat_completions(body: ChatRequest, user: dict = Depends(get_current_u
         )
 
     return StreamingResponse(
-        _stream_chat(question, user_name, history_msgs, body.thread_id, body.model, body.mode, body.web_search),
+        _wrap_cancellable(
+            _stream_chat(question, user_name, history_msgs, body.thread_id, body.model, body.mode, body.web_search)
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -937,6 +1112,45 @@ async def chat_completions(body: ChatRequest, user: dict = Depends(get_current_u
             "X-Accel-Buffering": "no",
         },
     )
+
+
+class CancelRequest(BaseModel):
+    """停止生成请求体"""
+    thread_id: str = Field(..., description="要停止生成的会话 ID（chat 返回的 thread_id）")
+
+
+@router.post("/cancel", summary="停止会话生成（阶段2 B3）")
+async def cancel_generation(
+    body: CancelRequest,
+    user: dict = Depends(get_current_user),
+):
+    """
+    停止指定会话正在进行的 SSE 生成（对齐 Harness 的"停止生成"）。
+
+    权限：
+        需登录；非 admin 用户仅能停止自己的会话。
+    """
+    task = _active_stream_tasks.get(body.thread_id)
+    stop_event = _active_stream_events.get(body.thread_id)
+    if not task and not stop_event:
+        return {"success": False, "message": "该会话没有进行中的生成"}
+
+    # 会话归属校验
+    user_name = user["user_name"]
+    is_admin = user.get("user_type") == "00"
+    if not is_admin and ":" in body.thread_id:
+        owner = body.thread_id.split(":", 1)[0]
+        if owner != user_name:
+            logger.warning("[cancel] 越权停止被拒绝: user=%s thread_id=%s", user_name, body.thread_id)
+            raise HTTPException(status_code=403, detail="无权停止他人的会话")
+
+    # 先设停止标志（生成器下次循环 break，SSE 正常结束），再 cancel 任务兜底
+    if stop_event:
+        stop_event.set()
+    if task:
+        task.cancel()
+    logger.info("[cancel] 已发送停止指令: thread_id=%s", body.thread_id)
+    return {"success": True, "message": "已发送停止指令"}
 
 
 # ================================================================
@@ -947,6 +1161,7 @@ async def chat_completions(body: ChatRequest, user: dict = Depends(get_current_u
 @router.get("/suggestions", summary="获取基于表结构的问题建议")
 async def get_suggestions(
     force_refresh: bool = False,
+    model: str | None = None,
     user: dict = Depends(get_current_user),
 ):
     """
@@ -955,17 +1170,28 @@ async def get_suggestions(
     用于替代前端硬编码的问题模板（如「查询本月销售额Top10产品」等），
     使推荐问题与用户实际数据表结构相关，提升用户体验。
 
+    LLM 路由：显式走「前端模型列表」(llm_providers.json 中 enabled 的 provider)，
+    与聊天流一致；不回退到 .env 的 settings（避免 suggestions 与对话用不同账户）。
+    model 为空时回退到第一个 enabled provider，仍不回退 env。
+
     缓存策略：
         - 默认返回模块级缓存（表结构不变则不重复调用 LLM）
         - 传入 ?force_refresh=true 可强制刷新
 
     参数:
         force_refresh: 是否强制刷新缓存（默认 false）
+        model: 前端选中的模型 provider id（可选）
 
     返回:
         {"questions": ["问题1", "问题2", ...], "cached": bool}
     """
     try:
+        # 解析 LLM provider（走前端模型列表，不回退 env）
+        provider = _resolve_enabled_provider(model)
+        if provider is not None:
+            logger.info("[suggestions] LLM 路由: provider_id=%r model=%r",
+                        provider.get("id"), provider.get("model"))
+
         # 先尝试从缓存获取
         if not force_refresh:
             cached = get_cached_suggestions()
@@ -1000,8 +1226,10 @@ async def get_suggestions(
                 "cached": False,
             }
 
-        # 调用 LLM 生成问题建议
-        questions = await generate_question_suggestions(schema_text, force_refresh=force_refresh)
+        # 调用 LLM 生成问题建议（显式传入 provider，走前端模型列表）
+        questions = await generate_question_suggestions(
+            schema_text, force_refresh=force_refresh, provider=provider
+        )
 
         return {"questions": questions, "cached": False}
 
@@ -1021,6 +1249,25 @@ async def get_suggestions(
 # ================================================================
 # 会话持久化辅助函数（MySQL 存储）
 # ================================================================
+
+
+async def _get_session_goal(thread_id: str) -> str:
+    """读取会话长期目标（阶段4 B6，注入 system prompt）。失败返回空串。"""
+    from app.models.session import ChatSession
+    from app.db.session import _get_session_factory
+    from sqlalchemy import select
+
+    try:
+        factory = _get_session_factory()
+        async with factory() as session:
+            result = await session.execute(
+                select(ChatSession.goal).where(ChatSession.thread_id == thread_id)
+            )
+            goal = result.scalar_one_or_none()
+            return goal or ""
+    except Exception as exc:
+        logger.warning("[goal] 读取会话目标失败: %s", exc)
+        return ""
 
 
 async def _upsert_chat_session(thread_id: str, user_name: str, title: str = ""):
@@ -1480,7 +1727,24 @@ async def get_session_messages(
     except Exception as exc:
         logger.warning(f"[sessions] MySQL 节点查询失败: {exc}")
 
-    # 3. 从 Redis checkpointer 获取所有节点的状态
+    # 3. 优先从事件日志投影恢复（Phase 1 事件溯源：append-only + surface 投影）
+    if event_sourcing_enabled():
+        try:
+            derived = await SessionEventStore.derive_messages(thread_id)
+            if derived:
+                logger.info("[sessions] 历史会话从事件日志投影恢复: thread_id=%s, 消息数=%d",
+                            thread_id, len(derived))
+                return {
+                    "thread_id": thread_id,
+                    "title": title,
+                    "nodes": nodes,
+                    "messages": derived,
+                }
+            logger.info("[sessions] 事件日志为空，回退 Redis: thread_id=%s", thread_id)
+        except Exception as exc:
+            logger.warning(f"[sessions] 事件日志投影失败，回退 Redis: {exc}")
+
+    # 4. 从 Redis checkpointer 获取所有节点的状态（回退路径，兼容旧数据）
     from app.graph.workflow import get_graph
     graph = get_graph()
     all_messages: list[dict] = []
@@ -1536,6 +1800,17 @@ async def get_session_messages(
 
         all_messages.extend(turn_msgs)
 
+    # 5. 兜底：事件日志与 Redis 均无数据（如 14 天前旧会话，事件溯源未启用/快照已过期）
+    #    时，从 chat_nodes.question 构建最低限度消息，保证历史会话不空白（对齐 Harness 永不丢失会话）。
+    if not all_messages and nodes:
+        all_messages = [
+            {"role": "user", "type": "text", "content": n["question"]}
+            for n in nodes
+            if n.get("question")
+        ]
+        logger.info("[sessions] 事件/Redis 均空，使用节点题兜底: thread_id=%s, 消息数=%d",
+                    thread_id, len(all_messages))
+
     logger.info("[sessions] 历史会话已恢复: thread_id=%s, 消息数=%d, 节点数=%d",
                 thread_id, len(all_messages), len(nodes))
 
@@ -1545,6 +1820,209 @@ async def get_session_messages(
         "nodes": nodes,
         "messages": all_messages,
     }
+
+
+@router.get("/sessions/{thread_id}/export", summary="导出会话事件日志（JSONL）")
+async def export_session_events(
+    thread_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """
+    导出会话的完整事件日志（含过程态事件 plan/clarification/tool_chain）为 JSONL。
+
+    对齐 DeepSeek Harness 的 /export 命令（Session ZIP 归档）：
+    事件溯源（session_events 表）是会话的唯一事实来源，导出即为可审计、可重放的
+    完整事件流。
+
+    权限：
+        与 get_session_messages 一致——非 admin 仅能导出自己的会话。
+    """
+    from fastapi.responses import Response
+
+    user_name = user["user_name"]
+    is_admin = user.get("user_type") == "00"
+
+    # 权限检查
+    if not is_admin and ":" in thread_id:
+        thread_user = thread_id.split(":", 1)[0]
+        if thread_user != user_name:
+            raise HTTPException(status_code=403, detail="无权导出他人的会话")
+
+    events = await SessionEventStore.list_events(thread_id)
+    if not events:
+        raise HTTPException(status_code=404, detail="会话事件日志为空")
+
+    lines = []
+    for evt in events:
+        try:
+            payload_obj = json.loads(evt.payload) if evt.payload else None
+        except (json.JSONDecodeError, TypeError):
+            payload_obj = None
+        lines.append(json.dumps({
+            "id": evt.id,
+            "thread_id": evt.thread_id,
+            "run_id": evt.run_id,
+            "node_index": evt.node_index,
+            "event_type": evt.event_type,
+            "role": evt.role,
+            "content": evt.content,
+            "payload": payload_obj,
+            "created_at": evt.created_at.isoformat() if evt.created_at else None,
+        }, ensure_ascii=False))
+
+    filename = f"session-{thread_id.replace(':', '_')}.jsonl"
+    return Response(
+        content="\n".join(lines),
+        media_type="application/x-ndjson",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/sessions/{thread_id}/trajectory", summary="会话轨迹（阶段4 B2）")
+async def get_session_trajectory(
+    thread_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """
+    返回会话的完整事件轨迹（含过程态事件 plan/clarification/tool_chain），
+    供前端轨迹时间线渲染（对齐 Harness 的 Trajectory step 级记录）。
+
+    权限：
+        非 admin 仅能查看自己的会话。
+    """
+    user_name = user["user_name"]
+    is_admin = user.get("user_type") == "00"
+    if not is_admin and ":" in thread_id:
+        thread_user = thread_id.split(":", 1)[0]
+        if thread_user != user_name:
+            raise HTTPException(status_code=403, detail="无权查看他人的会话")
+
+    events = await SessionEventStore.list_events(thread_id)
+    trajectory = [
+        {
+            "id": evt.id,
+            "event_type": evt.event_type,
+            "role": evt.role,
+            "content": (evt.content or "")[:200],
+            "node_index": evt.node_index,
+            "created_at": evt.created_at.isoformat() if evt.created_at else None,
+        }
+        for evt in events
+    ]
+    return {"thread_id": thread_id, "events": trajectory}
+
+
+@router.post("/sessions/{thread_id}/fork", summary="分支会话（阶段2 A6）")
+async def fork_session(
+    thread_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """
+    将源会话的事件日志复制到新会话（事件溯源 Fork，对齐 Harness "在新对话中分支"）。
+
+    新会话 thread_id = {user_name}:{uuid}，仅含分支前事件（默认复制全部事件）。
+
+    权限：
+        非 admin 仅能分支自己的会话。
+    """
+    user_name = user["user_name"]
+    is_admin = user.get("user_type") == "00"
+
+    # 权限检查
+    if not is_admin and ":" in thread_id:
+        thread_user = thread_id.split(":", 1)[0]
+        if thread_user != user_name:
+            raise HTTPException(status_code=403, detail="无权分支他人的会话")
+
+    new_thread_id = f"{user_name}:{uuid.uuid4()}"
+    # 复制源会话全部事件（before_event_id 用极大值）
+    copied = await SessionEventStore.fork(thread_id, new_thread_id, before_event_id=1 << 31)
+    logger.info("[fork] 会话分支: %s -> %s (copied=%d)", thread_id, new_thread_id, copied)
+    # 补写 chat_sessions 元数据，确保新会话出现在会话列表中（对齐 Harness "在新对话中分支"）
+    try:
+        from app.models.session import ChatSession
+        from app.db.session import get_db
+        async for db in get_db():
+            from sqlalchemy import select
+            result = await db.execute(
+                select(ChatSession).where(ChatSession.thread_id == thread_id)
+            )
+            src = result.scalar_one_or_none()
+            src_title = (src.title or "") if src else ""
+            if src_title:
+                src_title += "(分支)"
+            new_sess = ChatSession(
+                thread_id=new_thread_id,
+                user_name=user_name,
+                title=src_title,
+            )
+            db.add(new_sess)
+            await db.commit()
+    except Exception as exc:
+        logger.warning("[fork] 写入 chat_sessions 失败: %s", exc)
+    return {"success": True, "new_thread_id": new_thread_id, "copied_events": copied}
+
+
+class GoalRequest(BaseModel):
+    """设置会话长期目标请求体"""
+    goal: str = Field("", max_length=2000, description="会话长期目标")
+
+
+def _check_thread_owner(thread_id: str, user: dict) -> str:
+    """会话归属校验，返回 user_name。非 admin 仅能操作自己的会话。"""
+    user_name = user["user_name"]
+    is_admin = user.get("user_type") == "00"
+    if not is_admin and ":" in thread_id:
+        thread_user = thread_id.split(":", 1)[0]
+        if thread_user != user_name:
+            raise HTTPException(status_code=403, detail="无权操作他人的会话")
+    return user_name
+
+
+@router.get("/sessions/{thread_id}/goal", summary="获取会话目标（阶段4 B6）")
+async def get_session_goal(
+    thread_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """获取会话长期目标（对齐 Harness /goal 命令）。"""
+    _check_thread_owner(thread_id, user)
+    goal = await _get_session_goal(thread_id)
+    return {"thread_id": thread_id, "goal": goal}
+
+
+@router.put("/sessions/{thread_id}/goal", summary="设置会话目标（阶段4 B6）")
+async def set_session_goal(
+    thread_id: str,
+    body: GoalRequest,
+    user: dict = Depends(get_current_user),
+):
+    """设置会话长期目标（对齐 Harness /goal 命令）。
+
+    目标在下一轮 DeepAgent 请求时注入 system prompt，引导模型持续围绕目标执行。
+    """
+    _check_thread_owner(thread_id, user)
+    from app.models.session import ChatSession
+    from app.db.session import _get_session_factory
+    from sqlalchemy import select
+
+    try:
+        factory = _get_session_factory()
+        async with factory() as session:
+            result = await session.execute(
+                select(ChatSession).where(ChatSession.thread_id == thread_id)
+            )
+            chat = result.scalar_one_or_none()
+            if chat is None:
+                raise HTTPException(status_code=404, detail="会话不存在")
+            chat.goal = body.goal
+            await session.commit()
+        logger.info("[goal] 已设置会话目标: thread_id=%s len=%d", thread_id, len(body.goal))
+        return {"success": True, "goal": body.goal}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("[goal] 设置会话目标失败: %s", exc)
+        raise HTTPException(status_code=500, detail="设置会话目标失败")
 
 
 @router.delete("/sessions/{thread_id}", summary="删除会话")

@@ -12,6 +12,8 @@ import { format as formatSQLText } from 'sql-formatter'
 import { useChatStore, type ChatMessage } from '@/stores/chat'
 import ClarifierCard from '@/components/ClarifierCard.vue'
 import ExecutionCard from '@/components/ExecutionCard.vue'
+import ReasoningBlock from '@/components/ReasoningBlock.vue'
+import SubagentNode from '@/components/SubagentNode.vue'
 import XThoughtChain from './XThoughtChain.vue'
 
 const store = useChatStore()
@@ -162,6 +164,12 @@ function onClarifySelect(option: string) {
       重试
     </button>
   </div>
+
+  <!-- 深度思考卡片（Phase 4：模型 reasoning 内容折叠展示） -->
+  <ReasoningBlock v-else-if="msg.type === 'reasoning'" :msg="msg" />
+
+  <!-- 子代理执行节点（阶段4 B4） -->
+  <SubagentNode v-else-if="msg.type === 'tool_result' && msg.toolName === 'subagent'" :msg="msg" />
 
   <!-- 思考/工具卡片：ThoughtChain 思维链渲染（P5） -->
   <div

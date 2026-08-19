@@ -11,6 +11,19 @@
       "temperature": 0.3,
       "max_tokens": 4096,
       "is_default": false,
+      "enabled": false
+    },
+    {
+      "id": "agnes",
+      "name": "agnes-2.5-flash",
+      "api_base": "https://apihub.agnes-ai.com/v1",
+      "api_key_env": "sk-iHVi9PrmoYoDxz8ZKKX1CuIHMmxg9Vh87Hak34IPrfGecQFs",
+      "api_key": "sk-iHVi9PrmoYoDxz8ZKKX1CuIHMmxg9Vh87Hak34IPrfGecQFs",
+      "key_mode": "direct",
+      "model": "agnes-2.5-flash",
+      "temperature": 0.3,
+      "max_tokens": 65500,
+      "is_default": false,
       "enabled": true
     }
   ],

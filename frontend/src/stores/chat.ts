@@ -9,7 +9,7 @@ import { downloadFile } from '@/api/client'
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant' | 'system'
-  type?: 'text' | 'sql' | 'result' | 'chart' | 'analysis' | 'status' | 'error' | 'thinking' | 'tool_call' | 'tool_result' | 'tool_chain' | 'clarification' | 'plan'
+  type?: 'text' | 'sql' | 'result' | 'chart' | 'analysis' | 'status' | 'error' | 'thinking' | 'reasoning' | 'tool_call' | 'tool_result' | 'tool_chain' | 'clarification' | 'plan'
   content?: string
   sql?: string
   data?: any[]
@@ -63,11 +63,36 @@ export const useChatStore = defineStore('chat', () => {
   /* 最后发送的问题（用于重试） */
   const lastQuestion = ref('')
 
+  /* 排队发送队列（阶段4 B5，对齐 Harness "繁忙时 Enter 排队发送"） */
+  const pendingQueue = ref<{ text: string; mode: string; webSearch: boolean }[]>([])
+
+  /* 会话长期目标（阶段4 B6，对齐 Harness /goal 命令） */
+  const currentGoal = ref('')
+
+  /* 本次回答性能指标（阶段1 A2，对齐 Harness 性能条）
+     llmMs: LLM 生成耗时（首 token → 结束）；toolMs: 工具执行累计耗时；inputTokens: 输入估算 */
+  interface PerfInfo {
+    durationMs: number
+    firstTokenMs: number
+    tokens: number
+    tokPerSec: number | null  // null 表示样本过短，前端显示「—」
+    llmMs: number
+    toolMs: number
+    inputTokens: number
+  }
+  const lastPerf = ref<PerfInfo | null>(null)
+
+  /* 上下文占用估算（阶段1 A3，对齐 Harness 上下文监控） */
+  const contextUsage = ref<{ estimatedTokens: number; window: number }>({ estimatedTokens: 0, window: 131072 })
+
   /* 当前会话 thread_id（SSE 流返回后设置） */
   const currentThreadId = ref('')
 
   /* 当前正在流式更新的 token 消息 ID */
   let activeTokenMsgId: string | null = null
+
+  /* 当前正在流式累积的 reasoning 消息 ID（Phase 4：思考内容折叠卡片） */
+  let activeReasoningMsgId: string | null = null
 
   /* 最后一个助手文本消息 ID（用于流式光标动画） */
   const lastAssistantMsgId = ref('')
@@ -165,7 +190,12 @@ export const useChatStore = defineStore('chat', () => {
 
   /* 发送消息：添加用户消息 -> 调用 SSE -> 处理各类事件 -> 添加对应消息 */
   async function sendMessage(text: string, mode = 'data', webSearch = false, model?: string) {
-    if (!text.trim() || isLoading.value) return
+    if (!text.trim()) return
+    // 排队发送（阶段4 B5）：运行中时进入队列，空闲后由 flushQueue 自动发送
+    if (isLoading.value) {
+      pendingQueue.value.push({ text: text.trim(), mode, webSearch })
+      return
+    }
     // 未显式指定模型时，统一使用 store 中记录的当前模型（与旧界面 Chat.vue 一致）
     const activeModel = model || currentModel.value || undefined
 
@@ -199,6 +229,41 @@ export const useChatStore = defineStore('chat', () => {
         }
         return { role: m.role, content: m.content || '' }
       })
+
+    // ── 性能统计（阶段1 A2/A3，对齐 Harness 性能条）──
+    const streamStartTime = Date.now()
+    let firstTokenTime: number | null = null
+    let tokenCount = 0
+    let estimatedChars = 0
+    /* LLM/工具耗时拆分（对齐 Harness "LLM 57.2s · 工具调用 3.6s"） */
+    let toolMsAccum = 0
+    let toolWindowStart: number | null = null   // 工具执行窗口起点
+    const perfInputTokens = chatMessages.reduce((sum, m) => sum + Math.ceil((m.content || '').length / 3), 0)
+
+    const finalizePerf = () => {
+      // 关闭未收尾的工具执行窗口
+      if (toolWindowStart !== null) {
+        toolMsAccum += Date.now() - toolWindowStart
+        toolWindowStart = null
+      }
+      const durationMs = Date.now() - streamStartTime
+      const firstTokenMs = firstTokenTime !== null ? firstTokenTime - streamStartTime : durationMs
+      const generateMs = firstTokenTime !== null ? Date.now() - firstTokenTime : 1
+      // 修 0 tok/s 边界 bug：生成时长 < 1s（样本过短）时显示「—」，避免除小值得出 0
+      const tokPerSec = generateMs >= 1000 ? Math.round((tokenCount / generateMs) * 1000) : null
+      const llmMs = Math.max(generateMs - toolMsAccum, 0)
+      lastPerf.value = {
+        durationMs,
+        firstTokenMs,
+        tokens: tokenCount,
+        tokPerSec,
+        llmMs,
+        toolMs: toolMsAccum,
+        inputTokens: perfInputTokens,
+      }
+      // 上下文占用估算：约 3 字符 ≈ 1 token
+      contextUsage.value.estimatedTokens += Math.ceil(estimatedChars / 3)
+    }
 
     // 调用 SSE 流式接口
     await sseConnect(
@@ -285,8 +350,34 @@ export const useChatStore = defineStore('chat', () => {
           }
         },
 
+        /* 模型思考内容增量（Phase 4）—— 与正文类型化隔离，折叠卡片展示 */
+        onReasoning(content: string) {
+          if (!content) return
+          if (activeReasoningMsgId) {
+            const msg = messages.value.find(m => m.id === activeReasoningMsgId)
+            if (msg) {
+              msg.content = (msg.content || '') + content
+            }
+          } else {
+            activeReasoningMsgId = generateId()
+            messages.value.push({
+              id: activeReasoningMsgId,
+              role: 'assistant',
+              type: 'reasoning',
+              content,
+              collapsed: true,
+            })
+          }
+        },
+
         /* 流式 Token 输出 —— 智能去重：sql_coder/rag_agent 的 token 不显示为独立文本 */
         onToken(content: string) {
+          // 正文开始，思考块结束（类型化隔离）
+          activeReasoningMsgId = null
+          // 性能统计（阶段1 A2）
+          tokenCount++
+          estimatedChars += content.length
+          if (firstTokenTime === null) firstTokenTime = Date.now()
           // sql_coder / rag_agent 的 token 流由格式化卡片展示，不重复渲染为文本
           if (currentAgent === 'sql_coder' || currentAgent === 'rag_agent') {
             return
@@ -311,11 +402,23 @@ export const useChatStore = defineStore('chat', () => {
 
         /* 工具调用 —— 紧凑型卡片 */
         onToolCall(toolName: string, meta: Record<string, unknown>) {
+          activeReasoningMsgId = null
           activeTokenMsgId = null
+          // 工具执行窗口开始（性能拆分）
+          if (toolWindowStart === null) toolWindowStart = Date.now()
           const cleanMeta: Record<string, unknown> = {}
-          // 优先展示结构化 args（DeepAgent 新协议）
+          // 优先展示结构化 args（DeepAgent 新协议）：对象/数组需 JSON 序列化，杜绝 [object Object]
           if (meta.args) {
-            cleanMeta.input = String(meta.args).slice(0, 300)
+            const args = meta.args
+            if (typeof args === 'string') {
+              cleanMeta.input = args.slice(0, 300)
+            } else {
+              try {
+                cleanMeta.input = JSON.stringify(args, null, 2).slice(0, 300)
+              } catch {
+                cleanMeta.input = String(args).slice(0, 300)
+              }
+            }
           }
           for (const [k, v] of Object.entries(meta)) {
             if (v !== undefined && v !== null && v !== '' && k !== 'sql' && k !== 'sql_preview' && k !== 'args') {
@@ -337,7 +440,14 @@ export const useChatStore = defineStore('chat', () => {
           if (toolName === 'sql_coder' || toolName === 'analyst' || toolName === 'rag_agent') {
             currentAgent = null
           }
-          // 查找最近同名的 tool_call 并合并结果
+          // 工具执行窗口结束（性能拆分）
+          if (toolWindowStart !== null) {
+            toolMsAccum += Date.now() - toolWindowStart
+            toolWindowStart = null
+          }
+          // 查找最近「未合并」的同名 tool_call 并合并结果。
+          // 注意：合并后 recent.type 会改为 'tool_chain'，因此查找条件必须排除 tool_chain，
+          // 否则同一工具连续多次调用时会错配到上一个已合并的卡片。
           const recent = [...messages.value].reverse().find(
             m => m.type === 'tool_call' && m.toolName === toolName
           )
@@ -401,6 +511,8 @@ export const useChatStore = defineStore('chat', () => {
 
         /* 错误信息（含错误码） */
         onError(error: string, code?: string, recoverable?: boolean) {
+          finalizePerf()
+          activeReasoningMsgId = null
           activeTokenMsgId = null
           messages.value.push({
             id: generateId(),
@@ -411,6 +523,8 @@ export const useChatStore = defineStore('chat', () => {
             recoverable: recoverable ?? false,
           })
           isLoading.value = false
+          // 阶段4 B5：错误结束后同样处理排队消息
+          flushQueue()
         },
 
         /* 数据分析洞察 */
@@ -463,6 +577,8 @@ export const useChatStore = defineStore('chat', () => {
 
         /* 流结束 */
         onDone() {
+          finalizePerf()
+          activeReasoningMsgId = null
           activeTokenMsgId = null
           isLoading.value = false
           // 标记所有任务为已完成，2 秒后自动折叠
@@ -474,6 +590,8 @@ export const useChatStore = defineStore('chat', () => {
           if (currentThreadId.value) {
             loadSessionNodes()
           }
+          // 阶段4 B5：空闲后自动发送排队消息
+          flushQueue()
         },
       },
     )
@@ -501,7 +619,9 @@ export const useChatStore = defineStore('chat', () => {
     sseDisconnect()
     messages.value = []
     isLoading.value = false
+    activeReasoningMsgId = null
     activeTokenMsgId = null
+    pendingQueue.value = []
     lastQuestion.value = ''
     currentThreadId.value = ''
     turns.value = []
@@ -513,13 +633,101 @@ export const useChatStore = defineStore('chat', () => {
   /* 新建会话：清空当前对话 */
   function newSession() {
     clearMessages()
+    currentGoal.value = ''
   }
 
-  /* 中止当前生成 */
+  /* 空闲后自动发送排队消息（阶段4 B5，对齐 Harness "繁忙时 Enter 排队发送"） */
+  async function flushQueue() {
+    if (pendingQueue.value.length > 0 && !isLoading.value) {
+      const next = pendingQueue.value.shift()!
+      await sendMessage(next.text, next.mode, next.webSearch)
+    }
+  }
+
+  /* 设置会话长期目标（阶段4 B6，对齐 Harness /goal 命令） */
+  async function setSessionGoal(goal: string): Promise<boolean> {
+    if (!currentThreadId.value) return false
+    try {
+      await apiClient.put(`/chat/sessions/${currentThreadId.value}/goal`, { goal })
+      currentGoal.value = goal
+      return true
+    } catch (err) {
+      console.error('[chat] 设置目标失败:', err)
+      return false
+    }
+  }
+
+  /* 中止当前生成（阶段2 A4：先通知后端取消运行任务，再断开 SSE） */
   function stopGeneration() {
+    if (currentThreadId.value) {
+      apiClient.post('/chat/cancel', { thread_id: currentThreadId.value }).catch((err) => {
+        console.warn('[chat] cancel 通知失败:', err)
+      })
+    }
     sseDisconnect()
     activeTokenMsgId = null
     isLoading.value = false
+  }
+
+  /* 分支当前会话为新会话（阶段2 A6，对齐 Harness "在新对话中分支"） */
+  async function forkSession(): Promise<string | null> {
+    if (!currentThreadId.value) {
+      console.warn('[chat] 无会话可分支')
+      return null
+    }
+    try {
+      const data = await apiClient.post(`/chat/sessions/${currentThreadId.value}/fork`) as {
+        success: boolean
+        new_thread_id: string
+      }
+      if (!data.success || !data.new_thread_id) return null
+      // 切换并加载新会话（含分支前的事件投影）
+      const oldThreadId = currentThreadId.value
+      const oldSession = sessions.value.find(s => s.thread_id === oldThreadId)
+      currentThreadId.value = data.new_thread_id
+      await loadSession(data.new_thread_id)
+      // 立即把新会话插入列表顶部（对齐 Harness fork 后立即可见）
+      if (!sessions.value.some(s => s.thread_id === data.new_thread_id)) {
+        sessions.value.unshift({
+          thread_id: data.new_thread_id,
+          title: oldSession?.title ? `${oldSession.title}(分支)` : '',
+          question: oldSession?.question || '',
+          created_at: new Date().toISOString(),
+          message_count: oldSession?.message_count ?? 0,
+        })
+      }
+      loadSessions()  // 与后端保持一致（含标题回写）
+      return data.new_thread_id
+    } catch (err) {
+      console.error('[chat] 分支会话失败:', err)
+      return null
+    }
+  }
+
+  /* 导出会话事件日志（阶段1 A7，对齐 Harness /export 命令） */
+  async function exportSession() {
+    if (!currentThreadId.value) {
+      console.warn('[chat] 无会话可导出')
+      return
+    }
+    try {
+      const token = localStorage.getItem('token')
+      const resp = await fetch(`/api/v1/chat/sessions/${currentThreadId.value}/export`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      const blob = await resp.blob()
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `session-${currentThreadId.value.replace(':', '_')}.jsonl`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      window.URL.revokeObjectURL(url)
+    } catch (err) {
+      console.error('[chat] 导出会话失败:', err)
+    }
   }
 
   /* 加载当前会话的节点信息（用于多轮对话导航） */
@@ -565,6 +773,13 @@ export const useChatStore = defineStore('chat', () => {
         messages: ChatMessage[]
       }
       currentThreadId.value = threadId
+      // 阶段4 B6：加载会话长期目标
+      try {
+        const goalData = await apiClient.get(`/chat/sessions/${threadId}/goal`) as { goal: string }
+        currentGoal.value = goalData.goal || ''
+      } catch {
+        currentGoal.value = ''
+      }
       // 恢复轮次信息
       if (data.nodes && data.nodes.length > 0) {
         turns.value = data.nodes.map(n => ({
@@ -628,12 +843,16 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  /* 加载基于表结构的动态问题建议 */
+  /* 加载基于表结构的动态问题建议（显式携带当前模型，与对话走同一前端模型列表） */
   async function loadSuggestions(forceRefresh = false) {
     if (suggestionsLoading.value) return
     suggestionsLoading.value = true
     try {
-      const params = forceRefresh ? '?force_refresh=true' : ''
+      const qs = new URLSearchParams()
+      if (forceRefresh) qs.set('force_refresh', 'true')
+      // 携带当前选中的模型 provider id，使 suggestions 走前端模型列表而非 .env
+      if (currentModel.value) qs.set('model', currentModel.value)
+      const params = qs.toString() ? `?${qs.toString()}` : ''
       const data = await apiClient.get(`/chat/suggestions${params}`, { timeout: 8000 }) as { questions: string[]; cached: boolean }
       if (data.questions && data.questions.length > 0) {
         suggestions.value = data.questions
@@ -678,12 +897,20 @@ export const useChatStore = defineStore('chat', () => {
     clearMessages,
     newSession,
     stopGeneration,
+    flushQueue,
+    pendingQueue,
+    currentGoal,
+    setSessionGoal,
     loadSessions,
     loadSession,
     loadSessionNodes,
     editSessionTitle,
     deleteSession,
     exportData,
+    exportSession,
+    forkSession,
+    lastPerf,
+    contextUsage,
     loadSuggestions,
   }
 })

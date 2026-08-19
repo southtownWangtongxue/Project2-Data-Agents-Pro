@@ -10,10 +10,42 @@
  *   - 当前活跃会话高亮（左侧色条 + 背景）
  *   - 相对时间显示
  */
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { useChatStore, type SessionInfo } from '@/stores/chat'
 
 const store = useChatStore()
+
+/* 会话搜索关键字（对齐 Harness 工作区搜索框） */
+const searchQuery = ref('')
+
+/* 按关键字过滤后的会话（标题/问题模糊匹配） */
+const filteredSessions = computed(() => {
+  const q = searchQuery.value.trim().toLowerCase()
+  if (!q) return store.sessions
+  return store.sessions.filter(s =>
+    (s.title || '').toLowerCase().includes(q) ||
+    (s.question || '').toLowerCase().includes(q)
+  )
+})
+
+/* 会话分组（阶段3 A9：按日期分组，对齐 Harness 会话树分组） */
+const groupedSessions = computed(() => {
+  const groups: { label: string; items: SessionInfo[] }[] = []
+  const today: SessionInfo[] = []
+  const earlier: SessionInfo[] = []
+  const todayStr = new Date().toDateString()
+  for (const s of filteredSessions.value) {
+    const d = s.created_at ? new Date(s.created_at).toDateString() : ''
+    if (d === todayStr) today.push(s)
+    else earlier.push(s)
+  }
+  if (today.length) groups.push({ label: '今天', items: today })
+  if (earlier.length) groups.push({ label: '更早', items: earlier })
+  return groups
+})
+
+/* 是否存在匹配结果（搜索无结果提示用） */
+const hasFiltered = computed(() => filteredSessions.value.length > 0)
 
 const emit = defineEmits<{
   (e: 'select', threadId: string): void
@@ -97,45 +129,69 @@ function relativeTime(dateStr: string): string {
         </svg>
         新建会话
       </button>
+
+      <!-- 搜索框（对齐 Harness 搜索会话） -->
+      <div class="sidebar-search">
+        <svg class="sidebar-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="8"/>
+          <path d="m21 21-4.3-4.3"/>
+        </svg>
+        <input
+          v-model="searchQuery"
+          class="sidebar-search-input"
+          type="text"
+          placeholder="搜索会话…"
+        />
+        <button v-if="searchQuery" class="sidebar-search-clear" @click="searchQuery = ''" title="清除">×</button>
+      </div>
     </div>
 
-    <!-- 会话列表 -->
-    <div class="sidebar-list" v-if="store.sessions.length">
-      <div
-        v-for="s in store.sessions"
-        :key="s.thread_id"
-        class="sidebar-item"
-        :class="{ 'is-active': store.currentThreadId === s.thread_id }"
-        @click="handleClick(s)"
-      >
-        <div class="sidebar-item-content">
-          <!-- 内联编辑 -->
-          <div v-if="editingThreadId === s.thread_id" class="sidebar-edit-wrap" @click.stop>
-            <input
-              v-model="editingTitle"
-              class="sidebar-edit-input"
-              ref="editInputRef"
-              @keydown.enter="confirmEdit()"
-              @keydown.escape="cancelEdit()"
-              @blur="confirmEdit()"
-            />
+    <!-- 会话列表（按日期分组） -->
+    <div class="sidebar-list" v-if="store.sessions.length && hasFiltered">
+      <template v-for="g in groupedSessions" :key="g.label">
+        <div class="sidebar-group-label">{{ g.label }} ({{ g.items.length }})</div>
+        <div
+          v-for="s in g.items"
+          :key="s.thread_id"
+          class="sidebar-item"
+          :class="{ 'is-active': store.currentThreadId === s.thread_id }"
+          @click="handleClick(s)"
+        >
+          <div class="sidebar-item-content">
+            <!-- 内联编辑 -->
+            <div v-if="editingThreadId === s.thread_id" class="sidebar-edit-wrap" @click.stop>
+              <input
+                v-model="editingTitle"
+                class="sidebar-edit-input"
+                ref="editInputRef"
+                @keydown.enter="confirmEdit()"
+                @keydown.escape="cancelEdit()"
+                @blur="confirmEdit()"
+              />
+            </div>
+            <template v-else>
+              <div class="sidebar-item-title" @dblclick="startEdit(s, $event)">
+                {{ s.title || s.question?.slice(0, 30) || '无标题' }}
+              </div>
+              <div class="sidebar-item-meta">
+                {{ s.message_count }} 条 · {{ relativeTime(s.created_at) }}
+              </div>
+            </template>
           </div>
-          <template v-else>
-            <div class="sidebar-item-title" @dblclick="startEdit(s, $event)">
-              {{ s.title || s.question?.slice(0, 30) || '无标题' }}
-            </div>
-            <div class="sidebar-item-meta">
-              {{ s.message_count }} 条 · {{ relativeTime(s.created_at) }}
-            </div>
-          </template>
+          <button
+            v-if="editingThreadId !== s.thread_id"
+            class="sidebar-item-delete"
+            @click="handleDelete(s, $event)"
+            title="删除会话"
+          >×</button>
         </div>
-        <button
-          v-if="editingThreadId !== s.thread_id"
-          class="sidebar-item-delete"
-          @click="handleDelete(s, $event)"
-          title="删除会话"
-        >×</button>
-      </div>
+      </template>
+    </div>
+
+    <!-- 搜索无结果 -->
+    <div v-else-if="store.sessions.length && !hasFiltered" class="sidebar-empty">
+      <p>无匹配会话</p>
+      <p class="sidebar-empty-hint">换个关键词试试</p>
     </div>
 
     <!-- 空状态 -->
@@ -209,6 +265,57 @@ function relativeTime(dateStr: string): string {
   transform: translateY(-1px);
 }
 
+/* 搜索框（对齐 Harness 搜索会话） */
+.sidebar-search {
+  position: relative;
+  margin-top: var(--space-3);
+}
+
+.sidebar-search-icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--color-text-muted);
+  pointer-events: none;
+}
+
+.sidebar-search-input {
+  width: 100%;
+  padding: 6px 28px 6px 30px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  color: var(--color-text-primary);
+  outline: none;
+  transition: border-color var(--transition-fast);
+  font-family: var(--font-sans);
+}
+
+.sidebar-search-input:focus {
+  border-color: rgba(99, 102, 241, 0.4);
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.08);
+}
+
+.sidebar-search-clear {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: var(--color-text-muted);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.sidebar-search-clear:hover {
+  color: var(--color-text-primary);
+}
+
 /* 会话列表 */
 .sidebar-list {
   flex: 1;
@@ -225,6 +332,15 @@ function relativeTime(dateStr: string): string {
   border-radius: var(--radius-full);
 }
 
+/* 分组标题（阶段3 A9） */
+.sidebar-group-label {
+  padding: var(--space-2) var(--space-3) var(--space-1);
+  font-size: 11px;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
 /* 会话项 */
 .sidebar-item {
   display: flex;
@@ -236,6 +352,9 @@ function relativeTime(dateStr: string): string {
   transition: all var(--transition-fast);
   margin-bottom: 2px;
   border-left: 3px solid transparent;
+  /* 浏览器级渲染跳过（轻量虚拟滚动：超长列表只渲染可视区附近的 DOM） */
+  content-visibility: auto;
+  contain-intrinsic-size: 48px;
 }
 
 .sidebar-item:hover {

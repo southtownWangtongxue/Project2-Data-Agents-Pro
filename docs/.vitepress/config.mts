@@ -10,6 +10,16 @@ export default defineConfig({
       { text: '开发指南', link: '/guide/quick-start' },
       { text: 'API 文档', link: '/api/introduction' },
       { text: '项目文档', link: '/开发计划' },
+      {
+        text: '参考',
+        items: [
+          { text: 'DeepSeek Harness 研读笔记', link: '/reference/deepseek-harness-notes' },
+          { text: 'DeepSeek Harness 集成分析', link: '/reference/deepseek-harness-integration-analysis' },
+          { text: 'DeepSeek Harness 实测体验', link: '/reference/deepseek-harness-hands-on' },
+          { text: 'Harness 界面与执行机制对比分析', link: '/reference/harness-ui-analysis' },
+          { text: '运行时架构图', link: '/reference/runtime-architecture' },
+        ],
+      },
     ],
     sidebar: {
       '/guide/': [
@@ -30,6 +40,13 @@ export default defineConfig({
       '/develop/': [
         { text: '前端二次开发', link: '/develop/frontend-dev' },
         { text: 'Agent 开发指南', link: '/develop/agent-dev' },
+      ],
+      '/reference/': [
+        { text: 'DeepSeek Harness 研读笔记', link: '/reference/deepseek-harness-notes' },
+        { text: 'DeepSeek Harness 集成分析', link: '/reference/deepseek-harness-integration-analysis' },
+        { text: 'DeepSeek Harness 实测体验', link: '/reference/deepseek-harness-hands-on' },
+        { text: 'Harness 界面与执行机制对比分析', link: '/reference/harness-ui-analysis' },
+        { text: '运行时架构图', link: '/reference/runtime-architecture' },
       ],
       '/': [
         { text: '开发计划', link: '/开发计划' },

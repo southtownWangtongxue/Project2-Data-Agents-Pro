@@ -6,7 +6,7 @@
  * - 模型选择器在顶部工具栏
  * - 模式切换 + 联网搜索 集成在输入框组件中
  */
-import { ref, watch, nextTick, onMounted, computed } from 'vue'
+import { ref, watch, nextTick, onMounted, onUnmounted, computed } from 'vue'
 import { useChatStore, type ChatMessage } from '@/stores/chat'
 import { marked } from 'marked'
 import { format as formatSQLText } from 'sql-formatter'
@@ -16,6 +16,9 @@ import ChatInput from '@/components/ChatInput.vue'
 import ClarifierCard from '@/components/ClarifierCard.vue'
 import ExecutionCard from '@/components/ExecutionCard.vue'
 import NodeSeparator from '@/components/NodeSeparator.vue'
+import ReasoningBlock from '@/components/ReasoningBlock.vue'
+import SubagentNode from '@/components/SubagentNode.vue'
+import TrajectoryView from '@/components/TrajectoryView.vue'
 
 const store = useChatStore()
 
@@ -27,7 +30,6 @@ const webSearchEnabled = ref(false)
 const STORAGE_KEY = 'selectedModelId'
 const currentModel = ref(localStorage.getItem(STORAGE_KEY) || '')
 const showModelMenu = ref(false)
-let modelMenuTimer: ReturnType<typeof setTimeout> | null = null
 
 interface ChatModel {
   id: string
@@ -63,12 +65,8 @@ async function loadModels() {
   }
 }
 
-function onModelEnter() {
-  if (modelMenuTimer) { clearTimeout(modelMenuTimer); modelMenuTimer = null }
-  showModelMenu.value = true
-}
-function onModelLeave() {
-  modelMenuTimer = setTimeout(() => { showModelMenu.value = false }, 150)
+function toggleModelMenu() {
+  showModelMenu.value = !showModelMenu.value
 }
 function selectModel(id: string) {
   currentModel.value = id
@@ -84,25 +82,9 @@ const sidebarCollapsed = ref(false)
 
 /* 多轮对话下拉菜单状态 */
 const showTurnMenu = ref(false)
-let hideTurnMenuTimer: ReturnType<typeof setTimeout> | null = null
 
-function onTurnTriggerEnter() {
-  if (hideTurnMenuTimer) { clearTimeout(hideTurnMenuTimer); hideTurnMenuTimer = null }
-  showTurnMenu.value = true
-}
-
-function onTurnTriggerLeave() {
-  hideTurnMenuTimer = setTimeout(() => {
-    showTurnMenu.value = false
-  }, 200)
-}
-
-function onTurnMenuEnter() {
-  if (hideTurnMenuTimer) { clearTimeout(hideTurnMenuTimer); hideTurnMenuTimer = null }
-}
-
-function onTurnMenuLeave() {
-  showTurnMenu.value = false
+function toggleTurnMenu() {
+  showTurnMenu.value = !showTurnMenu.value
 }
 
 /* 自动滚动到最新消息 */
@@ -148,10 +130,32 @@ watch(() => store.sentMarker, () => {
   })
 })
 
+/* 点击菜单外区域关闭所有下拉（对齐 Harness click 交互） */
+function onDocClick(e: MouseEvent) {
+  const target = e.target as HTMLElement
+  if (!target.closest('.model-selector')) showModelMenu.value = false
+  if (!target.closest('.turn-nav')) showTurnMenu.value = false
+}
+
+/* Esc 关闭下拉 */
+function onDocKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') {
+    showModelMenu.value = false
+    showTurnMenu.value = false
+  }
+}
+
 onMounted(() => {
   store.loadSessions()
   store.loadSuggestions()
   loadModels()
+  document.addEventListener('click', onDocClick)
+  document.addEventListener('keydown', onDocKeydown)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('click', onDocClick)
+  document.removeEventListener('keydown', onDocKeydown)
 })
 
 /* 侧边栏选择会话 → 加载历史 + 滚动到底部 */
@@ -170,6 +174,24 @@ function handleSend(text: string) {
 /* 中止生成 */
 function handleCancel() {
   store.stopGeneration()
+}
+
+/* 轨迹面板（阶段4 B2） */
+const showTrajectory = ref(false)
+const trajectoryRef = ref<InstanceType<typeof TrajectoryView> | null>(null)
+
+function toggleTrajectory() {
+  showTrajectory.value = !showTrajectory.value
+  if (showTrajectory.value) {
+    nextTick(() => trajectoryRef.value?.load())
+  }
+}
+
+/* 消息反馈（阶段3 A5）—— 本地点赞/点踩，可扩展为落库 */
+const feedbackMap = ref<Record<string, string>>({})
+
+function setFeedback(msgId: string, kind: 'good' | 'bad') {
+  feedbackMap.value[msgId] = feedbackMap.value[msgId] === kind ? '' : kind
 }
 
 /* 复制 SQL */
@@ -215,49 +237,52 @@ function messageClass(msg: ChatMessage): Record<string, boolean> {
     'message-status': msg.type === 'status',
     'message-error': msg.type === 'error',
     'message-assistant': msg.role === 'assistant' && msg.type !== 'error',
-    'message-system-card': msg.type === 'thinking' || msg.type === 'tool_call' || msg.type === 'tool_result' || msg.type === 'tool_chain' || msg.type === 'clarification' || msg.type === 'plan',
+    'message-system-card': msg.type === 'reasoning' || msg.type === 'thinking' || msg.type === 'tool_call' || msg.type === 'tool_result' || msg.type === 'tool_chain' || msg.type === 'clarification' || msg.type === 'plan',
   }
 }
 
-/* tool 信息 */
+/* tool 信息（对齐 Harness 单行折叠：统一图标，无「调用:/完成:」前缀，避免实时流视觉跳变） */
 function toolInfo(msg: ChatMessage): { label: string; icon: string } {
   switch (msg.type) {
     case 'thinking': return { label: `${msg.agent || ''} — ${msg.phase || '思考中'}`, icon: '💭' }
-    case 'tool_call': return { label: `调用: ${msg.toolName || ''}`, icon: '🔧' }
-    case 'tool_result': return { label: `完成: ${msg.toolName || ''}`, icon: '✅' }
-    case 'tool_chain': return { label: `${msg.toolName || '工具'}`, icon: '🔗' }
+    case 'tool_call':
+    case 'tool_result':
+    case 'tool_chain': return { label: `${msg.toolName || '工具'}`, icon: '🔧' }
     default: return { label: '', icon: '📋' }
   }
 }
 
+/* 工具单行摘要（对齐 Harness：优先显示结果/状态/输入，保持一行） */
 function formatToolMeta(meta?: Record<string, unknown>): string {
   if (!meta) return ''
-  return Object.entries(meta)
-    .filter(([, v]) => v !== undefined && v !== null && v !== '')
-    .map(([k, v]) => {
-      const val = typeof v === 'string' ? v : JSON.stringify(v)
-      return `${k}: ${val.length > 80 ? val.slice(0, 80) + '...' : val}`
-    })
-    .join(' | ')
+  const pick = (k: string): string => {
+    const v = meta[k]
+    if (v === undefined || v === null || v === '') return ''
+    const s = typeof v === 'string' ? v : JSON.stringify(v)
+    return s.length > 60 ? s.slice(0, 60) + '…' : s
+  }
+  return pick('result') || pick('status') || pick('input') || pick('info') || ''
 }
 
-/* 获取工具卡片可展开的内容描述 */
+/* 将任意值安全序列化为可读文本（对象用 JSON.stringify，杜绝 [object Object]） */
+function stringifyValue(v: unknown, maxLen = 500): string {
+  if (v === undefined || v === null) return ''
+  if (typeof v === 'string') return v.slice(0, maxLen)
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v)
+  try {
+    const s = JSON.stringify(v, null, 2)
+    return (s ?? '').slice(0, maxLen)
+  } catch {
+    return String(v).slice(0, maxLen)
+  }
+}
+
+/* 工具卡片展开内容（对齐 Harness：统一遍历 toolMeta 全部字段，杜绝字段丢失/展开为空） */
 function toolExpandContent(msg: ChatMessage): string {
   const meta = msg.toolMeta || {}
-  if (msg.type === 'tool_call') {
-    if (meta.sql) return `SQL 预览:\n${String(meta.sql)}`
-    if (meta.input) return `输入:\n${String(meta.input)}`
-    if (meta.info) return String(meta.info)
-  }
-  if (msg.type === 'tool_chain' || msg.type === 'tool_result') {
-    const parts: string[] = []
-    if (meta.input) parts.push(`输入:\n${String(meta.input)}`)
-    if (meta.result) parts.push(`结果:\n${String(meta.result)}`)
-    if (parts.length) return parts.join('\n\n')
-  }
-  if (msg.type === 'tool_result') {
-    if (meta.result) return String(meta.result)
-    // 从关联的消息中提取摘要
+
+  // 无 toolMeta 但可从关联消息推导摘要的特例（execute_sql / sql_coder / analyst）
+  if (Object.keys(meta).length === 0) {
     if (msg.toolName === 'execute_sql') {
       const lastResult = [...store.messages].reverse().find(m => m.type === 'result')
       if (lastResult?.data) return `返回 ${lastResult.data.length} 条记录`
@@ -271,7 +296,20 @@ function toolExpandContent(msg: ChatMessage): string {
       if (lastAnalysis?.content) return `分析结果:\n${String(lastAnalysis.content).slice(0, 500)}`
     }
   }
-  return ''
+
+  // 统一遍历所有字段，友好显示字段名
+  const labelMap: Record<string, string> = {
+    input: '输入', result: '结果', status: '状态', info: '说明',
+    sql: 'SQL', args: '参数', agent: '代理', phase: '阶段',
+    chart_type: '图表类型', row_count: '返回行数',
+  }
+  const parts: string[] = []
+  for (const [k, v] of Object.entries(meta)) {
+    if (v === undefined || v === null || v === '') continue
+    const label = labelMap[k] || k
+    parts.push(`${label}:\n${stringifyValue(v)}`)
+  }
+  return parts.join('\n\n')
 }
 
 /* Clarifier 追问 */
@@ -390,10 +428,21 @@ function scrollToNode(nodeIndex: number) {
             <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
           </svg>
         </button>
+        <button class="toolbar-btn" title="分支会话（基于当前会话创建新会话）" :disabled="!store.currentThreadId" @click="store.forkSession()">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>
+          </svg>
+        </button>
+        <button class="toolbar-btn" :class="{ 'is-active': showTrajectory }" title="会话轨迹" @click="toggleTrajectory">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <polyline points="12 6 12 12 16 14"/>
+          </svg>
+        </button>
 
-        <!-- 模型选择器（千问风格） -->
-        <div class="model-selector" @mouseenter="onModelEnter" @mouseleave="onModelLeave">
-          <button class="model-trigger" :class="{ 'is-open': showModelMenu }">
+        <!-- 模型选择器（click 展开，对齐 Harness） -->
+        <div class="model-selector">
+          <button class="model-trigger" :class="{ 'is-open': showModelMenu }" @click="toggleModelMenu">
             <span class="model-name">{{ models.find(m => m.id === currentModel)?.name }}</span>
             <svg class="model-chevron" :class="{ 'is-open': showModelMenu }"
               width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -402,7 +451,7 @@ function scrollToNode(nodeIndex: number) {
           </button>
 
           <Transition name="model-menu">
-            <div v-if="showModelMenu" class="model-menu" @mouseenter="onModelEnter" @mouseleave="onModelLeave">
+            <div v-if="showModelMenu" class="model-menu">
               <div class="model-menu-header">模型</div>
               <div
                 v-for="m in models" :key="m.id"
@@ -425,14 +474,12 @@ function scrollToNode(nodeIndex: number) {
           </Transition>
         </div>
 
-        <!-- 多轮对话节点快捷跳转（DeepSeek 风格） -->
+        <!-- 多轮对话节点快捷跳转（click 展开，对齐 Harness） -->
         <div
           v-if="store.turns.length > 1"
           class="turn-nav"
-          @mouseenter="onTurnTriggerEnter"
-          @mouseleave="onTurnTriggerLeave"
         >
-          <button class="turn-nav-trigger" :class="{ 'is-open': showTurnMenu }">
+          <button class="turn-nav-trigger" :class="{ 'is-open': showTurnMenu }" @click="toggleTurnMenu">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="12 2 12 22"/>
               <polyline points="6 6 12 2 18 6"/>
@@ -449,8 +496,6 @@ function scrollToNode(nodeIndex: number) {
             <div
               v-if="showTurnMenu"
               class="turn-menu"
-              @mouseenter="onTurnMenuEnter"
-              @mouseleave="onTurnMenuLeave"
             >
               <div class="turn-menu-header">对话轮次</div>
               <div
@@ -729,6 +774,11 @@ function scrollToNode(nodeIndex: number) {
             </div>
           </template>
 
+          <!-- 深度思考卡片（Phase 4：模型 reasoning 内容，与正文类型化隔离） -->
+          <template v-else-if="msg.type === 'reasoning'">
+            <ReasoningBlock :msg="msg" />
+          </template>
+
           <!-- 思考卡片（优化的 DeepSeek 风格） -->
           <template v-else-if="msg.type === 'thinking'">
             <div class="thinking-card" @click="toggleCollapse(msg)">
@@ -752,8 +802,11 @@ function scrollToNode(nodeIndex: number) {
             </div>
           </template>
 
+          <!-- 子代理执行节点（阶段4 B4） -->
+          <SubagentNode v-else-if="msg.type === 'tool_result' && msg.toolName === 'subagent'" :msg="msg" />
+
           <!-- 工具卡片（可展开查看详情） -->
-          <template v-else-if="msg.type === 'tool_call' || msg.type === 'tool_result' || msg.type === 'tool_chain'">
+          <template v-else-if="(msg.type === 'tool_call' || msg.type === 'tool_result' || msg.type === 'tool_chain') && msg.toolName !== 'subagent'">
             <div class="tool-card" :class="msg.type" @click="toggleCollapse(msg)">
               <div class="tool-header">
                 <span class="tool-icon">{{ toolInfo(msg).icon }}</span>
@@ -787,6 +840,15 @@ function scrollToNode(nodeIndex: number) {
               :class="{ 'is-streaming': store.isLoading && msg.id === store.lastAssistantMsgId }"
               v-html="renderMarkdown(msg.content || '')"
             ></div>
+            <!-- 消息反馈（阶段3 A5） -->
+            <div class="msg-feedback">
+              <button class="fb-btn" :class="{ 'is-active': feedbackMap[msg.id] === 'good' }" title="好的回答" @click="setFeedback(msg.id, 'good')">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/></svg>
+              </button>
+              <button class="fb-btn" :class="{ 'is-active': feedbackMap[msg.id] === 'bad' }" title="有问题的回答" @click="setFeedback(msg.id, 'bad')">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zM17 2h3a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-3"/></svg>
+              </button>
+            </div>
           </template>
 
           <!-- 追问建议 -->
@@ -800,6 +862,17 @@ function scrollToNode(nodeIndex: number) {
         </div>
         </template>
 
+        <!-- 轨迹面板（阶段4 B2，浮动） -->
+        <Transition name="traj-panel">
+          <div v-if="showTrajectory" class="trajectory-panel">
+            <div class="trajectory-panel-head">
+              <span>会话轨迹</span>
+              <button class="trajectory-close" @click="showTrajectory = false">×</button>
+            </div>
+            <TrajectoryView ref="trajectoryRef" />
+          </div>
+        </Transition>
+
         <!-- 流式等待动画（有消息但正在加载） -->
         <div v-if="store.isLoading && store.messages.length > 0" class="streaming-dots">
           <span class="streaming-dot-item"></span>
@@ -808,8 +881,34 @@ function scrollToNode(nodeIndex: number) {
         </div>
       </div>
 
-      <!-- 底部输入区（集成模式切换+联网搜索） -->
+      <!-- ── 会话状态条（阶段1：性能指标 + 上下文占用 + 导出）── -->
+      <div v-if="store.lastPerf || store.contextUsage.estimatedTokens > 0" class="chat-statbar">
+        <template v-if="store.lastPerf">
+          <span class="statbar-item" title="本次回答总用时">用时 {{ (store.lastPerf.durationMs / 1000).toFixed(1) }}s</span>
+          <span class="statbar-item" title="首 token 延迟">首token {{ (store.lastPerf.firstTokenMs / 1000).toFixed(1) }}s</span>
+          <span class="statbar-item" title="生成速率（样本过短时显示 —）">
+            {{ store.lastPerf.tokPerSec !== null ? store.lastPerf.tokPerSec + ' tok/s' : '— tok/s' }}
+          </span>
+          <span class="statbar-item" title="LLM 生成耗时">LLM {{ (store.lastPerf.llmMs / 1000).toFixed(1) }}s</span>
+          <span class="statbar-item" title="工具调用耗时">工具 {{ (store.lastPerf.toolMs / 1000).toFixed(1) }}s</span>
+          <span class="statbar-item" title="输出 token 数">输出 {{ store.lastPerf.tokens }} tok</span>
+          <span class="statbar-item" title="输入 token 数（估算）">输入 {{ store.lastPerf.inputTokens.toLocaleString() }} tok</span>
+          <span v-if="store.turns.length" class="statbar-item statbar-ctx" title="对话轮次与步骤统计（对齐 Harness）">
+            {{ store.turns.length }} 轮 · {{ store.tasks.length }} 步
+          </span>
+        </template>
+        <span class="statbar-item statbar-ctx" title="上下文窗口占用（估算）">
+          上下文 {{ Math.min(100, Math.round((store.contextUsage.estimatedTokens / store.contextUsage.window) * 100)) }}%
+          ({{ store.contextUsage.estimatedTokens.toLocaleString() }} tok)
+        </span>
+        <span class="statbar-spacer"></span>
+        <button class="statbar-btn" title="导出会话日志 (JSONL)" @click="store.exportSession()">导出</button>
+      </div>
+
+      <!-- 底部输入区（集成模式切换+联网搜索）。
+           :key 绑定 currentThreadId：新建/切换会话时重建组件并自动聚焦输入框（遗留2修复） -->
       <ChatInput
+        :key="store.currentThreadId || 'new'"
         v-model="currentMode"
         v-model:webSearch="webSearchEnabled"
         :loading="store.isLoading"
@@ -1262,6 +1361,92 @@ function scrollToNode(nodeIndex: number) {
   background: rgba(22, 20, 24, .85); backdrop-filter: blur(10px);
   font-size: 12px; color: #22c55e;
 }
+
+/* ========== 会话状态条（阶段1：性能指标 + 上下文占用 + 导出）========== */
+.chat-statbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 4px var(--space-4);
+  border-top: 1px solid var(--color-border);
+  background: rgba(18, 16, 20, .6);
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+.statbar-item {
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+.statbar-ctx {
+  color: var(--color-primary-light);
+}
+.statbar-spacer {
+  flex: 1;
+}
+.statbar-btn {
+  border: 1px solid var(--color-border);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  padding: 2px 10px;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+.statbar-btn:hover {
+  color: var(--color-primary-light);
+  border-color: var(--color-primary-light);
+}
+
+/* ========== 轨迹面板（阶段4 B2）========== */
+.trajectory-panel {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-4);
+  z-index: 30;
+  width: 340px;
+  max-height: 65%;
+  overflow-y: auto;
+  background: rgba(22, 20, 24, 0.97);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+}
+.trajectory-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+.trajectory-close {
+  background: none;
+  border: none;
+  color: var(--color-text-muted);
+  font-size: 16px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+}
+.trajectory-close:hover {
+  background: var(--color-surface-elevated);
+  color: var(--color-text-primary);
+}
+.traj-panel-enter-active,
+.traj-panel-leave-active { transition: all var(--transition-normal); }
+.traj-panel-enter-from,
+.traj-panel-leave-to { opacity: 0; transform: translateY(-6px) scale(0.97); }
+
+/* 工具栏激活态 */
+.toolbar-btn.is-active {
+  color: var(--color-primary-light);
+  background: rgba(99, 102, 241, 0.12);
+}
+
 .task-float-dot--done {
   background: #22c55e; color: #fff;
   width: 16px; height: 16px; border-radius: 50%;
@@ -1478,6 +1663,39 @@ function scrollToNode(nodeIndex: number) {
   color: var(--color-text-primary);
   border: 1px solid var(--color-border);
   border-bottom-left-radius: var(--radius-sm);
+}
+
+/* 消息反馈（阶段3 A5） */
+.msg-feedback {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+  padding-left: 2px;
+}
+.fb-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: var(--radius-md);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+.fb-btn:hover {
+  background: var(--color-surface-elevated);
+  color: var(--color-text-secondary);
+}
+.fb-btn.is-active[title="好的回答"] {
+  color: #6366f1;
+  background: rgba(99, 102, 241, 0.1);
+}
+.fb-btn.is-active[title="有问题的回答"] {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
 }
 
 /* Markdown 渲染样式 */

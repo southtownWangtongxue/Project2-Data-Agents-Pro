@@ -4,7 +4,8 @@
  *
  * 布局：功能标签栏（模式切换）| 输入区 + 联网开关 | 发送按钮
  */
-import { ref, computed, nextTick } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
+import { useChatStore } from '@/stores/chat'
 
 const props = defineProps<{
   loading: boolean
@@ -22,6 +23,63 @@ const emit = defineEmits<{
 const inputText = ref('')
 const inputRef = ref<HTMLTextAreaElement | null>(null)
 const isFocused = ref(false)
+
+/* ── 命令面板（阶段3 A1，对齐 Harness / 命令）────────── */
+const store = useChatStore()
+
+interface CommandItem {
+  name: string
+  desc: string
+  run: () => void
+}
+
+const commands: CommandItem[] = [
+  { name: '/goal', desc: '设置会话长期目标（用法: /goal 目标文本）', run: () => {} },
+  { name: '/export', desc: '导出当前会话日志 (JSONL)', run: () => store.exportSession() },
+  { name: '/clear', desc: '清空当前会话并新建', run: () => store.newSession() },
+  { name: '/fork', desc: '分支当前会话为新会话', run: () => store.forkSession() },
+  { name: '/help', desc: '查看可用命令', run: () => showHelp() },
+]
+
+const showCommands = ref(false)
+
+const filteredCommands = computed(() => {
+  const q = inputText.value.trim().toLowerCase()
+  if (!q.startsWith('/')) return []
+  const kw = q.slice(1).toLowerCase()
+  return commands.filter((c) => c.name.toLowerCase().includes('/' + kw) || c.name.includes(kw))
+})
+
+function showHelp() {
+  const lines = commands.map((c) => `${c.name} — ${c.desc}`).join('\n')
+  // 以提示文本形式插入一条系统消息
+  const appEl = document.querySelector('#app') as HTMLElement | null
+  if (appEl && appEl.__vue_app__) {
+    const pinia = appEl.__vue_app__.config.globalProperties.$pinia
+    const chat = pinia && pinia._s.get('chat')
+    if (chat) {
+      chat.messages.push({
+        id: Date.now().toString(36) + Math.random().toString(36).slice(2, 9),
+        role: 'system',
+        type: 'text',
+        content: `可用命令：\n${lines}`,
+      })
+    }
+  }
+}
+
+function runCommand(cmd: CommandItem) {
+  if (cmd.name === '/goal') {
+    // 保留输入，让用户继续输入目标文本（如 "/goal 分析销售趋势"）
+    showCommands.value = false
+    nextTick(() => inputRef.value?.focus())
+    return
+  }
+  showCommands.value = false
+  inputText.value = ''
+  cmd.run()
+  nextTick(() => inputRef.value?.focus())
+}
 
 /* 模式配置 */
 const modes = [
@@ -41,22 +99,23 @@ const webSearchEnabled = computed({
   set: (v: boolean) => emit('update:webSearch', v),
 })
 
-/* 模式选择下拉 */
+/* 模式选择下拉（click 展开，对齐 Harness） */
 const showModeMenu = ref(false)
-let modeMenuTimer: ReturnType<typeof setTimeout> | null = null
 
-function onModeEnter() {
-  if (modeMenuTimer) { clearTimeout(modeMenuTimer); modeMenuTimer = null }
-  showModeMenu.value = true
-}
-function onModeLeave() {
-  modeMenuTimer = setTimeout(() => { showModeMenu.value = false }, 150)
+function toggleModeMenu() {
+  showModeMenu.value = !showModeMenu.value
 }
 
 function selectMode(key: string) {
   currentMode.value = key
   showModeMenu.value = false
   nextTick(() => inputRef.value?.focus())
+}
+
+/* 点击外部关闭模式菜单 */
+function onDocClick(e: MouseEvent) {
+  const target = e.target as HTMLElement
+  if (!target.closest('.mode-selector')) showModeMenu.value = false
 }
 
 /* 联网搜索 */
@@ -90,17 +149,59 @@ function handleSend() {
 function onKeydown(e: KeyboardEvent) {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
+    // 命令面板打开且有匹配命令时，Enter 直接执行第一个命令
+    if (showCommands.value && filteredCommands.value.length > 0) {
+      const cmd = filteredCommands.value[0]
+      // /goal 特殊处理：解析 "/goal 目标文本" 作为会话长期目标
+      if (cmd.name === '/goal') {
+        const goalText = inputText.value.replace(/^\/goal\s*/i, '').trim()
+        if (goalText) {
+          store.setSessionGoal(goalText).then((ok) => {
+            if (ok) {
+              inputText.value = ''
+              showCommands.value = false
+            }
+          })
+        }
+        return
+      }
+      runCommand(cmd)
+      return
+    }
     handleSend()
   }
 }
+
+/* 输入变化：更新命令面板显隐 */
+function onInput() {
+  autoResize()
+  showCommands.value = !props.loading && inputText.value.trim().startsWith('/')
+}
+
+/* Esc 关闭模式菜单 */
+function onDocKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') showModeMenu.value = false
+}
+
+onMounted(() => {
+  document.addEventListener('click', onDocClick)
+  document.addEventListener('keydown', onDocKeydown)
+  // 新建/切换会话后（组件通过 :key 重建）自动聚焦，避免首次 Enter 被吞
+  nextTick(() => inputRef.value?.focus())
+})
+
+onUnmounted(() => {
+  document.removeEventListener('click', onDocClick)
+  document.removeEventListener('keydown', onDocKeydown)
+})
 </script>
 
 <template>
   <div class="chat-input-wrapper" :class="{ 'is-focused': isFocused }">
     <!-- 功能标签栏（模式切换） -->
     <div class="input-toolbar">
-      <div class="mode-selector" @mouseenter="onModeEnter" @mouseleave="onModeLeave">
-        <button class="mode-trigger" :class="{ 'is-open': showModeMenu }">
+      <div class="mode-selector">
+        <button class="mode-trigger" :class="{ 'is-open': showModeMenu }" @click="toggleModeMenu">
           <span class="mode-trigger-icon">{{ modes.find(m => m.key === currentMode)?.icon }}</span>
           <span class="mode-trigger-label">{{ modes.find(m => m.key === currentMode)?.label }}</span>
           <svg class="mode-trigger-chevron" :class="{ 'is-open': showModeMenu }"
@@ -110,7 +211,8 @@ function onKeydown(e: KeyboardEvent) {
         </button>
 
         <Transition name="mode-menu">
-          <div v-if="showModeMenu" class="mode-menu" @mouseenter="onModeEnter" @mouseleave="onModeLeave">
+          <div v-if="showModeMenu" class="mode-menu">
+            <div class="mode-menu-header">Agent 预设</div>
             <div
               v-for="m in modes" :key="m.key"
               class="mode-menu-item"
@@ -148,16 +250,32 @@ function onKeydown(e: KeyboardEvent) {
       </button>
     </div>
 
+    <!-- 命令面板（/ 命令，阶段3 A1） -->
+    <Transition name="cmd-menu">
+      <div v-if="showCommands" class="cmd-palette">
+        <div class="cmd-palette-header">命令</div>
+        <div
+          v-for="cmd in filteredCommands" :key="cmd.name"
+          class="cmd-item"
+          @mousedown.prevent="runCommand(cmd)"
+        >
+          <span class="cmd-name">{{ cmd.name }}</span>
+          <span class="cmd-desc">{{ cmd.desc }}</span>
+        </div>
+        <div v-if="filteredCommands.length === 0" class="cmd-empty">没有匹配的命令</div>
+      </div>
+    </Transition>
+
     <!-- 输入区域 -->
     <div class="input-area">
       <textarea
         ref="inputRef"
         v-model="inputText"
         class="input-textarea"
-        placeholder="用自然语言描述您的需求，按 Enter 发送，Shift+Enter 换行..."
+        placeholder="用自然语言描述您的需求，按 Enter 发送，Shift+Enter 换行，输入 / 查看命令..."
         rows="1"
         @keydown="onKeydown"
-        @input="autoResize"
+        @input="onInput"
         @focus="isFocused = true"
         @blur="isFocused = false"
         :disabled="loading"
@@ -190,6 +308,7 @@ function onKeydown(e: KeyboardEvent) {
 
 <style scoped>
 .chat-input-wrapper {
+  position: relative;
   margin: 0 var(--space-4) var(--space-4);
   background: var(--color-surface);
   border: 1px solid var(--color-border);
@@ -267,6 +386,14 @@ function onKeydown(e: KeyboardEvent) {
   padding: var(--space-1) 0;
 }
 
+.mode-menu-header {
+  padding: var(--space-1) var(--space-3);
+  font-size: 11px;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
 .mode-menu-item {
   display: flex;
   align-items: center;
@@ -323,6 +450,63 @@ function onKeydown(e: KeyboardEvent) {
   opacity: 0;
   transform: translateY(6px) scale(0.96);
 }
+
+/* ========== 命令面板（阶段3 A1）========== */
+.cmd-palette {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: var(--space-3);
+  right: var(--space-3);
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(0, 0, 0, 0.1);
+  z-index: 50;
+  padding: var(--space-1) 0;
+}
+.cmd-palette-header {
+  padding: var(--space-1) var(--space-3);
+  font-size: 11px;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.cmd-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.cmd-item:hover {
+  background: var(--color-surface-elevated);
+}
+.cmd-name {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--color-primary-light);
+  flex-shrink: 0;
+}
+.cmd-desc {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cmd-empty {
+  padding: var(--space-3);
+  font-size: 12px;
+  color: var(--color-text-muted);
+  text-align: center;
+}
+.cmd-menu-enter-active { transition: opacity 0.15s ease, transform 0.15s ease; }
+.cmd-menu-leave-active { transition: opacity 0.1s ease, transform 0.1s ease; }
+.cmd-menu-enter-from { opacity: 0; transform: translateY(6px) scale(0.98); }
+.cmd-menu-leave-to { opacity: 0; transform: translateY(6px) scale(0.98); }
 
 /* 分隔线 */
 .toolbar-divider {

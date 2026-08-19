@@ -17,7 +17,7 @@ class Base(DeclarativeBase):
 async def create_tables():
     """在应用启动时创建所有模型对应的数据库表（不存在则创建），并播种初始数据"""
     from app.models.user import SysUser  # noqa: F401
-    from app.models.session import ChatSession, ChatNode  # noqa: F401
+    from app.models.session import ChatSession, ChatNode, SessionEvent  # noqa: F401
 
     engine = get_engine()
     async with engine.begin() as conn:
@@ -33,6 +33,20 @@ async def create_tables():
                 )
             )
             logger.info("[models] chat_nodes.run_id 列已添加")
+        except Exception:
+            # 列已存在或表不存在，跳过
+            pass
+
+        # 兼容性迁移：为旧版 chat_sessions 表添加 goal 列（阶段4 B6，若尚未存在）
+        try:
+            await conn.run_sync(
+                lambda sync_conn: sync_conn.execute(
+                    __import__("sqlalchemy").text(
+                        "ALTER TABLE chat_sessions ADD COLUMN goal TEXT NULL COMMENT '会话长期目标（阶段4 B6）'"
+                    )
+                )
+            )
+            logger.info("[models] chat_sessions.goal 列已添加")
         except Exception:
             # 列已存在或表不存在，跳过
             pass

@@ -1,64 +1,74 @@
 # 长期记忆 (MEMORY.md)
 
 ## 项目：DataAgent Pro（多 Agent 数据分析平台）
-- 技术栈：FastAPI(async+SSE) 后端 + Vue3/Vite/ElementPlus/Pinia 前端；LLM 为私有部署 Qwen/GLM。
+- 技术栈：FastAPI(async+SSE) 后端 + Vue3/Vite/ElementPlus/Pinia 前端。
+- **LLM 双配置（2026-08-19 澄清）**：`settings`(`.env`) = dashscope `qwen3.6-flash`（key `sk-8250...`，**可用**）；`llm_providers.json` = `agnes`（apihub，**免费额度已耗尽 403**）+ `qwen-flash`(disabled)。`/suggestions` 走 settings→dashscope；前端聊天走 agnes→**对话当前不可用，须启用 qwen-flash 或等 agnes 充值**。详见 2026-08-19.md。
 - 后端根目录 `backend/`，入口 `app/main.py`；前端 `frontend/`（`npm run dev` 端口 5173）。
 - 配置由 `backend/configs/*.json` 经 `ConfigManager` 热加载；LLM provider 在 `llm_providers.json`。
 
-## Docker 单体镜像架构（2026-08-13 定稿，重要）
-- **发布形态**：单体镜像 `data-agent`（前端+后端一体），根目录 `Dockerfile` 多阶段构建（node 构建 dist → python uv sync → 合并运行时 `python:3.12-slim` + nginx + supervisor + curl）。
-- **容器内布局**：`/app/.venv`（后端依赖）、`/usr/share/nginx/html`（前端 dist）、nginx 反代 `/api`→`127.0.0.1:8000`（`deploy/nginx.conf`，proxy_buffering off 保 SSE）；supervisord 同时管 backend(uvicorn:8000)+nginx 两进程（`deploy/supervisord.conf`）。
-- **入口脚本** `deploy/entrypoint.sh`：检测空卷则从 `/app/configs.default`、`/app/skills.default`、`/app/resources.default` 复制默认配置，再 `exec supervisord`。
-- **持久化卷（named volume，compose 中定义）**：`agent_configs`→`/app/configs`（4 个 JSON，watchdog 热更新）、`agent_skills`→`/app/app/skills/skills`（skill 实体）、`agent_resources`→`/app/resources`、`agent_logs`→`/app/app/logs`。
-- **compose**：`docker-compose.prod.yml` 单文件全量编排（7 个基础设施 + app 单体）；镜像 `${DOCKERHUB_USERNAME}/data-agent:${IMAGE_TAG:-latest}`；app 用 environment 覆盖 .env 的 localhost → 服务名（mysql/postgres/redis/milvus）。
-- **CI**：`.github/workflows/docker-image.yml`（context=`.`，多架构 amd64+arm64，concurrency 组防并发覆盖；tag 策略 sha-短哈希/latest 仅 tag 时）。
-- **清华源覆盖**：backend/pyproject.toml 的 `[[tool.uv.index]]` 指向清华源（default=true），根 Dockerfile 用 `ENV UV_DEFAULT_INDEX=https://pypi.org/simple` 覆盖，保证海外 runner 稳定（本地开发不受影响）。
-- **热更新边界（重要）**：configs JSON 改文件即生效；skill 安装实时落盘；但 **DeepAgent skill 工具集是全局单例（get_deep_agent()），新 skill 需重启容器才进工具列表**（配置已持久化，重启不丢）。
-- 部署文档：`docs/guide/deployment.md`（已注册 VitePress 导航）。
+## Docker 单体镜像架构（2026-08-13 定稿）
+- 单体镜像 `data-agent`（前端+后端一体），根目录 `Dockerfile` 多阶段构建（node dist → python uv sync → `python:3.12-slim`+nginx+supervisor）。
+- 容器内：`/app/.venv`、`/usr/share/nginx/html`（dist）、nginx 反代 `/api`→`127.0.0.1:8000`（`proxy_buffering off` 保 SSE）、supervisord 管 backend+nginx。
+- 入口 `deploy/entrypoint.sh` 检测空卷复制默认配置后 `exec supervisord`；named volume：agent_configs/skills/resources/logs。
+- 热更新边界：configs 改文件即生效；skill 实时落盘；但 **DeepAgent skill 工具集是全局单例 `get_deep_agent()`，新 skill 需重启容器才进工具列表**。部署文档 `docs/guide/deployment.md`。
 
 ## 关键服务/启动
-- 后端启动：`cd backend && uv run uvicorn app.main:app --reload --port 8000`
-- 默认管理员：`admin` / `12345678`（见 `backend/app/models/seed.py`，写入 `da_sys_user` 表）。
+- 后端：`cd backend && uv run uvicorn app.main:app --reload --port 8000`。默认管理员 `admin`/`12345678`（写入 `da_sys_user`）。
 
-## 数据库约定（重要，2026-07-30 确认）
-- 应用与业务库 `jb_bi`（`.env` 的 `MYSQL_DATABASE`）**共用同一 MySQL 实例**。`jb_bi` 既有业务数据，也承载本系统的元数据表。
-- 本系统登录账号表 = **`da_sys_user`**（若依风格结构：`user_name` 主键 / `password` / `user_type` / `nick_name` / `status` / `del_flag` / `login_ip` / `login_date`）。**不是** `sys_user`——`jb_bi.sys_user` 是一张结构完全不同的业务表（列：`id/user_code/user_name/passwd/dept_code/allow_login/...`），二者不能混用。
-- 历史背景：原 `sys_user` 表名与业务 `sys_user` 冲突导致启动报 `Unknown column 'sys_user.password'`。修复为 `da_sys_user`（`app/models/user.py` 的 `__tablename__`），`chat_sessions`/`chat_nodes` 维持原表名不动。
-- 管理员判定：保留内置 `admin` 特殊账号（seed 写入 `da_sys_user`，`user_type='00'`），独立于业务用户。
-- 注意：`jb_bi.chat_nodes` 已被应用 ALTER 加过 `run_id` 列（启动自动执行的，已 COMMIT），属正常元数据演进。
+## JWT 密钥机制（2026-08-17 确认）
+- `security.create_access_token()` 用随机 `_JWT_SECRET` 且 payload 无 user_name；login 的 `_generate_token()` 用 `settings.JWT_SECRET`（默认 `dataagent-default-secret-change-in-production`）含 user_name。
+- `get_current_user` 用 `settings.JWT_SECRET` 验签 → 生产正常；**测试 token 须用 login 同款逻辑**（`jwt.encode({user_name,user_type,nick_name,exp,iat}, settings.JWT_SECRET, "HS256")`），`tests/test_api.py` 的 `_auth_headers()` 可复用。
 
-## 已验证的坑（重要）
-1. **后端 reloader 偶发不可靠**：uvicorn 父进程 logging 配置 `formatter 'default'` 在 stdout 被重定向时抛 `isatty` 错误，导致文件改动后热重载不生效。怀疑改动未生效时，先 `taskkill /f /im python.exe` 干净重启再验证。
-2. **Windows 下勿用 `asyncio.create_subprocess_exec`**：uvicorn 事件循环策略下会抛 `NotImplementedError`。子进程相关逻辑改用 `subprocess.Popen` + 线程读取（带超时）。
-3. Skill 实体目录：`app/skills/skills/`（已安装落盘）与 `app/skills/catalog/`（安装模板来源）；路径计算需从 `app/api/v1/config_api.py` 上溯 3 层到 `app/`。
-4. **LLM 免费额度/限流**：默认 provider `zhipu-glm4-flash` → 实际调用 model=`glm-4.5-air`，base=`https://open.bigmodel.cn/api/paas/v4`（智谱 BigModel）。对话报 `Connection error [INTERNAL_ERROR]` 即该外部端点连接/免费额度问题，非代码缺陷。其他 provider：`qwen-default`→`qwen3.6-35b-a3b`、`qwen-flash`→`qwen3.6-flash`。切勿并发运行多个测试实例，否则免费 LLM 限流 → SSE 流 HTTP200 后无事件 → 超时重试死循环。前端已能正确展示该错误并提供"重试"按钮。
-   - **2026-07-31 实测外部额度状态**：① 智谱 Embedding 接口 `embedding-3`（`.env` 的 `EMBEDDING_API_KEY=740b1b92...`，base `https://open.bigmodel.cn/api/paas/v4`）返回 `429 余额不足或无可用资源包` → 知识库上传 .txt 必然失败，需充值。② 对话 LLM 免费额度耗尽时（尤其 task 模式 agentic 多轮调用）会返 `403 Free quota exhausted (AllocationQuota.FreeTierOnly)` 或优雅降级为"无法回答此问题"。**全量测试/浏览器验证中出现的对话失败基本都源于此，非代码缺陷**。
-5. **诊断实际模型**：`app/core.llm.py` 的 `describe_route()` 可打印 `provider_id/model/base_url/api_key前缀`；chat.py 在 `_stream_chat`/`_stream_chat_deepagent` 入口及两处异常均记录该路由，且前端报错信息带 `（实际模型: xxx）`，便于排查"调了哪个模型/为什么报错"。
-6. **全量测试脚本** `scripts/run_full_test.py`：一键完成 清理→功能模块 API 测试→对话模式(data/report/doc/task/多轮)→生成 `测试报告.md`。阶段3对话最慢（report 模式生成长文可能超时）；SSE 探针 `_sse_chat` 超时已于 2026-07-21 由 120s 上调至 300s。运行方式：`cd backend && uv run python ../scripts/run_full_test.py`。
-7. **Chrome DevTools MCP 浏览器锁**：若报 `browser is already running for ...\chrome-devtools-mcp\chrome-profile`，是上会话遗留 chrome 进程占用 profile 锁。用 PowerShell `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*chrome-devtools-mcp*' } | Stop-Process -Force` 清理后，MCP 可重新拉起干净浏览器。前端模式切换 `.mode-selector` 菜单由 `mouseenter` 触发（非 click），项 class 为 `.mode-menu-item`，可脚本化点击切到「通用任务」。
-8. **DeepAgent 凭证传递陷阱（2026-07-22 修复）**：`harness.py` 原 `_build_model_string()` 返回 `"openai:glm-4.5-air"` 字符串给 `create_deep_agent`，底层 `init_chat_model("openai:...")` 会读 `OPENAI_API_KEY`/`OPENAI_BASE_URL` 环境变量——而 `.env` 中这两个是 DashScope 的 key + 默认 `api.openai.com`，导致 task 模式调用智谱时 Connection error（但独立 `init_chat_model(api_key=..., base_url=...)` 正常）。修复：`_build_model()` 显式构建 `BaseChatModel` 实例，注入当前 provider 的 `api_key`/`base_url` + `use_responses_api=False`（智谱不兼容 Responses API）。注意 `get_deep_agent()` 缓存全局单例，改 `harness.py` 后必须整进程重启（uvicorn reload 不清单例）。
-   - **2026-07-31 补充修复**：`_build_model()` 原 `mgr.resolve_api_key(provider)` 在 `provider=None`（未指定 model 且无默认 provider 时 `get_llm_config(None)` 返回 None → `set_provider(None)`）时崩 `AttributeError: 'NoneType' object has no attribute 'get'`，导致 task 模式 SSE 流中断。改为复用 `app/core/llm.py` 的 `_resolve_key_and_base(provider)`（对 None 回退 settings.LLM_API_KEY/LLM_BASE_URL），与 legacy 模式 `_stream_chat` 行为一致。
-9. **DeepAgent 不 streaming（2026-07-22 修复）**：原 `_stream_chat_deepagent` 的 `agent.astream()` 默认 `stream_mode="updates"`，按节点整块返回消息。修复：`astream(input_data, config, stream_mode=["updates", "messages"])`，双模式并行——"messages" 模式逐 token 产生 `AIMessageChunk`，"updates" 模式处理工具调用/完成事件。
-10. **DeepAgent 流式输出 UI 破碎（2026-07-22 修复）**：逐 token 输出时发了 `type: "text"` 事件 → 前端 `onText` 每事件新建一条消息（`messages.value.push`），导致每个字符独立为一个消息块。修复：改为 `type: "token"` → 前端 `onToken` 通过 `activeTokenMsgId` 增量追加到同一条消息。
-11. **侧边栏不显示用户输入（2026-07-22 修复）**：`list_sessions` 永远返回 `"question": ""`，而前端的 `ChatSidebar` 已支持 `{{ s.title || s.question?.slice(0, 30) }}` 兜底显示。修复：`list_sessions` 额外查询 `ChatNode` 取 `node_index=0` 的 `question` 字段。
-12. **联网搜索（2026-07-22 实现）**：`web_search` 参数原为死代码（传到 `_stream_chat_deepagent` 后未被使用）。修复：以**固定工具**方式（非 Skill 机制）注册 `web_search_tool`（`app/deepagent/tools.py`，百度搜索 API，key/url 来自 `.env` 的 `BAIDU_API_KEY`/`BAIDU_WEB_SEARCH_URL`），在 `workflow.py` 的 `get_deep_agent()` 中合并到 `all_tools = skill_tools + get_fixed_tools()`。`web_search=True` 时注入系统提示（告知模型可调用该工具）。已清理旧的 DDGS 注入代码和 baidu-search 技能文件。注意 `get_deep_agent()` 缓存全局单例，改 `tools.py`/`workflow.py` 后需整进程重启。
-13. **DeepAgent UI 重构（2026-07-22）**：
-    - SSE 事件：工具调用从通用 `status` 改为结构化 `tool_call`（含 `name`+`args`）和 `tool_result`（含 `name`+`result`+`status`）。
-    - 前端 `onToolResult`：将同名的 `tool_call` 升级为 `tool_chain` 单卡片（合并输入+结果），减少视觉噪音。
-    - Chat.vue 新增 `tool_chain` 类型渲染（展开显示输入参数 + 返回结果）。
-    - `__end__` 分步诊断日志：抵达、标题生成、节点保存、会话创建各阶段独立日志。
-    - 文件：`useSSE.ts`(事件路由)、`chat.ts`(store)、`Chat.vue`(渲染)、`chat.py`(SSE事件)。
+## 数据库约定（2026-07-30 确认，重要）
+- 应用与业务库 `jb_bi`（`MYSQL_DATABASE`）共用同一 MySQL 实例。
+- 登录表 = **`da_sys_user`**（若依风格：`user_name` 主键）；**不是** `sys_user`（`jb_bi.sys_user` 是业务表，结构不同，勿混用）。
+- `chat_sessions`/`chat_nodes` 维持原表名；`chat_nodes` 已被 ALTER 加 `run_id` 列（正常）。
 
-## AntDesignX Vue 新对话页（2026-08-05 完成，浏览器验证通过）
-- **目标**：渐进式接入 `ant-design-x-vue`，新增 `/chat-x` 路由 → `frontend/src/views/ChatXVue.vue`（XProvider 包裹），后端零改动、前端数据层复用 `stores/chat.ts` + `composables/useSSE.ts`。
-- **依赖**：`ant-design-x-vue@1.6.0` / `ant-design-vue@4.2.6` / `@ant-design/icons-vue@7.0.1`。⚠️ **包内无 CSS 文件**，样式由 cssinjs 在 `XProvider` 内运行时注入，勿 `import 'ant-design-x-vue/dist/index.css'`。
-- **组件目录** `frontend/src/components/x/`：`XConversations.vue`(+`XConvLabel.vue` 内联重命名)、`XBubbleList.vue`、`MessageRenderer.vue`、`XSender.vue`、`XWelcome.vue`、`XThoughtChain.vue`。
-- **官方 API 修正（集成方案文档原有误）**：Welcome 无 `suggestions`/`click`（建议用 `Prompts`，item 主字段 `label`）；Sender 无 `disableSend`/`clear`（`loading` 自动切停止按钮触发 `@cancel`）；ThoughtChainItem 无 `children`；`Sender.Header` 是 `Sender` 静态子组件（props `open/title/closable/onOpenChange`，需 `:open`+`@open-change` 双向绑定，`open=false` 时 DOM 移除除非 `forceRender`）。
-- **样式根因（关键！）**：`XProvider` 必须显式传 `:theme="{ algorithm: theme.darkAlgorithm, token: {...} }"`（`theme` 从 `ant-design-vue` 导入），否则 X 组件内部用 antdv 默认浅色 token（白底白字，与深色页面冲突）。品牌色紫色 `#7056F8`（ultramodern 风格）。
-- **占满右侧**：清除所有 `max-width` 残留（`XBubbleList` roles、`XWelcome` `.xw-prompts`/提示卡、`ClarifierCard`/`ExecutionCard` `82%`、`.xr-thought` `82%`），容器已全宽 1640px。
-- **模型路由（修复 403）**：`stores/chat.ts` 新增 `currentModel`（从 `localStorage.selectedModelId` 读）+ `setCurrentModel()`；`sendMessage` 内 `activeModel = model || currentModel.value`，所有发送入口统一走 `store.sendMessage`。
-- **模式切换/联网搜索** 移入 `Sender.Header` 弹出面板，prefix 仅留模型选择器 + 设置按钮。
-- 开发计划文档：`docs/plans/2026-08-05-ant-design-x-vue-integration.md`（6 阶段 + 提示词 + 实施记录 4.7/4.8/4.8.1/4.8.2）；已集成到 `docs/.vitepress/config.mts` 与 `docs/index.md`。
+## 已验证的坑
+1. 后端 reload 偶发不可靠（stdout 重定向时 logging `isatty` 错误）→ 干净重启用 `taskkill /f /im python.exe`。
+2. Windows 勿用 `asyncio.create_subprocess_exec`（uvicorn 下抛 NotImplementedError），用 `subprocess.Popen`+线程读取。
+3. Skill 目录：`app/skills/skills/`（落盘）与 `app/skills/catalog/`（模板）。
+4. Chrome DevTools MCP 浏览器锁：用 PowerShell `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*chrome-devtools-mcp*' } | Stop-Process -Force` 清理。
+5. 前端模型/模式菜单靠 `@mouseenter`/`@mouseleave` 触发（hover-only，键盘/点击不可操作，a11y 差）——已知 UX 缺陷。
+6. 全量测试：后端 `cd backend && uv run pytest tests/ -v`；脚本 `scripts/run_full_test.py`（`uv run python ../scripts/run_full_test.py`）。
+
+## DeepAgent 关键架构
+- `get_deep_agent()` 全局单例；改 harness/tools/workflow 须整进程重启。
+- 凭证：`harness._build_model()` 显式 `BaseChatModel` 注入 provider 的 api_key/base_url + `use_responses_api=False`；用 `_resolve_key_and_base(provider)`，勿用 `init_chat_model("openai:...")`。
+- 流式：`astream(stream_mode=["updates","messages"])`，逐 token 发 `type:"token"`（**勿发 `type:"text"`**）。
+- 工具事件：SSE 用 `tool_call`(name+args)/`tool_result`(name+result+status)；前端 `onToolResult` 升级为 `tool_chain` 单卡片。
+- 联网搜索：固定工具 `web_search_tool`（百度 API，`.env` 的 BAIDU_API_KEY/WEB_SEARCH_URL）。
+
+## 五大改造阶段（2026-08-17 完成，验证通过）
+- Phase1 事件溯源 `app/core/event_sourcing.py`（append-only `session_events`，feature `EVENT_SOURCING_ENABLED`）
+- Phase2 PromptSection `app/core/prompt_section.py`（feature `PROMPT_SECTION_ENABLED`，7 段 order）
+- Phase3 Seam `app/core/seam.py`（feature `SEAM_ENABLED`，search/storage 落地，llm_client 未落地）
+- Phase4 流式类型化+ReasoningBlock（`stream_protocol.py` + `ReasoningBlock.vue` 折叠卡片，默认模型可能不输出 reasoning）
+- Phase5 动效规范（`design-system.css`：`--motion-duration-*`+`--motion-ease-*`，禁止与 `--transition-*` 简写混用）
+
+## Harness 对齐改造（2026-08-18，16/16 项全部落地，pytest 30/30）
+- 后端端点：`/chat/sessions/{tid}/export|fork|trajectory|goal`、`POST /chat/cancel`、`approve.py` 权限校验。
+- 前端：`TrajectoryView.vue`、`ChatInput.vue` 命令面板（/export /clear /fork /help /goal）、性能指标条+上下文监控+导出/轨迹按钮+消息反馈（赞/踩）、`ChatSidebar.vue` 按日期分组、`chat.ts` 排队发送+停止生成（用 `asyncio.Event` 标志让 SSE 正常 EOF，勿只 task.cancel()）、`SubagentNode.vue`（task 模式子代理可视化）、`goal` 列。
+- 关键坑：SSE 停止不能只 task.cancel()，须 asyncEvent 让生成器 break 正常结束。
+- 参考文档：`docs/reference/deepseek-harness-hands-on.md`、`docs/reference/harness-ui-analysis.md`。
+
+## AntDesignX Vue 新对话页（/chat-x，2026-08-05 完成）
+- `views/ChatXVue.vue` + `components/x/`（XConversations/XBubbleList/MessageRenderer/XSender/XWelcome/XThoughtChain）。
+- `XProvider` 须显式 `:theme="{ algorithm: theme.darkAlgorithm, token }"`；包内无 CSS，勿 import dist css。品牌色紫 `#7056F8`。
+
+## 2026-08-19 端到端测试（用户视角，Chrome DevTools MCP）→ 已全部修复
+- **[严重→已修]** `tool_chain` 显示 `[object Object]`：`Chat.vue` `toolExpandContent` 新增 `stringifyValue()`（JSON.stringify），`chat.ts` onToolCall args 对象序列化。
+- **[中-严重→已修]** fork 会话不可见：后端 `fork_session` 补写 `chat_sessions`（标题带「(分支)」），前端 `forkSession` unshift + loadSessions。
+- **[中→已修]** 模型/模式/轮次菜单 hover-only：全部改为 click 展开 + document 外部点击关闭 + Esc。
+- **[中→已修]** 侧边栏无搜索/长列表卡顿：`ChatSidebar.vue` 加搜索框 + `content-visibility:auto` 轻量虚拟滚动。
+- **[中→已修]** `0 tok/s`：`lastPerf.tokPerSec` generateMs<1000 时为 null，前端显示「—」。
+- **[中→已修]** 性能条增强：`lastPerf` 扩展 `llmMs/toolMs/inputTokens`，statbar 显示 `LLM/工具/输出/输入/轮次步数`。
+- **[中→已修]** 首轮问候耗时过长：misc_agent 双重推送（StreamContext.push_token + `_stream_tokens` 二次流式）已移除重复；剩余延迟为模型首 token 本身慢。
+- **[低→已修]** 新建/切换会话输入框未聚焦：`ChatInput` onMounted focus + `:key` 绑定 currentThreadId 重建。
+- **[已修]** 14天前旧会话空白：`get_session_messages` 加 `chat_nodes.question` 节点题兜底。
+- **[已修]** 切换会话工具卡片消失：`_project()` 补 TOOL_CHAIN 投影；传统模式 misc_agent/execute_sql/reporter 补 `_track(TOOL_CHAIN)`；工具卡片统一 `🔧 工具名+摘要` 单行折叠。
+- **[已知瞬态]** `loadSessions()` fetch abort 后 sessions 空（页面重载时）→ 刷新恢复，可加自动重试。
+- 报告：`test-screens/端到端测试报告-2026-08-19.md`；设计：`docs/plans/2026-08-19-harness-ui-alignment-design.md`、`docs/plans/2026-08-19-issues-fix-design.md`。
 
 ## 用户约定
-- 规则要求：创造性工作前先走 brainstorming 探索；代码改动后须用 Chrome DevTools MCP 做端到端浏览器验证（前后端都需启动）。
+- 创造性工作前先走 brainstorming 探索；代码改动后须用 Chrome DevTools MCP 做端到端浏览器验证（前后端都需启动）。

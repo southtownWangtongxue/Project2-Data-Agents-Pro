@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "DataAgent Pro 运行时架构",
+    "output": "runtime-architecture.html",
+    "quality_profile": "showcase",
+    "views": [
+      { "id": "main-path", "label": "SSE 问答主路径", "focus": ["user", "frontend", "api", "workflow", "llm"], "note": "用户提问经前端 SSE 通道直达 LangGraph 工作流，最终由 LLM 生成 token 流回前端。" },
+      { "id": "storage", "label": "存储与检索", "focus": ["api", "mysql", "redis", "milvus"], "note": "MySQL 承载业务数据与事件溯源表，Redis 保存 checkpoint，Milvus 提供向量检索。" },
+      { "id": "external", "label": "外部依赖", "focus": ["workflow", "llm", "search"], "note": "LLM 推理与联网搜索均为外部服务，位于信任边界之外。" }
+    ]
+  },
+  "layout": {
+    "mode": "grid",
+    "origin": [40, 40],
+    "cols": 6,
+    "gapX": 32,
+    "gapY": 36,
+    "cellW": 200,
+    "cellH": 84
+  },
+  "components": [
+    { "id": "user", "type": "external", "label": "用户", "sublabel": "浏览器 / HTTPS", "row": 0, "col": 0, "tag": "外部角色" },
+    { "id": "frontend", "type": "frontend", "label": "Vue3 SPA 前端", "sublabel": "Chat.vue · Pinia · useSSE", "row": 0, "col": 1 },
+    { "id": "api", "type": "backend", "label": "FastAPI 网关", "sublabel": "/api/v1 · JWT · SSE", "row": 0, "col": 2 },
+    { "id": "workflow", "type": "backend", "label": "LangGraph 工作流", "sublabel": "4 模式路由 · 节点编排", "row": 0, "col": 3 },
+    { "id": "llm", "type": "external", "label": "LLM Providers", "sublabel": "智谱 GLM / Qwen / DeepSeek", "row": 0, "col": 5, "tag": "外部 API" },
+    { "id": "mysql", "type": "database", "label": "MySQL", "sublabel": "jb_bi 业务库 + 元数据", "row": 2, "col": 1, "tag": "业务 + session_events" },
+    { "id": "redis", "type": "database", "label": "Redis", "sublabel": "checkpoint 状态", "row": 2, "col": 2, "tag": "LangGraph 快照" },
+    { "id": "milvus", "type": "database", "label": "Milvus", "sublabel": "向量库", "row": 2, "col": 3, "tag": "RAG 检索" },
+    { "id": "search", "type": "external", "label": "百度搜索 API", "sublabel": "联网搜索", "row": 2, "col": 4, "tag": "外部 API" }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "DataAgent Pro 应用", "wraps": ["frontend", "api", "workflow"] },
+    { "kind": "security-group", "label": "API 信任边界（JWT 认证 + 审批）", "wraps": ["api", "workflow"] }
+  ],
+  "connections": [
+    { "id": "user-to-frontend", "from": "user", "to": "frontend", "label": "浏览器 HTTPS", "variant": "emphasis" },
+    { "id": "frontend-to-api", "from": "frontend", "to": "api", "label": "SSE 流式请求", "variant": "emphasis" },
+    { "id": "api-to-workflow", "from": "api", "to": "workflow", "label": "JWT 校验 → 模式路由", "variant": "emphasis" },
+    { "id": "workflow-to-llm", "from": "workflow", "to": "llm", "label": "推理请求 / token 流", "variant": "emphasis" },
+    { "id": "workflow-to-mysql", "from": "workflow", "to": "mysql", "label": "SQL 执行", "fromSide": "bottom", "toSide": "top", "labelAt": [480, 180] },
+    { "id": "api-to-mysql", "from": "api", "to": "mysql", "label": "会话/事件读写", "fromSide": "bottom", "toSide": "top" },
+    { "id": "workflow-to-redis", "from": "workflow", "to": "redis", "label": "checkpoint 保存", "variant": "dashed", "fromSide": "bottom", "toSide": "top" },
+    { "id": "workflow-to-milvus", "from": "workflow", "to": "milvus", "label": "向量检索", "variant": "dashed", "fromSide": "bottom", "toSide": "top", "labelAt": [850, 240] },
+    { "id": "workflow-to-search", "from": "workflow", "to": "search", "label": "联网搜索", "variant": "dashed", "fromSide": "bottom", "toSide": "top" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "SSE 问答主路径", "items": ["用户提问 → Vue3 前端 → FastAPI /api/v1/chat → LangGraph 工作流 → LLM 生成", "全程 SSE 流式：token / reasoning / tool_call / tool_result / done", "LangGraph checkpoint 持久化到 Redis，支持中断恢复"] },
+    { "dot": "emerald", "title": "四模式工作流", "items": ["mode_router 按意图分发 data / report / doc / task 四种图", "data 模式含 13 节点（clarify→schema→sql_coder→security→execute→quality→analyst→reporter）", "task 模式由 DeepAgent Harness 驱动，技能 + 固定工具 + 子代理委派"] },
+    { "dot": "violet", "title": "事件溯源", "items": ["session_events 表 append-only 记录全部过程态事件", "derive_messages 投影还原会话历史，fork 支持分支会话", "SSE 协议类型化（stream_protocol.py）隔离 reasoning / text / tool 消息"] },
+    { "dot": "rose", "title": "信任边界与审批", "items": ["前端↔后端：JWT Bearer 认证（da_sys_user 登录）", "高危 SQL 操作经 /api/v1/approve 审批拦截（_check_thread_owner）", "LLM / 百度搜索为外部服务，API key 存 .env 不透传前端"] }
+  ]
+}

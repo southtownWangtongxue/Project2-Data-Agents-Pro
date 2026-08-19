@@ -76,10 +76,35 @@ async def web_search_tool(keyword: str) -> str:
 _FIXED_TOOLS: list[Any] = []
 
 
+def _register_search_seam() -> None:
+    """注册 search seam：百度搜索作为默认 provider（Phase 3 能力接缝）。
+
+    未来接入其他搜索后端（如 bing/tavily）时，只需 register + select，
+    无需改动 consumer（get_fixed_tools）。
+    """
+    from app.core.seam import get_seam
+
+    seam = get_seam()
+    if not seam.providers("search"):
+        seam.define("search", "联网搜索后端", default="baidu")
+        seam.register("search", "baidu", lambda: web_search_tool, "百度搜索 (baidu_search_v2)")
+
+
 def get_fixed_tools() -> list[Any]:
-    """返回 DeepAgent 固定工具列表（可追加）。"""
+    """返回 DeepAgent 固定工具列表（可追加）。
+
+    Phase 3：SEAM_ENABLED=true 时经能力接缝解析搜索后端。
+    """
+    from app.core.seam import get_seam, seam_enabled
+
     # 延迟注册，确保只在模块导入后执行一次
     if not _FIXED_TOOLS:
-        _FIXED_TOOLS.append(web_search_tool)
-        log.info("[DeepAgent] 固定工具注册: web_search_tool (百度)")
+        if seam_enabled():
+            _register_search_seam()
+            search_tool = get_seam().resolve("search")
+            _FIXED_TOOLS.append(search_tool)
+            log.info("[DeepAgent] 固定工具注册: search (经 seam: %s)", get_seam().selected("search"))
+        else:
+            _FIXED_TOOLS.append(web_search_tool)
+            log.info("[DeepAgent] 固定工具注册: web_search_tool (百度)")
     return _FIXED_TOOLS

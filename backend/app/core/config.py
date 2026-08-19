@@ -56,6 +56,21 @@ class Settings(BaseSettings):
     APP_PORT: int = 8000
     DEBUG: bool = True
 
+    # ── 事件溯源（Phase 1：会话事件日志 + surface 投影）────
+    # 开启后，SSE 流式产出时双写业务事件到 session_events 表，
+    # get_session_messages 优先从事件日志投影恢复，回退 Redis checkpoint。
+    EVENT_SOURCING_ENABLED: bool = False
+
+    # ── 系统提示词分层组装（Phase 2：PromptSection）────
+    # 开启后，build_system_prompt 走 PromptAssembler 分层组装（内容与旧字符串等价），
+    # 关闭则返回旧版单一字符串。便于 A/B 对比与提示词可插拔/审计。
+    PROMPT_SECTION_ENABLED: bool = False
+
+    # ── 能力接缝（Phase 3：ServiceDefinition/Provider/Consumer）────
+    # 开启后，search/llm_client/storage 等可替换点走 SeamRegistry 解析后端，
+    # 关闭则走原硬编码实现。便于多后端可替换/可注入测试后端。
+    SEAM_ENABLED: bool = False
+
     model_config = SettingsConfigDict(
         env_file=str(PROJECT_PATH / ".env"),           # 自动读取项目根目录的 .env
         env_file_encoding="utf-8",

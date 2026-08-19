@@ -10,8 +10,10 @@ export interface SSEEventCallbacks {
   onText?: (content: string) => void
   /* 流式 Token 输出（逐字渲染） */
   onToken?: (content: string) => void
-  /* Agent 推理/思考过程 */
+  /* Agent 推理/思考过程（阶段状态） */
   onThinking?: (agent: string, phase: string, content: string) => void
+  /* 模型思考内容增量（Phase 4：与正文 token 类型化隔离，折叠展示） */
+  onReasoning?: (content: string) => void
   /* 工具调用事件 */
   onToolCall?: (toolName: string, meta: Record<string, unknown>) => void
   /* 工具调用结果 */
@@ -226,6 +228,9 @@ export function useSSE() {
           event.phase || '',
           event.content || '',
         )
+        break
+      case 'reasoning':
+        callbacks.onReasoning?.(event.content || '')
         break
       case 'tool_call': {
         // 兼容新旧协议: tool_name(旧) / name(新 DeepAgent)

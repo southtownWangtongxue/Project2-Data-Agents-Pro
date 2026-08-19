@@ -22,33 +22,68 @@ _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
 
 
-def _build_database_url() -> str:
-    """根据 DB_TYPE 配置构建对应的数据库连接 URL"""
-    if settings.DB_TYPE == "postgresql":
-        return (
-            f"postgresql+asyncpg://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}"
-            f"@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DATABASE}"
-        )
-    # 默认使用 MySQL
+def _mysql_url() -> str:
+    """构建 MySQL 连接串。"""
     return (
         f"mysql+asyncmy://{settings.MYSQL_USER}:{settings.MYSQL_PASSWORD}"
         f"@{settings.MYSQL_HOST}:{settings.MYSQL_PORT}/{settings.MYSQL_DATABASE}"
     )
 
 
+def _postgresql_url() -> str:
+    """构建 PostgreSQL 连接串。"""
+    return (
+        f"postgresql+asyncpg://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}"
+        f"@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DATABASE}"
+    )
+
+
+def _build_database_url() -> str:
+    """根据 DB_TYPE 配置构建对应的数据库连接 URL（兼容旧路径）"""
+    if settings.DB_TYPE == "postgresql":
+        return _postgresql_url()
+    # 默认使用 MySQL
+    return _mysql_url()
+
+
+def _build_engine(database_url: str) -> AsyncEngine:
+    """根据连接串创建异步引擎（统一连接池配置）。"""
+    log.info(database_url)
+    return create_async_engine(
+        database_url,
+        echo=settings.DEBUG,
+        pool_size=10,
+        max_overflow=20,
+        pool_pre_ping=True,
+    )
+
+
+def _register_storage_seam() -> None:
+    """注册 storage seam（Phase 3 能力接缝）。
+
+    未来新增存储后端只需 register + select，无需改动 get_engine。
+    """
+    from app.core.seam import get_seam
+
+    seam = get_seam()
+    if not seam.providers("storage"):
+        default = "postgresql" if settings.DB_TYPE == "postgresql" else "mysql"
+        seam.define("storage", "数据库存储后端", default=default)
+        seam.register("storage", "mysql", lambda: _build_engine(_mysql_url()), "MySQL (asyncmy)")
+        seam.register("storage", "postgresql", lambda: _build_engine(_postgresql_url()), "PostgreSQL (asyncpg)")
+
+
 def get_engine() -> AsyncEngine:
     """返回全局异步数据库引擎实例（懒加载，首次调用时创建）"""
     global _engine
     if _engine is None:
-        database_url = _build_database_url()
-        log.info(database_url)
-        _engine = create_async_engine(
-            database_url,
-            echo=settings.DEBUG,
-            pool_size=10,
-            max_overflow=20,
-            pool_pre_ping=True,
-        )
+        from app.core.seam import get_seam, seam_enabled
+
+        if seam_enabled():
+            _register_storage_seam()
+            _engine = get_seam().resolve("storage")
+        else:
+            _engine = _build_engine(_build_database_url())
     return _engine
 
 
