@@ -12,18 +12,20 @@ from app.core.llm import get_llm
 logger = logging.getLogger(__name__)
 
 
-async def generate_node_title(question: str, answer_summary: str = "") -> str:
+async def generate_node_title(question: str, answer_summary: str = "", provider: dict | None = None) -> str:
     """
     根据用户问题（含可选回答摘要）生成节点标题。
 
     参数:
         question: 用户提问原文
         answer_summary: AI 回答的前 200 字摘要（可选）
+        provider: 显式 LLM provider（前端模型列表）；不传则使用上下文 provider，
+                  绝不回退到 .env 的 settings。
 
     返回:
         15 字以内的中文标题。LLM 调用失败时返回降级标题。
     """
-    client = get_llm()
+    client = get_llm(provider)
 
     # 构建 prompt 上下文
     context = f"用户提问: {question[:200]}"
@@ -51,7 +53,7 @@ async def generate_node_title(question: str, answer_summary: str = "") -> str:
 
     try:
         response = await client.chat.completions.create(
-            model=get_model_name(),
+            model=get_model_name(provider),
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": context},
@@ -77,16 +79,17 @@ async def generate_node_title(question: str, answer_summary: str = "") -> str:
     return fallback
 
 
-async def generate_session_title(question: str, answer_summary: str = "") -> str:
+async def generate_session_title(question: str, answer_summary: str = "", provider: dict | None = None) -> str:
     """
     为会话生成标题（通常使用第一轮节点的标题）。
 
     参数:
         question: 用户首次提问
         answer_summary: 首次 AI 回答摘要
+        provider: 显式 LLM provider（前端模型列表），可选
 
     返回:
         15 字以内的会话标题
     """
     # 会话标题与节点标题生成方式一致，复用 generate_node_title
-    return await generate_node_title(question, answer_summary)
+    return await generate_node_title(question, answer_summary, provider)

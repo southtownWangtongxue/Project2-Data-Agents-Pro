@@ -41,6 +41,7 @@ SUGGESTER_SYSTEM_PROMPT = """你是一个数据分析助手。下面提供的是
 async def generate_question_suggestions(
     schema_text: str,
     force_refresh: bool = False,
+    provider: dict | None = None,
 ) -> list[str]:
     """
     基于表结构文本生成推荐问题列表。
@@ -48,6 +49,8 @@ async def generate_question_suggestions(
     参数:
         schema_text: 格式化的表结构文本
         force_refresh: 是否强制刷新（忽略缓存）
+        provider: 显式 LLM provider（前端模型列表）；不传则使用上下文 provider，
+                  绝不回退到 .env 的 settings
 
     返回:
         推荐问题字符串列表，如 ["查询本月销售额Top10产品", ...]
@@ -71,11 +74,11 @@ async def generate_question_suggestions(
 
     logger.info("[QuestionSuggester] 正在调用 LLM 生成问题建议...")
 
-    client = get_llm()
+    client = get_llm(provider)
 
     try:
         response = await client.chat.completions.create(
-            model=get_model_name(),
+            model=get_model_name(provider),
             messages=[
                 {"role": "system", "content": SUGGESTER_SYSTEM_PROMPT},
                 {"role": "user", "content": f"以下是数据库的表结构信息：\n\n{schema_text}"},

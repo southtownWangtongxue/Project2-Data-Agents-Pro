@@ -30,9 +30,13 @@ def get_current_provider() -> dict | None:
     return _current_provider.get()
 
 
-def get_model_name() -> str:
-    """当前生效的 model 名：优先用上下文 provider 的 model，否则全局 settings"""
-    p = _current_provider.get()
+def get_model_name(provider: dict | None = None) -> str:
+    """当前生效的 model 名。
+
+    优先级：显式传入的 provider > 上下文 provider > 全局 settings。
+    这样 agent 在显式传入 provider（前端模型列表）时绝不会回退到 .env 的 settings。
+    """
+    p = provider or _current_provider.get()
     if p and p.get("model"):
         return p["model"]
     return settings.LLM_MODEL_NAME
