@@ -33,6 +33,8 @@ export interface ChatMessage {
   planIntentLabel?: string
   planSteps?: string[]
   planChartSuitable?: boolean
+  /* 子代理执行状态（task 模式：running | done） */
+  status?: 'running' | 'done' | string
 }
 
 /* 会话摘要类型 */

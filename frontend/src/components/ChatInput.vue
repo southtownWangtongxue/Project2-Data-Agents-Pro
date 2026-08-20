@@ -52,20 +52,13 @@ const filteredCommands = computed(() => {
 
 function showHelp() {
   const lines = commands.map((c) => `${c.name} — ${c.desc}`).join('\n')
-  // 以提示文本形式插入一条系统消息
-  const appEl = document.querySelector('#app') as HTMLElement | null
-  if (appEl && appEl.__vue_app__) {
-    const pinia = appEl.__vue_app__.config.globalProperties.$pinia
-    const chat = pinia && pinia._s.get('chat')
-    if (chat) {
-      chat.messages.push({
-        id: Date.now().toString(36) + Math.random().toString(36).slice(2, 9),
-        role: 'system',
-        type: 'text',
-        content: `可用命令：\n${lines}`,
-      })
-    }
-  }
+  // 以提示文本形式插入一条系统消息（复用组件内已注入的 chat store）
+  store.messages.push({
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 9),
+    role: 'system',
+    type: 'text',
+    content: `可用命令：\n${lines}`,
+  })
 }
 
 function runCommand(cmd: CommandItem) {
