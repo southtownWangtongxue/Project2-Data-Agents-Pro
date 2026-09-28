@@ -7,7 +7,7 @@
  * - 模式切换 + 联网搜索 集成在输入框组件中
  */
 import { ref, watch, nextTick, onMounted, onUnmounted, computed } from 'vue'
-import { useChatStore, type ChatMessage } from '@/stores/chat'
+import { useChatStore, type ChatMessage, type Step } from '@/stores/chat'
 import { marked } from 'marked'
 import { format as formatSQLText } from 'sql-formatter'
 import apiClient from '@/api/client'
@@ -360,6 +360,55 @@ const followUpSuggestions = computed(() => {
   return suggestions.slice(0, 3)
 })
 
+/* ── 步骤分组渲染（阶段二 2.2）──
+ * renderMessages：将每个步骤的连续消息区段按「thinking → tool → 正文」固定类型序
+ * 稳定排序后输出，不再依赖到达顺序；无 stepId 的消息（旧会话回放等）原样平铺不丢失。
+ * stepHeaderBefore：消息为其步骤在渲染序列中的第一条时返回 Step 元数据（渲染步骤头）。 */
+
+/* 组内类型排序权重：思考类 0 < 工具类 1 < 其他（正文/SQL/结果/图表）2 */
+const STEP_TYPE_RANK: Record<string, number> = {
+  reasoning: 0,
+  thinking: 0,
+  tool_call: 1,
+  tool_chain: 1,
+  tool_result: 1,
+}
+
+const renderMessages = computed<ChatMessage[]>(() => {
+  const out: ChatMessage[] = []
+  const msgs = store.messages
+  let i = 0
+  while (i < msgs.length) {
+    const sid = msgs[i].stepId || 0
+    if (!sid || !store.steps.has(sid)) {
+      out.push(msgs[i])
+      i++
+      continue
+    }
+    // 收集该步骤的连续区段，按固定类型序稳定排序（同类型保持到达顺序）
+    let j = i
+    const seg: ChatMessage[] = []
+    while (j < msgs.length && (msgs[j].stepId || 0) === sid) {
+      seg.push(msgs[j])
+      j++
+    }
+    seg.sort((a, b) => (STEP_TYPE_RANK[a.type || ''] ?? 2) - (STEP_TYPE_RANK[b.type || ''] ?? 2))
+    out.push(...seg)
+    i = j
+  }
+  return out
+})
+
+/* 步骤组标题：该消息是其步骤在渲染序列中的第一条时返回 Step 元数据 */
+function stepHeaderBefore(index: number): Step | null {
+  const msgs = renderMessages.value
+  const sid = msgs[index]?.stepId || 0
+  if (!sid) return null
+  const prev = index > 0 ? msgs[index - 1] : undefined
+  if (prev && (prev.stepId || 0) === sid) return null
+  return store.steps.get(sid) || null
+}
+
 /* 检查当前消息是否是新轮次的起始（用于插入分隔线） */
 function hasSeparatorBefore(index: number): { has: boolean; turnIndex: number; title: string } | null {
   let userMsgCount = 0
@@ -630,8 +679,16 @@ function scrollToNode(nodeIndex: number) {
           </div>
         </div>
 
-        <!-- 消息列表（含节点分隔线） -->
-        <template v-for="(msg, msgIndex) in store.messages" :key="msg.id">
+        <!-- 消息列表（含节点分隔线；阶段二 2.2：步骤分组 + 组内固定类型序） -->
+        <template v-for="(msg, msgIndex) in renderMessages" :key="msg.id">
+          <!-- 步骤组标题（带运行中/完成状态，位于每步骤首条消息之前） -->
+          <div v-if="stepHeaderBefore(msgIndex)" class="step-group-header">
+            <span class="step-group-index">步骤 {{ stepHeaderBefore(msgIndex)!.id }}</span>
+            <span class="step-group-label">{{ stepHeaderBefore(msgIndex)!.label }}</span>
+            <span class="step-group-status" :class="stepHeaderBefore(msgIndex)!.status">
+              {{ stepHeaderBefore(msgIndex)!.status === 'running' ? '运行中' : '已完成' }}
+            </span>
+          </div>
           <!-- 多轮对话节点分隔线 -->
           <NodeSeparator
             v-if="hasSeparatorBefore(msgIndex)"
@@ -1486,6 +1543,41 @@ function scrollToNode(nodeIndex: number) {
 @keyframes dotWave {
   0%, 80%, 100% { opacity: .2; transform: scale(.8); }
   40% { opacity: 1; transform: scale(1.2); }
+}
+
+/* ========== 步骤组标题（阶段二 2.2：按 step_id 分组渲染） ========== */
+.step-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: var(--space-4) 0 var(--space-2);
+  padding: 6px 12px;
+  border-left: 3px solid var(--color-primary);
+  background: rgba(112, 86, 248, 0.06);
+  border-radius: 0 8px 8px 0;
+  font-size: 13px;
+}
+.step-group-index {
+  font-weight: 600;
+  color: var(--color-primary-light);
+}
+.step-group-label {
+  color: var(--color-text-primary);
+  font-weight: 500;
+}
+.step-group-status {
+  margin-left: auto;
+  font-size: 12px;
+  padding: 1px 8px;
+  border-radius: 999px;
+}
+.step-group-status.running {
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.12);
+}
+.step-group-status.completed {
+  color: #10b981;
+  background: rgba(16, 185, 129, 0.12);
 }
 
 /* ========== 消息项 ========== */

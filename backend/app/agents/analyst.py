@@ -180,7 +180,7 @@ async def analyze_results(
         for i in range(0, len(summary), chunk_size):
             chunk = summary[i:i + chunk_size]
             await ctx.push_token(chunk)
-            # 让出事件循环，确保 token 能被 _forward_tokens 消费
+            # 让出事件循环，确保 token 及时被 chat.py 主循环消费
             await asyncio.sleep(0)
 
     # ── 第二步：LLM 增强分析（实时流式输出 Markdown）─────────

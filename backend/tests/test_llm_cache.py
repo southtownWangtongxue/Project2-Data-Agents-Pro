@@ -43,7 +43,7 @@ class TestLLMCache:
 
 
 class TestPushTokenChannel:
-    """StreamContext.push_token channel 透传测试"""
+    """StreamContext.push_token channel 透传测试（单队列 ("token", event) 约定）"""
 
     @pytest.mark.asyncio
     async def test_default_channel_answer(self):
@@ -51,7 +51,8 @@ class TestPushTokenChannel:
         ctx = StreamContext()
         q = ctx.create_queue()
         await ctx.push_token("你好")
-        event = q.get_nowait()
+        source, event = q.get_nowait()
+        assert source == "token"
         assert event == {"type": "token", "content": "你好", "channel": "answer"}
 
     @pytest.mark.asyncio
@@ -60,7 +61,8 @@ class TestPushTokenChannel:
         ctx = StreamContext()
         q = ctx.create_queue()
         await ctx.push_token("SELECT 1", channel="sql")
-        event = q.get_nowait()
+        source, event = q.get_nowait()
+        assert source == "token"
         assert event == {"type": "token", "content": "SELECT 1", "channel": "sql"}
 
     @pytest.mark.asyncio
@@ -69,5 +71,16 @@ class TestPushTokenChannel:
         ctx = StreamContext()
         q = ctx.create_queue()
         await ctx.push_token({"content": "x", "channel": "sql"})
-        event = q.get_nowait()
+        source, event = q.get_nowait()
+        assert source == "token"
         assert event == {"type": "token", "content": "x", "channel": "sql"}
+
+    @pytest.mark.asyncio
+    async def test_push_wraps_as_token_source(self):
+        """push() 应统一包装为 ("token", event)，与 graph 的 ("node", evt) 同队列保序"""
+        ctx = StreamContext()
+        q = ctx.create_queue()
+        await ctx.push({"type": "node_started", "agent": "analyst"})
+        source, event = q.get_nowait()
+        assert source == "token"
+        assert event["type"] == "node_started"

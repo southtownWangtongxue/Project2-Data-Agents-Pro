@@ -2,6 +2,8 @@ import { ref } from 'vue'
 
 /* SSE 事件回调接口 */
 export interface SSEEventCallbacks {
+  /* 统一事件钩子：每条事件先于此处分发（用于 step_id 归组等横切逻辑） */
+  onEvent?: (event: SSEEventData) => void
   /* 状态更新：如"正在分析..." */
   onStatus?: (content: string) => void
   /* Schema 信息 */
@@ -50,6 +52,8 @@ interface SSEEventData {
   content?: string
   /* token 事件路由字段：sql=SQL 卡片流式追加 / answer=正文 */
   channel?: string
+  /* 步骤 ID（阶段二 2.2）：同一 graph 节点的事件归入同一步骤 */
+  step_id?: number
   data?: any[]
   columns?: string[]
   config?: Record<string, unknown>
@@ -214,6 +218,8 @@ export function useSSE() {
     event: SSEEventData,
     callbacks: SSEEventCallbacks,
   ): void {
+    // 统一事件钩子先行：保证后续回调可依赖 onEvent 中更新的归组状态
+    callbacks.onEvent?.(event)
     switch (event.type) {
       case 'status':
         callbacks.onStatus?.(event.content || '')

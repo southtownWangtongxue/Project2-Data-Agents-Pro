@@ -33,6 +33,8 @@ export interface ChatMessage {
   planIntentLabel?: string
   planSteps?: string[]
   planChartSuitable?: boolean
+  /* 步骤 ID（阶段二 2.2）：同一 graph 节点的事件归入同一步骤组渲染 */
+  stepId?: number
   /* 子代理执行状态（task 模式：running | done） */
   status?: 'running' | 'done' | string
 }
@@ -44,6 +46,14 @@ export interface SessionInfo {
   question: string
   created_at: string
   message_count: number
+}
+
+/* 步骤组（阶段二 2.2）：一个 graph 节点对应一个 Step，聚合其全部事件卡片 */
+export interface Step {
+  id: number
+  agent: string
+  label: string
+  status: 'running' | 'completed'
 }
 
 /* 生成唯一消息 ID */
@@ -98,6 +108,15 @@ export const useChatStore = defineStore('chat', () => {
 
   /* 当前正在流式追加的 SQL 卡片消息 ID（channel=sql 的 token 逐字写入） */
   let activeSqlMsgId: string | null = null
+
+  /* ── 步骤分组（阶段二 2.2）──
+   * steps：step_id → Step 元数据（onNodeStarted 创建，done/error 时全部置为完成）；
+   * currentStepId：当前事件归属的步骤，创建消息时盖章到 stepId 字段。
+   * 无 step_id 的事件（旧会话回放等）不盖章，渲染层降级平铺。 */
+  const steps = ref<Map<number, Step>>(new Map())
+  let currentStepId = 0
+  /* 当前 reasoning 卡片归属的步骤（跨步骤时开新卡片，同步骤多条 reasoning 追加同一张） */
+  let activeReasoningStepId = 0
 
   /* 最后一个助手文本消息 ID（用于流式光标动画） */
   const lastAssistantMsgId = ref('')
@@ -215,6 +234,10 @@ export const useChatStore = defineStore('chat', () => {
 
     isLoading.value = true
     initTasks()  // 重置任务清单
+    // 重置步骤分组（阶段二 2.2）
+    steps.value = new Map()
+    currentStepId = 0
+    activeReasoningStepId = 0
 
     // 构建完整对话历史发送给后端（包含 SQL 上下文，支持多轮追问/纠正）
     const chatMessages = messages.value
@@ -280,6 +303,30 @@ export const useChatStore = defineStore('chat', () => {
         thread_id: currentThreadId.value || undefined,
       },
       {
+        /* 统一事件钩子：step_id 归组（阶段二 2.2），先于其他回调执行 */
+        onEvent(event) {
+          const sid = event.step_id || 0
+          if (sid) currentStepId = sid
+          if (event.type === 'node_started') {
+            if (sid && !steps.value.has(sid)) {
+              steps.value.set(sid, {
+                id: sid,
+                agent: event.agent || '',
+                label: event.label || pipelinePhaseMap[event.agent || ''] || event.agent || '',
+                status: 'running',
+              })
+            }
+          } else if (event.type === 'reasoning') {
+            // reasoning 归入所属 Step：跨步骤时结束上一张卡片，同步骤多条追加同一张
+            if (activeReasoningMsgId && activeReasoningStepId !== sid) {
+              activeReasoningMsgId = null
+            }
+            activeReasoningStepId = sid
+          } else if (event.type === 'done' || event.type === 'error') {
+            steps.value.forEach(s => { s.status = 'completed' })
+          }
+        },
+
         /* SSE 流返回当前会话 thread_id */
         onThreadId(threadId: string) {
           currentThreadId.value = threadId
@@ -347,6 +394,7 @@ export const useChatStore = defineStore('chat', () => {
               phase,
               content,
               collapsed: false,
+              stepId: currentStepId || undefined,
             })
           }
         },
@@ -367,6 +415,7 @@ export const useChatStore = defineStore('chat', () => {
               type: 'reasoning',
               content,
               collapsed: true,
+              stepId: currentStepId || undefined,
             })
           }
         },
@@ -386,7 +435,10 @@ export const useChatStore = defineStore('chat', () => {
               existing.sql = (existing.sql || '') + content
             } else {
               // 首个 SQL token：创建 SQL 卡片占位（sql 事件到达后用清洗后的完整 SQL 覆盖）
-              const msg: ChatMessage = { id: generateId(), role: 'assistant', type: 'sql', sql: content }
+              const msg: ChatMessage = {
+                id: generateId(), role: 'assistant', type: 'sql', sql: content,
+                stepId: currentStepId || undefined,
+              }
               messages.value.push(msg)
               activeSqlMsgId = msg.id
             }
@@ -406,6 +458,7 @@ export const useChatStore = defineStore('chat', () => {
               role: 'assistant',
               type: 'text',
               content: content,
+              stepId: currentStepId || undefined,
             })
           }
         },
@@ -442,6 +495,7 @@ export const useChatStore = defineStore('chat', () => {
             toolName,
             toolMeta: Object.keys(cleanMeta).length ? cleanMeta : undefined,
             collapsed: true,
+            stepId: currentStepId || undefined,
           })
         },
 
@@ -478,6 +532,7 @@ export const useChatStore = defineStore('chat', () => {
               toolName,
               toolMeta: Object.keys(cleanMeta).length ? cleanMeta : undefined,
               collapsed: true,
+              stepId: currentStepId || undefined,
             })
           }
         },
@@ -507,8 +562,9 @@ export const useChatStore = defineStore('chat', () => {
             role: 'assistant',
             type: 'sql',
             sql: content,
+            stepId: currentStepId || undefined,
           })
-        },
+          },
 
         /* 查询结果数据 */
         onResult(data: any[], columns: string[]) {
@@ -519,6 +575,7 @@ export const useChatStore = defineStore('chat', () => {
             type: 'result',
             data,
             columns,
+            stepId: currentStepId || undefined,
           })
         },
 
@@ -549,6 +606,7 @@ export const useChatStore = defineStore('chat', () => {
             role: 'assistant',
             type: 'analysis',
             content,
+            stepId: currentStepId || undefined,
           })
         },
 
@@ -560,6 +618,7 @@ export const useChatStore = defineStore('chat', () => {
             role: 'assistant',
             type: 'chart',
             chartConfig: config,
+            stepId: currentStepId || undefined,
           })
         },
 
@@ -637,6 +696,9 @@ export const useChatStore = defineStore('chat', () => {
     activeReasoningMsgId = null
     activeTokenMsgId = null
     activeSqlMsgId = null
+    steps.value = new Map()
+    currentStepId = 0
+    activeReasoningStepId = 0
     pendingQueue.value = []
     lastQuestion.value = ''
     currentThreadId.value = ''
@@ -890,6 +952,7 @@ export const useChatStore = defineStore('chat', () => {
 
   return {
     messages,
+    steps,
     isLoading,
     currentThreadId,
     currentModel,

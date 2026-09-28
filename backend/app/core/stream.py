@@ -1,16 +1,20 @@
 """
-StreamContext —— 图节点内实时 Token 推流上下文
+StreamContext —— 图节点内实时事件推送上下文（阶段二 2.1 精简版）
 
-允许 Agent 节点在 LLM 调用期间将 token 实时推送到 SSE 生成器，
-实现真正的流式输出（替代 chat.py 中的 _stream_tokens 模拟延迟）。
+所有事件源（graph 节点完成事件、节点内 push 的 token/reasoning/node_started）
+写入同一个 asyncio.Queue，由 chat.py 主循环单消费者顺序读取。
+单队列天然保序：同一节点内先 push 的 token 必先于该节点的完成事件到达主循环，
+不再需要旧版的双队列 + 0.1s 轮询 + drain 机制。
 
 用法:
     # 在 chat.py 中设置上下文
     from app.core.stream import StreamContext, set_stream_context
     ctx = StreamContext()
-    token = set_stream_context(ctx)
     queue = ctx.create_queue()
-    # ... 运行图 + 并发读取 queue ...
+    set_stream_context(ctx)
+    # ... 运行图 + await queue.get() 单消费者循环 ...
+    # 队列元素为 (source, data) 元组：节点内 push 的事件为 ("token", event_dict)，
+    # 与 chat.py _forward_graph 的 ("node", evt) 等约定一致
 
     # 在 Agent 节点中使用
     from app.core.stream import get_stream_context
@@ -24,14 +28,10 @@ import contextvars
 
 
 class StreamContext:
-    """流式上下文，封装 asyncio.Queue 供图节点推送 token 事件。
-
-    merge_queue: 直接写入 SSE 主循环队列的快捷通道（绕过 token 队列，用于高优先级事件）。
-    """
+    """流式上下文，封装单个 asyncio.Queue 供图节点推送 SSE 事件。"""
 
     def __init__(self):
         self.queue: asyncio.Queue | None = None
-        self.merge_queue: asyncio.Queue | None = None
 
     def create_queue(self) -> asyncio.Queue:
         """创建事件队列并返回。"""
@@ -39,9 +39,13 @@ class StreamContext:
         return self.queue
 
     async def push(self, event: dict):
-        """推送一个完整的 SSE 事件 dict 到普通队列。"""
+        """推送一个完整的 SSE 事件 dict 到队列。
+
+        原 push_priority（merge_queue 快捷通道）语义已合并于此：
+        单队列单消费者天然保序，优先级通道不再需要。
+        """
         if self.queue:
-            await self.queue.put(event)
+            await self.queue.put(("token", event))
 
     async def push_token(self, content: str | dict, channel: str = "answer"):
         """推送一个 token 事件。
@@ -56,12 +60,6 @@ class StreamContext:
         else:
             event = {"type": "token", "content": content, "channel": channel}
         await self.push(event)
-
-    async def push_priority(self, event: dict):
-        """直接推送事件到 merge_queue（绕过 token 队列，用于节点开始等及时事件）。"""
-        if self.merge_queue:
-            # 使用 ("token", data) 格式与 _forward_tokens 一致，主循环统一处理
-            await self.merge_queue.put(("token", event))
 
 
 # 上下文变量 —— 图节点通过此变量获取当前 StreamContext

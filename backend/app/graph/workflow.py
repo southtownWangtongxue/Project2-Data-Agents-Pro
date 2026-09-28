@@ -71,9 +71,9 @@ _PIPELINE_LABELS = {
 
 
 async def _push_node_started(agent: str):
-    """通过 StreamContext 向前端实时推送节点开始事件（绕过 token 队列，直写 merge_queue）。"""
+    """通过 StreamContext 向前端实时推送节点开始事件（单队列保序，见 stream.py）。"""
     ctx = get_stream_context()
-    await ctx.push_priority({
+    await ctx.push({
         "type": "node_started",
         "agent": agent,
         "label": _PIPELINE_LABELS.get(agent, agent),

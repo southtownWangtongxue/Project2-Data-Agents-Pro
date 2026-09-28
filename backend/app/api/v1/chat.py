@@ -6,6 +6,7 @@
 状态变更，将关键信息实时推送给前端（状态、SQL、结果、
 分析洞察、图表配置等）。
 """
+import contextvars
 import json
 import logging
 import uuid
@@ -39,6 +40,12 @@ handler = logging.StreamHandler()
 handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
 logger.addHandler(handler)
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+# ── SSE step_id 上下文（阶段二 2.2）──
+# 主循环按 graph 节点分配自增 step_id（同轮次内从 1 开始）并设置到此上下文，
+# _sse_event 统一注入到该节点产生的所有事件；done/title/thread_id 不携带。
+_sse_step_id: contextvars.ContextVar[int] = contextvars.ContextVar("sse_step_id", default=0)
+_STEPLESS_TYPES = {"thread_id", "done", "title"}
 
 
 def _resolve_enabled_provider(model: str | None = None) -> dict | None:
@@ -114,12 +121,18 @@ def _sse_event(data: dict) -> str:
     """
     构造 SSE 事件字符串（符合 Server-Sent Events 规范）。
 
+    阶段二 2.2：上下文中已有 step_id 时统一注入（done/title/thread_id 等
+    无步骤归属的事件除外），前端按 step_id 分组渲染步骤卡片。
+
     参数:
         data: 事件数据字典，将被 JSON 序列化
 
     返回:
         形如 "data: {...}\n\n" 的 SSE 事件字符串
     """
+    sid = _sse_step_id.get()
+    if sid and data.get("type") not in _STEPLESS_TYPES and "step_id" not in data:
+        data["step_id"] = sid
     return f"data: {json.dumps(data, ensure_ascii=False, cls=CustomEncoder)}\n\n"
 
 
@@ -302,14 +315,11 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                         len(initial_state["_cached_query_result"]),
                         len(initial_state["_cached_query_columns"]))
 
-    # ── 流式上下文：Agent 节点可通过 StreamContext 实时推送 token ──
+    # ── 流式上下文：Agent 节点可通过 StreamContext 实时推送事件 ──
+    # 阶段二 2.1：单队列单消费者——graph 节点事件与节点内 push 写入同一队列，天然保序
     stream_ctx = StreamContext()
     stream_queue = stream_ctx.create_queue()
     _ctx_token = set_stream_context(stream_ctx)
-
-    # 提前声明 merge_queue（下面会用到），让 StreamContext 可以直接写入优先级事件
-    merge_queue: _asyncio.Queue[tuple[str, object]] = _asyncio.Queue()
-    stream_ctx.merge_queue = merge_queue  # ← 关键：连接快捷通道
 
     logger.info("[chat] _stream_chat: session_thread_id=%s (reused=%s), run_id=%s, question=%s",
                 session_thread_id, bool(existing_thread_id), run_id, question[:80])
@@ -350,10 +360,7 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
         await _track(EventType.USER_MESSAGE, role="user", content=question)
 
     try:
-        # ── 双任务并发 SSE 流：Token 实时推送 + 图事件顺序处理 ──
-        # forward_graph 和 forward_tokens 同时向 merge_queue 推送，
-        # 主循环从 merge_queue 读取，token 事件立即可达，不再堆积到节点完成。
-        # merge_queue 已在上面创建并与 StreamContext 关联
+        # ── 单队列单消费者（阶段二 2.1）：graph 事件与节点内 push 同队列，天然保序 ──
 
         async def _forward_graph():
             try:
@@ -362,43 +369,33 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                 async for evt in graph.astream(initial_state, config, stream_mode="updates"):
                     event_count += 1
                     logger.info(f"[SSE-GRAPH] 收到图事件 #{event_count} keys: {list(evt.keys())}")
-                    # 先把已排队的 token 标记插入，确保主循环排空 token
-                    await merge_queue.put(("drain", None))
-                    await merge_queue.put(("node", evt))
+                    # 节点内 push 的 token 已先于本事件入队，直接入队即可保序
+                    await stream_queue.put(("node", evt))
                 logger.info(f"[SSE-GRAPH] graph.astream() 完成, 共 {event_count} 个事件")
             except GraphInterrupt as gi:
                 # LangGraph human-in-the-loop 中断
-                await merge_queue.put(("interrupt", gi))
+                await stream_queue.put(("interrupt", gi))
             except Exception as exc:
                 logger.exception("[SSE] Graph 流式执行异常")
-                await merge_queue.put(("error", exc))
-            await merge_queue.put(("done", None))
-
-        # 信号：用于通知 _forward_tokens 停止轮询
-        _stop_token = object()
-
-        async def _forward_tokens():
-            while True:
-                try:
-                    token = await _asyncio.wait_for(stream_queue.get(), timeout=0.1)
-                    if token is _stop_token:
-                        break
-                    await merge_queue.put(("token", token))
-                except _asyncio.TimeoutError:
-                    pass  # 没有任何 LLM 在输出时，短暂等待后继续轮询
+                await stream_queue.put(("error", exc))
+            await stream_queue.put(("done", None))
 
         graph_task = _asyncio.create_task(_forward_graph())
-        token_task = _asyncio.create_task(_forward_tokens())
 
-        # 主循环：消费 merge_queue，即时产出 SSE 事件
-        # _pending 用于暂存 drain 循环中遇到的非 token 事件（避免 put 回队列导致顺序错乱）
-        _pending = None
+        # 阶段二 2.2：step_id 分配——node_started（节点开始）与节点完成事件双入口，
+        # 同一节点的所有事件归入同一步骤，同轮次内自增从 1 开始
+        step_counter = 0
+        node_steps: dict[str, int] = {}
+
+        def _next_step(agent: str) -> int:
+            nonlocal step_counter
+            step_counter += 1
+            node_steps[agent] = step_counter
+            return step_counter
+
+        # 主循环：单消费者顺序读取队列，即时产出 SSE 事件
         while True:
-            if _pending is not None:
-                source, data = _pending
-                _pending = None
-            else:
-                source, data = await merge_queue.get()
+            source, data = await stream_queue.get()
             logger.info(f"[SSE-LOOP] 事件源: {source}")
 
             if source == "done":
@@ -426,37 +423,20 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                 })
                 break
 
-            if source == "drain":
-                # 排空 merge_queue 中缓存的 token 事件，遇到非 token 事件暂存到 _pending
-                while not merge_queue.empty():
-                    try:
-                        s, d = merge_queue.get_nowait()
-                    except _asyncio.QueueEmpty:
-                        break
-                    if s == "token":
-                        yield _sse_event(d)
-                    else:
-                        _pending = (s, d)
-                        break
-                continue
-
             if source == "token":
+                # 节点内推送的预组表事件（token/reasoning/node_started 等），直接产出
+                if data.get("type") == "node_started":
+                    # 节点开始：分配新 step_id（同节点重跑如质量打回重试时各为一步），
+                    # 完成事件经 node_steps 映射归入对应步骤
+                    agent = data.get("agent", "")
+                    _sse_step_id.set(_next_step(agent))
                 yield _sse_event(data)
                 continue
 
-            # source == "node": 先排空 token，再处理节点事件
-            while not merge_queue.empty():
-                try:
-                    s, d = merge_queue.get_nowait()
-                except _asyncio.QueueEmpty:
-                    break
-                if s == "token":
-                    yield _sse_event(d)
-                else:
-                    _pending = (s, d)
-                    break
-
+            # source == "node": 处理节点完成事件
             for node_name, state_update in data.items():
+                # 阶段二 2.2：兜底分配 step_id（节点未推送 node_started 时）
+                _sse_step_id.set(node_steps.get(node_name) or _next_step(node_name))
                 logger.info(f"[SSE-LOOP] 处理节点事件: {node_name}")
 
                 # ── clarify_plan: 意图澄清 + 执行计划（合并单次LLM调用）──────
@@ -743,17 +723,8 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                     except Exception as title_exc:
                         logger.warning(f"[TitleGen] 标题生成/保存失败（不影响已发出的 done）: {title_exc}")
 
-        # ── 排空 merge_queue 中剩余的 token 事件，跳过非 token 事件 ──
-        while not merge_queue.empty():
-            try:
-                s, d = merge_queue.get_nowait()
-            except _asyncio.QueueEmpty:
-                break
-            if s == "token":
-                yield _sse_event(d)
-            else:
-                _pending = (s, d)
-                break
+        # 单队列保序：done 由 _forward_graph 在 graph 全部节点完成后入队，
+        # 此时所有节点内 push 的事件均已被单消费者按序消费，无需兜底排空
 
     except GraphInterrupt as gi:
         # Human-in-the-loop 中断：高危 SQL 需要人工审批
@@ -783,13 +754,6 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
         # 清理后台任务 + 重置流式上下文，避免泄漏到下一次请求
         if 'graph_task' in locals() and not graph_task.done():
             graph_task.cancel()
-        if 'token_task' in locals() and not token_task.done():
-            # 发送停止信号让 _forward_tokens 退出轮询
-            try:
-                stream_queue.put_nowait(_stop_token)
-            except Exception:
-                pass
-            token_task.cancel()
         set_stream_context(StreamContext())
 
 
@@ -854,6 +818,16 @@ async def _stream_chat_deepagent(question: str, user_name: str, history: list[di
     # 聚合本轮完整回答文本（messages 模式逐 token 累加，__end__ 时落为 analysis 事件）
     deep_full_text = ""
 
+    # ── 阶段二 2.2：DeepAgent 以 node_name 为分组键分配 step_id（同轮次内自增从 1 开始）──
+    deep_node_steps: dict[str, int] = {}
+
+    def _deep_step(node_name: str) -> int:
+        sid = deep_node_steps.get(node_name)
+        if sid is None:
+            sid = len(deep_node_steps) + 1
+            deep_node_steps[node_name] = sid
+        return sid
+
     async def _track(etype: str, role: str | None = None, content: str = "", payload: dict | None = None):
         """在事件溯源开启时追加一条事件（失败不阻断主流程）。"""
         if es_enabled:
@@ -906,6 +880,8 @@ async def _stream_chat_deepagent(question: str, user_name: str, history: list[di
                 # ── 逐 token 流式文本 ──
                 chunk, metadata = data
                 node = metadata.get("langgraph_node", "")
+                # 阶段二 2.2：按节点归组，事件统一携带 step_id
+                _sse_step_id.set(_deep_step(node))
 
                 # 只处理 agent/model 节点的文本块
                 if node in ("agent", "model"):
@@ -950,6 +926,8 @@ async def _stream_chat_deepagent(question: str, user_name: str, history: list[di
             elif mode == "updates":
                 for node_name, state_update in data.items():
                     logger.info(f"[DeepAgent SSE] 节点: {node_name}")
+                    # 阶段二 2.2：按节点归组，事件统一携带 step_id
+                    _sse_step_id.set(_deep_step(node_name))
 
                     # agent/model 节点：仅处理工具调用（文本由 messages 模式流式处理）
                     if node_name in ("agent", "model"):
