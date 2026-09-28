@@ -8,8 +8,8 @@ export interface SSEEventCallbacks {
   onSchema?: (content: string) => void
   /* 自然语言文本（分析/回答） */
   onText?: (content: string) => void
-  /* 流式 Token 输出（逐字渲染） */
-  onToken?: (content: string) => void
+  /* 流式 Token 输出（逐字渲染；channel: sql=SQL卡片流式追加 / answer=正文） */
+  onToken?: (content: string, channel?: string) => void
   /* Agent 推理/思考过程（阶段状态） */
   onThinking?: (agent: string, phase: string, content: string) => void
   /* 模型思考内容增量（Phase 4：与正文 token 类型化隔离，折叠展示） */
@@ -48,6 +48,8 @@ export interface SSEEventCallbacks {
 interface SSEEventData {
   type: string
   content?: string
+  /* token 事件路由字段：sql=SQL 卡片流式追加 / answer=正文 */
+  channel?: string
   data?: any[]
   columns?: string[]
   config?: Record<string, unknown>
@@ -220,7 +222,7 @@ export function useSSE() {
         callbacks.onSchema?.(event.content || '')
         break
       case 'token':
-        callbacks.onToken?.(event.content || '')
+        callbacks.onToken?.(event.content || '', event.channel)
         break
       case 'thinking':
         callbacks.onThinking?.(

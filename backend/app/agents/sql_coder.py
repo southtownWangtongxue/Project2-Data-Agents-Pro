@@ -63,7 +63,9 @@ async def generate_sql(
         if chunk.choices and chunk.choices[0].delta.content:
             token = chunk.choices[0].delta.content
             content_chunks.append(token)
-            # 不推送 token：SQL 内容短，由格式化 SQL 卡片展示，避免前端重复显示
+            # 流式推送 SQL token（channel=sql）：消除生成期 3~10s 黑盒等待，
+            # 前端按 channel 路由到 SQL 卡片逐字追加，不会以裸文本进正文
+            await ctx.push_token(token, channel="sql")
     sql = "".join(content_chunks).strip()
     sql = _clean_sql(sql)
     return sql

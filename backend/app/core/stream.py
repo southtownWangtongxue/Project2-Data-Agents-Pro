@@ -43,9 +43,19 @@ class StreamContext:
         if self.queue:
             await self.queue.put(event)
 
-    async def push_token(self, content: str):
-        """推送一个 token 事件。"""
-        await self.push({"type": "token", "content": content})
+    async def push_token(self, content: str | dict, channel: str = "answer"):
+        """推送一个 token 事件。
+
+        content 支持纯文本或完整事件 dict；
+        channel 默认 "answer"（正文流式），SQL 生成传 "sql"，
+        前端按 channel 路由（sql → SQL 卡片流式追加），字段透传到 SSE 输出。
+        """
+        if isinstance(content, dict):
+            event = {"type": "token", **content}
+            event.setdefault("channel", channel)
+        else:
+            event = {"type": "token", "content": content, "channel": channel}
+        await self.push(event)
 
     async def push_priority(self, event: dict):
         """直接推送事件到 merge_queue（绕过 token 队列，用于节点开始等及时事件）。"""

@@ -70,32 +70,52 @@ def _resolve_key_and_base(provider: dict | None = None) -> tuple[str, str]:
     return key, base
 
 
+# ── 客户端实例缓存 ────────────────────────────────────────────
+# AsyncOpenAI 内部持有 httpx.AsyncClient，官方设计即跨请求复用（协程安全）；
+# 缓存命中可免去每次 LLM 调用重付 TCP+TLS 握手。
+# 注意：contextvars provider 路由逻辑（set_provider/_current_provider）不受影响，
+# 缓存 key 仅决定实例复用，路由仍按每次调用的上下文 provider 解析。
+_openai_clients: dict[tuple[str, str], AsyncOpenAI] = {}
+_langchain_models: dict[tuple[str, str, str], object] = {}
+
+
 def get_llm(provider: dict | None = None) -> AsyncOpenAI:
     """
-    获取配置好的 AsyncOpenAI 客户端实例。
+    获取配置好的 AsyncOpenAI 客户端实例（按 api_key + base_url 缓存复用）。
 
-    自动从全局配置中读取 API Key、Base URL 等参数，
-    每次调用创建新实例以保证线程安全。
+    自动从全局配置中读取 API Key、Base URL 等参数；
+    相同 (api_key, base_url) 的请求复用同一实例，避免重复 TLS 握手。
 
     provider: 可选，显式传入；不传则使用上下文 provider（set_provider）。
     """
     provider = provider or _current_provider.get()
     key, base = _resolve_key_and_base(provider)
-    return AsyncOpenAI(api_key=key, base_url=base)
+    cache_key = (key, base)
+    client = _openai_clients.get(cache_key)
+    if client is None:
+        client = AsyncOpenAI(api_key=key, base_url=base)
+        _openai_clients[cache_key] = client
+    return client
 
 
 def get_langchain_llm(provider: dict | None = None):
     """
-    获取配置好的 LangChain chat model 实例。
+    获取配置好的 LangChain chat model 实例（按 model + api_key + base_url 缓存复用）。
 
     provider: 可选，显式传入；不传则使用上下文 provider（set_provider）。
     """
     provider = provider or _current_provider.get()
     key, base = _resolve_key_and_base(provider)
-    return init_chat_model(
-        model=get_model_name(),
-        model_provider='openai',
-        temperature=1.0,
-        api_key=key,
-        base_url=base,
-    )
+    model_name = get_model_name()
+    cache_key = (model_name, key, base)
+    cached = _langchain_models.get(cache_key)
+    if cached is None:
+        cached = init_chat_model(
+            model=model_name,
+            model_provider='openai',
+            temperature=1.0,
+            api_key=key,
+            base_url=base,
+        )
+        _langchain_models[cache_key] = cached
+    return cached

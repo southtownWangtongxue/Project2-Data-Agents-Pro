@@ -720,7 +720,10 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                     yield _thinking_event("finish", "completed", "完成")
                     logger.info(f"[SSE] 工作流执行完毕, node_index={node_index}")
 
-                    # 先生成并保存标题（在 done 事件之前）
+                    # done 先行：标题生成（1~3s LLM 调用）移出关键路径，
+                    # 前端 onDone 后已解锁输入，title 为增量更新，挂连接等待安全
+                    yield _sse_event({"type": "done"})
+
                     try:
                         answer_summary = collected_analysis or collected_sql or ""
                         node_title = await generate_node_title(question, answer_summary, provider)
@@ -738,9 +741,7 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                             "node_index": node_index,
                         })
                     except Exception as title_exc:
-                        logger.warning(f"[TitleGen] 标题生成/保存失败（不影响主流程）: {title_exc}")
-
-                    yield _sse_event({"type": "done"})
+                        logger.warning(f"[TitleGen] 标题生成/保存失败（不影响已发出的 done）: {title_exc}")
 
         # ── 排空 merge_queue 中剩余的 token 事件，跳过非 token 事件 ──
         while not merge_queue.empty():
@@ -1004,7 +1005,9 @@ async def _stream_chat_deepagent(question: str, user_name: str, history: list[di
                         # 事件溯源：落盘本轮完整回答文本为 analysis 事件
                         if es_enabled and deep_full_text:
                             await _track(EventType.ANALYSIS, role="assistant", content=deep_full_text)
-                        # 先生成并推送标题，再发送 done
+                        # done 先行：标题生成移出关键路径，前端 onDone 后已解锁输入，
+                        # title 为增量更新，done 后继续挂连接等待安全
+                        yield _sse_event({"type": "done"})
                         try:
                             node_title = await generate_node_title(question, collected_deep_text, provider)
                             logger.info("[DeepAgent] 标题生成: %s", node_title)
@@ -1022,9 +1025,7 @@ async def _stream_chat_deepagent(question: str, user_name: str, history: list[di
                                 "node_index": node_index,
                             })
                         except Exception as title_exc:
-                            logger.warning("[DeepAgent] 标题/保存失败: %s", title_exc, exc_info=True)
-
-                        yield _sse_event({"type": "done"})
+                            logger.warning("[DeepAgent] 标题/保存失败（不影响已发出的 done）: %s", title_exc, exc_info=True)
 
     except GraphInterrupt as gi:
         interrupt_data = gi.args[0] if gi.args else {}

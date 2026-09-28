@@ -96,14 +96,14 @@ export const useChatStore = defineStore('chat', () => {
   /* 当前正在流式累积的 reasoning 消息 ID（Phase 4：思考内容折叠卡片） */
   let activeReasoningMsgId: string | null = null
 
+  /* 当前正在流式追加的 SQL 卡片消息 ID（channel=sql 的 token 逐字写入） */
+  let activeSqlMsgId: string | null = null
+
   /* 最后一个助手文本消息 ID（用于流式光标动画） */
   const lastAssistantMsgId = ref('')
 
   /* 用户发送标记（每次发送时切换，Chat.vue watch 后无条件滚到底部） */
   const sentMarker = ref(0)
-
-  /* 当前活跃的 Agent（用于去重：某些 Agent 的 token 流不显示为独立文本） */
-  let currentAgent: string | null = null
 
   /* 会话列表 */
   const sessions = ref<SessionInfo[]>([])
@@ -335,7 +335,6 @@ export const useChatStore = defineStore('chat', () => {
         /* Agent 推理过程 → 更新流水线进度 + 设置活跃 Agent 上下文 */
         onThinking(agent: string, phase: string, content: string) {
           activeTokenMsgId = null
-          currentAgent = agent  // 追踪当前活跃的 Agent（用于去重）
           const label = pipelinePhaseMap[agent] || content || agent
           updateTask(agent, label)
           // 仅保留有实质性内容的思考卡片（如 quality_gate 的评估反馈）
@@ -372,19 +371,28 @@ export const useChatStore = defineStore('chat', () => {
           }
         },
 
-        /* 流式 Token 输出 —— 智能去重：sql_coder/rag_agent 的 token 不显示为独立文本 */
-        onToken(content: string) {
+        /* 流式 Token 输出 —— 按 channel 路由：sql 进 SQL 卡片流式追加，answer/无 channel 走正文 */
+        onToken(content: string, channel?: string) {
           // 正文开始，思考块结束（类型化隔离）
           activeReasoningMsgId = null
           // 性能统计（阶段1 A2）
           tokenCount++
           estimatedChars += content.length
           if (firstTokenTime === null) firstTokenTime = Date.now()
-          // sql_coder / rag_agent 的 token 流由格式化卡片展示，不重复渲染为文本
-          if (currentAgent === 'sql_coder' || currentAgent === 'rag_agent') {
+          // SQL 生成期 token：流式追加到 SQL 卡片，绝不以裸文本进正文
+          if (channel === 'sql') {
+            const existing = activeSqlMsgId ? messages.value.find(m => m.id === activeSqlMsgId) : undefined
+            if (existing) {
+              existing.sql = (existing.sql || '') + content
+            } else {
+              // 首个 SQL token：创建 SQL 卡片占位（sql 事件到达后用清洗后的完整 SQL 覆盖）
+              const msg: ChatMessage = { id: generateId(), role: 'assistant', type: 'sql', sql: content }
+              messages.value.push(msg)
+              activeSqlMsgId = msg.id
+            }
             return
           }
-          // analyst / misc_agent 的 token 正常流式输出（Markdown 逐字渲染）
+          // analyst / misc_agent 等正文 token：Markdown 逐字流式渲染
           if (activeTokenMsgId) {
             const msg = messages.value.find(m => m.id === activeTokenMsgId)
             if (msg) {
@@ -439,9 +447,6 @@ export const useChatStore = defineStore('chat', () => {
 
         /* 工具调用结果 —— 与最近 tool_call 合并为单个卡片 */
         onToolResult(toolName: string, meta: Record<string, unknown>) {
-          if (toolName === 'sql_coder' || toolName === 'analyst' || toolName === 'rag_agent') {
-            currentAgent = null
-          }
           // 工具执行窗口结束（性能拆分）
           if (toolWindowStart !== null) {
             toolMsAccum += Date.now() - toolWindowStart
@@ -488,9 +493,15 @@ export const useChatStore = defineStore('chat', () => {
           })
         },
 
-        /* 生成的 SQL 语句 */
+        /* 生成的 SQL 语句 —— 若本轮已有流式追加中的 SQL 卡片，则用清洗后的完整 SQL 覆盖 */
         onSQL(content: string) {
           activeTokenMsgId = null
+          const streamingSql = activeSqlMsgId ? messages.value.find(m => m.id === activeSqlMsgId) : undefined
+          if (streamingSql) {
+            streamingSql.sql = content
+            activeSqlMsgId = null
+            return
+          }
           messages.value.push({
             id: generateId(),
             role: 'assistant',
@@ -516,6 +527,7 @@ export const useChatStore = defineStore('chat', () => {
           finalizePerf()
           activeReasoningMsgId = null
           activeTokenMsgId = null
+          activeSqlMsgId = null
           messages.value.push({
             id: generateId(),
             role: 'assistant',
@@ -582,6 +594,7 @@ export const useChatStore = defineStore('chat', () => {
           finalizePerf()
           activeReasoningMsgId = null
           activeTokenMsgId = null
+          activeSqlMsgId = null
           isLoading.value = false
           // 标记所有任务为已完成，2 秒后自动折叠
           completeAllTasks()
@@ -623,6 +636,7 @@ export const useChatStore = defineStore('chat', () => {
     isLoading.value = false
     activeReasoningMsgId = null
     activeTokenMsgId = null
+    activeSqlMsgId = null
     pendingQueue.value = []
     lastQuestion.value = ''
     currentThreadId.value = ''

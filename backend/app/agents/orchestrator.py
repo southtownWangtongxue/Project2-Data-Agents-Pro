@@ -16,6 +16,25 @@ from app.utils.log_utils import log
 # ── Clarifier 阶段 ────────────────────────────────────────────────
 
 
+async def _push_reasoning_increment(ctx, chunk) -> None:
+    """提取思考模型的 reasoning_content 增量并推送为 reasoning 事件。
+
+    兼容两种取法（与 chat.py DeepAgent 路径一致）：
+    - Qwen/DashScope OpenAI 兼容模式：delta.additional_kwargs["reasoning_content"]
+    - 部分实现直接暴露 delta.reasoning_content 属性
+
+    只推 reasoning_content，不推 content（content 是内部 JSON，不可见）。
+    非思考模型无 reasoning_content，保持静默（不做假流式）。
+    """
+    if not (chunk.choices and ctx.queue):
+        return
+    delta = chunk.choices[0].delta
+    add_kwargs = getattr(delta, "additional_kwargs", None) or {}
+    reasoning = add_kwargs.get("reasoning_content", "") or getattr(delta, "reasoning_content", "") or ""
+    if reasoning:
+        await ctx.push({"type": "reasoning", "content": reasoning, "agent": "clarify_plan"})
+
+
 async def clarify_intent(user_question: str, history: list[dict] | None = None) -> dict:
     """
     分析用户意图的明确程度，必要时生成追问选项。
@@ -80,7 +99,8 @@ async def clarify_intent(user_question: str, history: list[dict] | None = None) 
             if chunk.choices and chunk.choices[0].delta.content:
                 token = chunk.choices[0].delta.content
                 content_chunks.append(token)
-                # 不推送到 stream_queue：Clarifier 输出的是内部 JSON，非用户可见内容
+                # content 是内部 JSON，仅本地攒；思考增量透传为 reasoning 事件
+            await _push_reasoning_increment(ctx, chunk)
         content = "".join(content_chunks).strip()
 
         if content.startswith("```"):
@@ -173,7 +193,8 @@ async def generate_plan(
             if chunk.choices and chunk.choices[0].delta.content:
                 token = chunk.choices[0].delta.content
                 content_chunks.append(token)
-                # 不推送到 stream_queue：Planner 输出的是内部 JSON，非用户可见内容
+                # content 是内部 JSON，仅本地攒；思考增量透传为 reasoning 事件
+            await _push_reasoning_increment(ctx, chunk)
         content = "".join(content_chunks).strip()
 
         if content.startswith("```"):
@@ -276,7 +297,8 @@ async def analyze_intent(user_question: str, history: list[dict] | None = None) 
             if chunk.choices and chunk.choices[0].delta.content:
                 token = chunk.choices[0].delta.content
                 content_chunks.append(token)
-                # 不推送到 stream_queue：analyze_intent 输出的是内部 JSON
+                # content 是内部 JSON，仅本地攒；思考增量透传为 reasoning 事件
+            await _push_reasoning_increment(ctx, chunk)
         content = "".join(content_chunks).strip()
 
         # 尝试从 markdown 代码块中提取 JSON
@@ -478,6 +500,8 @@ async def clarify_and_plan(
             if chunk.choices and chunk.choices[0].delta.content:
                 token = chunk.choices[0].delta.content
                 content_chunks.append(token)
+                # content 是内部 JSON，仅本地攒；思考增量透传为 reasoning 事件
+            await _push_reasoning_increment(ctx, chunk)
         content = "".join(content_chunks).strip()
 
         if content.startswith("```"):
