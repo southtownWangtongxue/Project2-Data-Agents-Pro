@@ -327,12 +327,8 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
     # 推送 session thread_id 给前端（多轮复用，让前端知道归属同一会话）
     yield _sse_event({"type": "thread_id", "thread_id": session_thread_id})
 
-    # 新建会话时，在 MySQL 中创建会话元数据记录
-    if not existing_thread_id:
-        await _upsert_chat_session(session_thread_id, user_name)
-    else:
-        # 已有会话：更新时间戳
-        await _upsert_chat_session(session_thread_id, user_name)
+    # 创建/更新会话元数据记录（新建与复用均走 upsert，顺带刷新 updated_at 时间戳）
+    await _upsert_chat_session(session_thread_id, user_name)
 
     # 用于标题生成的数据收集
     collected_analysis = ""     # 收集分析/回答文本
@@ -395,7 +391,12 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
 
         # 主循环：单消费者顺序读取队列，即时产出 SSE 事件
         while True:
-            source, data = await stream_queue.get()
+            try:
+                # 15s 无事件时发送 SSE 注释行心跳（": ping"），防代理空闲断连；前端无需处理
+                source, data = await _asyncio.wait_for(stream_queue.get(), timeout=15)
+            except _asyncio.TimeoutError:
+                yield ": ping\n\n"
+                continue
             logger.info(f"[SSE-LOOP] 事件源: {source}")
 
             if source == "done":
@@ -801,11 +802,8 @@ async def _stream_chat_deepagent(question: str, user_name: str, history: list[di
     # 推送 session thread_id 给前端
     yield _sse_event({"type": "thread_id", "thread_id": session_thread_id})
 
-    # 新建会话时创建 MySQL 记录
-    if not existing_thread_id:
-        await _upsert_chat_session(session_thread_id, user_name)
-    else:
-        await _upsert_chat_session(session_thread_id, user_name)
+    # 创建/更新会话元数据记录（新建与复用均走 upsert，顺带刷新 updated_at 时间戳）
+    await _upsert_chat_session(session_thread_id, user_name)
 
     # 多轮对话：根据已有节点数确定本轮 node_index
     if existing_thread_id:

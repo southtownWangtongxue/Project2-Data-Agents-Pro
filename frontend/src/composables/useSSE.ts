@@ -83,6 +83,8 @@ interface SSEEventData {
   intent_label?: string
   steps?: string[]
   chart_suitable?: boolean
+  /* quality_feedback 事件专用字段 */
+  feedback?: string
   /* title 标题事件专用字段 */
   node_index?: number
   /* node_started 事件专用字段 */
@@ -174,10 +176,7 @@ export function useSSE() {
 
           // 解析 "data: {...}" 格式
           if (trimmed.startsWith('data: ')) {
-            let jsonStr = trimmed.slice(6).trim()
-            if (!jsonStr) continue
-            // 去除可能混入的尾随控制字符（如 NUL）；trim() 只能清除空白，无法清除控制字符
-            jsonStr = Array.from(jsonStr).filter((ch) => ch.charCodeAt(0) >= 32).join('')
+            const jsonStr = trimmed.slice(6).trim()
             if (!jsonStr) continue
 
             try {
@@ -321,6 +320,10 @@ export function useSSE() {
         break
       case 'node_started':
         callbacks.onNodeStarted?.(event.agent || '', event.label || event.agent || '')
+        break
+      case 'quality_feedback':
+        // 质量门评估反馈：以状态行形式展示（复用 onStatus，避免落入未知类型告警）
+        callbacks.onStatus?.(event.feedback || event.content || '')
         break
       default:
         console.warn('[SSE] 未知事件类型:', event.type)
