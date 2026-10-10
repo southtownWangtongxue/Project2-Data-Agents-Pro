@@ -76,7 +76,8 @@ features:
 | 章节 | 说明 |
 |------|------|
 | [快速开始](./guide/quick-start.md) | 环境准备、项目启动、首次运行 |
-| [架构设计](./guide/architecture.md) | 分层架构、Hermes 多智能体模式、技术选型 |
+| [架构设计](./guide/architecture.md) | 分层架构、Harness 多智能体模式、事件溯源/能力接缝/分层提示词（feature flag 门控）、技术选型 |
+| [Harness 落地差距分析](./reference/harness-landing-gap-analysis.md) | 架构落地状态基线：已落地清单、差距项、分阶段建议 |
 | [工作流详解](./guide/workflow.md) | LangGraph 状态图、Human-in-the-loop 机制 |
 | [API 文档](./api/introduction.md) | 接口鉴权、对话接口、审批回调 |
 | [RAG 知识库](./advanced/rag-config.md) | Milvus 配置、文档上传、检索调优 |

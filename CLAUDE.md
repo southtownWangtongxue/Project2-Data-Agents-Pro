@@ -20,7 +20,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | Deployment | Docker Compose (dev), Kubernetes (prod), Nginx (static frontend) |
 | Documentation | VitePress (must be delivered as deployable online docs in `docs/`) |
 
-## Multi-Agent Architecture (Hermes Pattern)
+## Multi-Agent Architecture (Harness Pattern)
 
 The system follows a **Control Plane + Data Plane + Expert Workers** architecture:
 
@@ -32,6 +32,19 @@ The system follows a **Control Plane + Data Plane + Expert Workers** architectur
 6. **Security Agent** — classifies SQL as read (SELECT → allow) or write (INSERT/UPDATE/DELETE/DROP → block, trigger human approval)
 7. **Analyst Agent** — performs statistical analysis (YoY, MoM, anomaly detection) on query results
 8. **Reporter Agent** — generates Echarts JSON configs for visualization, or Excel/CSV file export
+
+### Harness-Aligned Core Modules (feature-flagged)
+
+借鉴 DeepSeek Harness（dsh）设计模式落地的核心模块，均以 feature flag 门控、默认关闭、旧行为保持可用：
+
+| 模块 | 职责 | Feature Flag（默认 False） |
+|------|------|---------------------------|
+| `app/core/event_sourcing.py` | 会话事件溯源：append-only `session_events` 表 + surface 投影（`derive_messages`）+ Fork；历史恢复投影优先、Redis 回退 | `EVENT_SOURCING_ENABLED` |
+| `app/core/prompt_section.py` | 系统提示词分层组装：order 排序 + 作用域遮蔽 + 变量插值（legacy 单一字符串兜底） | `PROMPT_SECTION_ENABLED` |
+| `app/core/seam.py` | 能力接缝：search / storage 后端可替换（Provider 注册 + 运行时选择；LLM seam 留待统一接口） | `SEAM_ENABLED` |
+| `app/core/stream_protocol.py` | SSE 类型化事件协议（新增类型只增不删；reasoning 与正文 token 类型化隔离） | 无（默认启用） |
+
+落地状态与差距详见 `docs/reference/harness-landing-gap-analysis.md`。
 
 ## Core Workflow
 
@@ -95,8 +108,8 @@ npm run docs:build               # 构建静态文档站点
 | # | 问题 | 优先级 |
 |---|------|--------|
 | 1 | schema/sql_coder 节点缺少错误短路条件边，错误传播链路过长 | 高 |
-| 2 | chat.py 中 GraphInterrupt 用字符串匹配捕获，应改为 `except GraphInterrupt` | 高 |
-| 3 | execute_node 丢失 Phase1 的 SQL 自纠错重试能力 | 中 |
+| 2 | ~~chat.py 中 GraphInterrupt 用字符串匹配捕获~~ | ✅ 已解决（2026-10-10 复核：已用 `except GraphInterrupt`） |
+| 3 | execute_node 丢失 Phase1 的 SQL 自纠错重试能力 | 🟡 部分解决（自纠错保留在 sql_coder.generate_and_execute_sql；quality_gate 为降级路由非打回重试） |
 
 ## Important Constraints
 - 在Python项目测试时，确保项目在虚拟环境中使用uv安装项目依赖进行测试
@@ -109,17 +122,28 @@ npm run docs:build               # 构建静态文档站点
 
 ## SSE Event Types (前端 Backend 协议)
 
-后端通过 SSE 流式推送以下事件类型到前端 `useSSE.ts` composable：
+后端通过 SSE 流式推送事件到前端 `useSSE.ts` composable。协议约定「只增不删」（见 `app/core/stream_protocol.py`），事件类型常量以 `SSEEventType` 为准：
 
 | event.type | callback | 用途 |
 |-----------|----------|------|
-| `status` | onStatus | 流程状态更新（如"正在分析 schema..."） |
-| `schema` | onSchema | Schema Agent 加载的表结构信息 |
-| `sql` | onSQL | SQL Coder 生成的 SQL 语句 |
-| `text` | onText | 自然语言文本（分析/回答） |
+| `thread_id` | onThreadId | 会话 ID（流开始推送，多轮复用） |
+| `status` | onStatus | 流程状态 / quality_feedback 复用展示 |
+| `sql` | onSQL | SQL 卡片（token 事件 channel=sql 先行流式追加） |
 | `result` | onResult | 查询结果数据 + 列名 |
-| `error` | onError | 错误信息 |
-| `done` | onDone | 流正常结束 |
+| `token` | onToken | 逐字正文（携带 `channel`: sql=SQL 卡片 / answer=正文） |
+| `reasoning` | onReasoning | 思考模型 reasoning_content 增量（折叠卡片） |
+| `thinking` | onThinking | Agent 阶段思考卡片（agent/phase/content） |
+| `node_started` | onNodeStarted | 节点开始（驱动任务清单 + step_id 分组） |
+| `plan` | onPlan | 执行计划（intent/steps/chart_suitable） |
+| `clarification` | onClarification | 意图追问卡片 |
+| `tool_call` / `tool_result` | onToolCall / onToolResult | 工具调用/结果（合并为 tool_chain 卡片） |
+| `chart` | onChart | ECharts 图表配置 |
+| `title` | onTitle | 会话标题（done 后异步推送） |
+| `error` | onError | 错误信息（code + recoverable） |
 | `approval_required` | onApprovalRequired | 高危 SQL 需要审批（thread_id, question, sql, reason） |
+| `quality_feedback` | onStatus（复用） | 质量门评估反馈 |
+| `done` | onDone | 流正常结束 |
+
+所有节点内事件统一携带自增 `step_id`（`thread_id`/`done`/`title` 除外），前端按步骤分组渲染；15s 无事件时后端发送 `: ping` 注释行心跳。
 
 - 当你在提示词中包含 use context7 时，服务器会获取当前官方文档和代码示例，并直接集成到你的 AI 助手的上下文窗口中

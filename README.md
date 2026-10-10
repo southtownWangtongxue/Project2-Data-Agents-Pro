@@ -25,7 +25,7 @@
 
 ## ✨ 特性
 
-- 🤖 **多智能体协作架构（Hermes 模式）**：编排 Agent + 专家 Worker（Schema / SQL Coder / Security / Analyst / Reporter / RAG / Misc），自动意图路由与任务分解。
+- 🤖 **多智能体协作架构（Harness 模式）**：编排 Agent + 专家 Worker（Schema / SQL Coder / Security / Analyst / Reporter / RAG / Misc），自动意图路由与任务分解。
 - 💬 **自然语言对话式分析（Text-to-SQL）**：把"统计各表数据量"这类问题自动转换为方言特定的 SQL（MySQL / PostgreSQL / Oracle / SQL Server）。
 - 🔒 **"读数据随意，改数据必批"**：写类 SQL（INSERT/UPDATE/DELETE/DROP）自动拦截并进入人工审批流，敏感字段（手机号/身份证）自动脱敏。
 - 📊 **即时可视化与导出**：自动生成 ECharts 图表配置，支持 Excel / CSV 导出。
@@ -37,7 +37,7 @@
 
 ## 🏗️ 系统架构
 
-**控制面 + 数据面 + 专家 Worker（Hermes Pattern）**
+**控制面 + 数据面 + 专家 Worker（Harness Pattern）**
 
 ```
 用户自然语言
@@ -69,6 +69,8 @@
 ```
 
 工作流以 **LangGraph 1.x 状态图**实现，通过 Redis `checkpointer` 持久化中断状态（默认 TTL 1 小时），支持 Human-in-the-Loop 的 interrupt / resume。
+
+此外，项目借鉴 **DeepSeek Harness** 的工程设计，落地了事件溯源（会话 append-only 事件日志 + 投影 + Fork）、分层提示词组装、能力接缝（search/storage 后端可替换）与类型化流式协议四项能力，均以 feature flag 门控灰度（详见 `docs/reference/harness-landing-gap-analysis.md`）。
 
 ## 🧩 技术栈
 

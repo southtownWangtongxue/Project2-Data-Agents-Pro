@@ -13,6 +13,7 @@ export default defineConfig({
       {
         text: '参考',
         items: [
+          { text: 'Harness 架构落地差距分析', link: '/reference/harness-landing-gap-analysis' },
           { text: 'DeepSeek Harness 研读笔记', link: '/reference/deepseek-harness-notes' },
           { text: 'DeepSeek Harness 集成分析', link: '/reference/deepseek-harness-integration-analysis' },
           { text: 'DeepSeek Harness 实测体验', link: '/reference/deepseek-harness-hands-on' },
@@ -42,6 +43,7 @@ export default defineConfig({
         { text: 'Agent 开发指南', link: '/develop/agent-dev' },
       ],
       '/reference/': [
+        { text: 'Harness 架构落地差距分析', link: '/reference/harness-landing-gap-analysis' },
         { text: 'DeepSeek Harness 研读笔记', link: '/reference/deepseek-harness-notes' },
         { text: 'DeepSeek Harness 集成分析', link: '/reference/deepseek-harness-integration-analysis' },
         { text: 'DeepSeek Harness 实测体验', link: '/reference/deepseek-harness-hands-on' },

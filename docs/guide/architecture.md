@@ -14,7 +14,7 @@
 ├──────────────────────────────────────────────┤
 │  编排层     LangGraph 1.x StateGraph          │  工作流引擎
 ├──────────────────────────────────────────────┤
-│  智能体层   8 个专职 Agent (Hermes 模式)       │  业务逻辑
+│  智能体层   8 个专职 Agent (Harness 模式)       │  业务逻辑
 ├──────────────────────────────────────────────┤
 │  基座层     LLM Client / RAG / DB Connector   │  基础设施
 ├──────────────────────────────────────────────┤
@@ -49,13 +49,17 @@
 
 ### 智能体层
 
-详见 [Hermes 多智能体模式](#hermes-多智能体模式)。
+详见 [Harness 多智能体模式](#Harness-多智能体模式)。
 
 ### 基座层
 
 - **LLM Client**：封装 Qwen/GLM 大模型调用，支持统一接口切换
 - **RAG Engine**：文档切片 → Embedding → Milvus 向量检索
 - **DB Connector**：SQLAlchemy 多方言会话管理
+
+### Harness 对齐层（feature flag 门控）
+
+借鉴 DeepSeek Harness 设计模式落地的能力层：**事件溯源**（`event_sourcing.py`，append-only 会话事件日志 + surface 投影 + Fork）、**分层提示词**（`prompt_section.py`，order 排序 + 作用域遮蔽组装）、**能力接缝**（`seam.py`，search/storage 后端可替换）、**类型化流式协议**（`stream_protocol.py`，只增不删）。均以 feature flag 门控（默认关闭，旧行为可用），落地状态与差距见 [Harness 架构落地差距分析](../reference/harness-landing-gap-analysis.md)。
 
 ### 存储层
 
@@ -65,7 +69,7 @@
 
 ---
 
-## Hermes 多智能体模式
+## Harness 多智能体模式
 
 DataAgent Pro 采用 **Plan-and-Execute + ReAct** 架构，8 个 Agent 通过 LangGraph 条件路由协作：
 
