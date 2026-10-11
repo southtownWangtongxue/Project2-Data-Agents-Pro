@@ -107,4 +107,8 @@ def get_fixed_tools() -> list[Any]:
         else:
             _FIXED_TOOLS.append(web_search_tool)
             log.info("[DeepAgent] 固定工具注册: web_search_tool (百度)")
+
+        # R23：执行层工具（默认关闭；开启后经 R9 流水线 + R11 档位管控）
+        from app.deepagent.tools_exec import get_exec_tools
+        _FIXED_TOOLS.extend(get_exec_tools())
     return _FIXED_TOOLS
