@@ -28,9 +28,9 @@
     }
   ],
   "mode_defaults": {
-    "data": "zhipu-glm4-flash",
-    "report": "zhipu-glm4-flash",
-    "doc": "zhipu-glm4-flash",
-    "task": "zhipu-glm4-flash"
+    "data": "agnes",
+    "report": "agnes",
+    "doc": "agnes",
+    "task": "agnes"
   }
 }

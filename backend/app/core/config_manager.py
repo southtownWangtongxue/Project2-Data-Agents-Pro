@@ -47,9 +47,13 @@ class ConfigManager:
             return self._cache.get(filename, {})
 
     def load_all(self):
-        """加载所有配置文件到内存"""
-        for filename in ["llm_providers.json", "skills.json", "mcp_servers.json", "default.json"]:
-            self._cache[filename] = self._load_json(filename)
+        """加载 configs/ 目录下所有 .json 配置文件到内存。
+
+        目录扫描（R19/P5）：新增配置文件（如 patch.json、command_whitelist.json）
+        无需修改本清单即可被加载；_comment 等元键由各消费方自行过滤。
+        """
+        for path in sorted(CONFIGS_DIR.glob("*.json")):
+            self._cache[path.name] = self._load_json(path.name)
         log.info("[ConfigManager] 配置加载完成")
 
     def reload_file(self, filename: str):
@@ -142,11 +146,18 @@ class ConfigManager:
         ]
 
     def get_llm_config(self, provider_id: str | None = None) -> dict | None:
-        """获取指定 LLM 配置；未指定则返回默认"""
+        """获取指定 LLM 配置；未指定则返回默认
+
+        回退顺序：is_default 且 enabled 的 provider → 第一个 enabled 的 provider → None。
+        避免无默认标记时静默回退到 .env（如已耗尽额度的 DashScope）。
+        """
         providers = self.llm_providers
         if provider_id:
             return next((p for p in providers if p["id"] == provider_id and p.get("enabled")), None)
-        return next((p for p in providers if p.get("is_default") and p.get("enabled")), None)
+        return (
+            next((p for p in providers if p.get("is_default") and p.get("enabled")), None)
+            or next((p for p in providers if p.get("enabled")), None)
+        )
 
     def resolve_api_key(self, provider: dict) -> str:
         """解析 API Key：key_mode="direct" 直接用 api_key，否则从环境变量读取"""

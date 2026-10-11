@@ -40,6 +40,7 @@ from app.agents.reporter import generate_chart_config
 from app.agents.quality_evaluator import evaluate_query_quality
 from app.db.session import get_engine
 from app.graph.state import AgentState
+from app.core.config import settings
 from app.core.stream import get_stream_context
 
 logger = logging.getLogger(__name__)
@@ -375,7 +376,8 @@ async def security_node(state: AgentState) -> dict:
 
     审核流程：
         1. 调用 security.classify_sql() 对 SQL 进行安全分类
-           （采用正则 + LLM 双检策略，返回 category: "safe" 或 "dangerous"）
+           （采用只读白名单 + deny-by-default 策略，返回 "safe" 或 "dangerous"；
+            多语句会被拆分后逐条判定，任一条不命中白名单即判高危）
         2. 若为 "dangerous" 高危操作：
            a. 调用 interrupt() 挂起 Graph 执行，等待外部审批
            b. Graph 恢复时，interrupt() 返回 Command(resume=...) 传入的审批结果
@@ -391,7 +393,8 @@ async def security_node(state: AgentState) -> dict:
 
         由于 LangGraph 在中断恢复后会完全重新执行节点函数，
         classify_sql() 会被调用两次（首次执行和恢复时各一次）。
-        classify_sql 通过正则优先匹配保证确定性，LLM 二次确认开销可控。
+        classify_sql 基于只读白名单做确定性判定（仅命中风险信号时才调用 LLM），
+        因此重复调用结果一致，且不会带来额外延迟。
 
     参数:
         state: 当前 Agent 全局状态，需包含 generated_sql
@@ -412,7 +415,7 @@ async def security_node(state: AgentState) -> dict:
             "stage": "security_checked",
         }
 
-    # 调用 Security Agent 进行安全分类（正则 + LLM 双检）
+    # 调用 Security Agent 进行安全分类（只读白名单 + deny-by-default）
     logger.info(f"[Security] 审核 SQL: {sql[:120]}")
     result = await classify_sql(sql)
     category = result["category"]
@@ -425,6 +428,20 @@ async def security_node(state: AgentState) -> dict:
     )
 
     if category == "dangerous":
+        # ── R11：审批档位决策 ──
+        # read_only：全部人工审批；workspace_write：DML 自动放行；full_access：全放行
+        from app.core.approval_policy import decide_approval
+        decision = decide_approval(category, result.get("risk_level", "admin"))
+        if decision == "auto_approve":
+            logger.warning(
+                "[Security] 档位自动放行: risk_level=%s, reason=%s",
+                result.get("risk_level"), result.get("reason", "")[:100],
+            )
+            return {
+                "sql_category": "safe",
+                "stage": "security_checked",
+            }
+
         # ── Human-in-the-loop 审批中断 ──
         # 首次执行: interrupt() 抛出 GraphInterrupt，Graph 挂起
         # 恢复执行: interrupt() 返回 Command(resume=...) 传入的审批结果
@@ -713,24 +730,31 @@ async def quality_gate_node(state: AgentState) -> dict:
         }
 
 
-def route_quality_gate(state: AgentState) -> str:
+def route_quality_gate(state: AgentState):
     """
     QualityGate 路由 —— 根据质量评估结果决定去向。
 
     路由规则（ReAct 范式）：
-        - quality="good" → "analyst"（继续分析）
+        - quality="good" → ["analyst", "reporter"]（并行扇出，DEF-009）或 "analyst"（串行回退）
         - quality="insufficient" → "misc_agent"（降级，告知用户数据不足）
         - quality="empty" → "misc_agent"（降级）
+
+    reporter 仅依赖 query_result/columns/question，不依赖分析文本，
+    可与 analyst 流式分析并行执行；图表是否展示由 reporter 自身的
+    chart_type="none" 判定与数据前置条件把关。
 
     参数:
         state: 当前 Agent 全局状态
 
     返回:
-        下游节点名称: "analyst" 或 "misc_agent"
+        下游节点名称（str）或并行节点列表（list[str]）: "analyst" / ["analyst", "reporter"] / "misc_agent"
     """
     quality = state.get("query_quality", "good")
 
     if quality == "good":
+        if settings.PARALLEL_ANALYST_REPORTER:
+            logger.info("[QualityGate] 路由: 质量达标 → [analyst, reporter]（并行）")
+            return ["analyst", "reporter"]
         logger.info("[QualityGate] 路由: 质量达标 → analyst")
         return "analyst"
 
@@ -1148,15 +1172,29 @@ def _compile_data_edges(builder: StateGraph):
     })
     # ⑥ quality_gate → 条件路由
     builder.add_conditional_edges("quality_gate", route_quality_gate, {
-        "analyst": "analyst", "misc_agent": "misc_agent",
+        "analyst": "analyst", "misc_agent": "misc_agent", "reporter": "reporter",
     })
-    # ⑦ analyst → 条件路由
-    builder.add_conditional_edges("analyst", route_analyst, {
-        "reporter": "reporter", "answer": "answer",
-    })
+    # ⑦ analyst 后续（DEF-009）：
+    #    并行模式（PARALLEL_ANALYST_REPORTER=true）下 reporter 已由 quality_gate/
+    #    chart_direct 扇出并行执行，analyst 直接汇入 finish；
+    #    串行回退模式保留原 analyst → 路由 → reporter/answer。
+    if settings.PARALLEL_ANALYST_REPORTER:
+        builder.add_edge("analyst", "finish")
+    else:
+        builder.add_conditional_edges("analyst", route_analyst, {
+            "reporter": "reporter", "answer": "answer",
+        })
     # 固定边
     builder.add_edge("reporter", "finish")
-    builder.add_edge("chart_direct", "analyst")
+    if settings.PARALLEL_ANALYST_REPORTER:
+        # chart_interaction 快捷路径同样并行扇出（换图表类型时 analyst/reporter 并行）
+        builder.add_conditional_edges(
+            "chart_direct",
+            lambda s: ["analyst", "reporter"],
+            {"analyst": "analyst", "reporter": "reporter"},
+        )
+    else:
+        builder.add_edge("chart_direct", "analyst")
     builder.add_edge("answer", "finish")
     builder.add_edge("misc_agent", "finish")
     builder.add_edge("rag_agent", "finish")
@@ -1242,10 +1280,27 @@ async def get_deep_agent():
     rag_sub = await build_rag_subagent()
 
     # 3. 构建系统提示词（含 Skills 指令）
-    system_prompt = build_system_prompt(skills_instructions)
+    #    R12：传入构建期稳定变量（DeepAgent 为全局单例，仅支持构建期插值；
+    #    每请求级变量需配合 R20 单一循环驱动器改造）
+    system_prompt = build_system_prompt(skills_instructions, variables={
+        "app_name": "Data Agent Pro",
+        "app_version": "0.1.0",
+    })
 
-    # 4. 创建 DeepAgent（含 Skills 工具 + 固定工具如百度搜索）
-    all_tools = skill_tools + get_fixed_tools()
+    # 4. 加载 MCP 工具（DEF-004：配置中心的 MCP server 接入运行时；
+    #    内部为阻塞 subprocess 握手，放线程池执行。单个 server 失败自动跳过）
+    import asyncio as _asyncio
+    from app.mcp_client import get_mcp_tools
+    try:
+        mcp_tools = await _asyncio.to_thread(get_mcp_tools)
+    except Exception as mcp_exc:
+        logger.warning("[DeepAgent] MCP 工具加载失败（跳过）: %s", mcp_exc)
+        mcp_tools = []
+
+    # 5. 创建 DeepAgent（含 Skills 工具 + 固定工具 + MCP 工具）
+    #    R9：所有工具统一过执行流水线（审计日志/超时/耗时埋点/结果截断/异常兜底）
+    from app.core.tool_pipeline import apply_tool_pipeline
+    all_tools = apply_tool_pipeline(skill_tools + get_fixed_tools() + mcp_tools)
     _deep_agent = create_deep_agent(
         subagents=[sql_sub, rag_sub],
         tools=all_tools,

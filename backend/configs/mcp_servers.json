@@ -4,7 +4,20 @@
       "id": "filesystem",
       "name": "文件系统",
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/tmp"
+      ],
+      "enabled": false
+    },
+    {
+      "id": "echo-test",
+      "name": "Echo 测试服务器",
+      "command": "D:\\WorkSpace\\Project2-Data-Agents-Pro\\backend\\.venv\\Scripts\\python.exe",
+      "args": [
+        "D:\\WorkSpace\\Project2-Data-Agents-Pro\\backend\\tests\\mcp_echo_server.py"
+      ],
       "enabled": false
     }
   ]

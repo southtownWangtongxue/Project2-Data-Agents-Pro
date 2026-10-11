@@ -79,8 +79,11 @@ class AgentState(TypedDict):
     chart_config: dict | None
 
     # ── 错误处理 ──────────────────────────────────────
-    # 流程中发生的错误信息，无错误时为空字符串
-    error_message: str
+    # 流程中发生的错误信息，无错误时为空字符串。
+    # Annotated last-wins 归并器：analyst/reporter 并行执行（DEF-009）时
+    # 两节点可能同时写该键，LangGraph 要求显式归并器否则抛
+    # "Can receive only one value per step"；串行路径行为不变（新值覆盖）。
+    error_message: Annotated[str, lambda _old, new: new]
 
     # ── 跨轮缓存（多轮对话：上一轮的查询数据，用于 chart_interaction 快捷路径）──
     # 上一轮的查询结果，chart_interaction 时复用
@@ -89,7 +92,9 @@ class AgentState(TypedDict):
     _cached_query_columns: list[str]
 
     # ── 流程控制 ──────────────────────────────────────
-    # 当前流程所处的阶段标识，如 "schema_loading" / "sql_generating" / "done"
-    stage: str
+    # 当前流程所处的阶段标识，如 "schema_loading" / "sql_generating" / "done"。
+    # Annotated last-wins 归并器：并行节点（analyst/reporter）同时写 stage 时取其一，
+    # stage 仅用于日志展示，无路由依赖；串行路径行为不变。
+    stage: Annotated[str, lambda _old, new: new]
     # 节点索引计数器（每轮对话递增，用于标题关联）
     node_index: int

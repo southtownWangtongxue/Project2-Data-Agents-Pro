@@ -141,3 +141,7 @@ cython_debug/
 
 node_modules/
 dist/
+
+# Tool / runtime artifacts (not project source)
+.workbuddy/
+backend/exports/

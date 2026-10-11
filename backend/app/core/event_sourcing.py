@@ -49,6 +49,12 @@ class EventType:
     CLARIFICATION = "clarification"
     TOOL_CHAIN = "tool_chain"
 
+    # ── R16 turn/step 语义（P1 事件底座）──
+    # turn = 会话中的一轮问答（node_index 即轮次标识，run_id 即运行标识，
+    # 事件 id 升序即 step 序——因此无需新增列，纯事件类型扩展即可）。
+    TURN_START = "turn_start"
+    TURN_END = "turn_end"
+
 
 # 可投影为可见消息的事件类型（对应 dsh 的 surface 投影——仅最终态三类可见，
 # 其余 agent/*、turn/*、chunk 等过程事件不投影）
@@ -166,6 +172,44 @@ class SessionEventStore:
         return messages
 
     @staticmethod
+    async def derive_llm_messages(thread_id: str) -> list[dict]:
+        """R16：LLM 视角投影——从事件日志派生模型可见的对话历史。
+
+        与 derive_messages（前端格式）不同，本投影输出 {"role","content"}
+        的 LLM 消息格式，仅包含文本语义事件：
+            user_message → user；analysis → assistant；error → assistant。
+        过程态事件（plan/clarification/tool_chain）与结构化数据事件
+        （sql/result/chart）不进入模型文本上下文。
+
+        用途：
+            1. R20 统一循环的历史来源（替代前端全量回传）的前置验证
+            2. 不变量检查（assert_history_logged）的比对基准
+        """
+        events = await SessionEventStore.list_events(thread_id)
+        messages: list[dict] = []
+        for evt in events:
+            if evt.event_type == EventType.USER_MESSAGE and evt.content:
+                messages.append({"role": "user", "content": evt.content})
+            elif evt.event_type == EventType.ANALYSIS and evt.content:
+                messages.append({"role": "assistant", "content": evt.content})
+            elif evt.event_type == EventType.ERROR and evt.content:
+                messages.append({"role": "assistant", "content": f"[错误] {evt.content}"})
+        return messages
+
+    @staticmethod
+    async def logged_content_hashes(thread_id: str) -> set[str]:
+        """返回该会话已落库的文本语义事件内容哈希集合（不变量检查基准）。"""
+        import hashlib
+
+        events = await SessionEventStore.list_events(thread_id)
+        hashes: set[str] = set()
+        for evt in events:
+            if evt.event_type in (EventType.USER_MESSAGE, EventType.ANALYSIS, EventType.ERROR):
+                if evt.content:
+                    hashes.add(hashlib.sha256(evt.content.encode("utf-8")).hexdigest())
+        return hashes
+
+    @staticmethod
     async def fork(
         source_thread_id: str,
         new_thread_id: str,
@@ -204,6 +248,49 @@ class SessionEventStore:
         except Exception as exc:
             logger.warning("[event-sourcing] fork 失败: %s", exc)
             return 0
+
+
+def turn_event_enabled() -> bool:
+    """R16 feature flag：是否启用 turn/step 边界事件与不变量检查。"""
+    return get_settings().TURN_EVENT_ENABLED
+
+
+async def check_history_invariant(thread_id: str, history: list[dict]) -> dict:
+    """R16 不变量检查："进入模型上下文的内容必须已落库"。
+
+    将传入 history 的每条文本消息与事件日志中已落库内容哈希比对。
+    纯检查函数，不抛异常、不阻断主流程；未命中仅告警并记入返回值。
+
+    返回:
+        {"enabled": bool, "checked": int, "missing": [{"role","preview"}]}
+    """
+    import hashlib
+
+    result: dict = {"enabled": turn_event_enabled(), "checked": 0, "missing": []}
+    if not result["enabled"] or not thread_id:
+        return result
+
+    try:
+        logged = await SessionEventStore.logged_content_hashes(thread_id)
+        missing = []
+        for msg in history or []:
+            content = msg.get("content") if isinstance(msg, dict) else None
+            if not content:
+                continue
+            result["checked"] += 1
+            h = hashlib.sha256(str(content).encode("utf-8")).hexdigest()
+            if h not in logged:
+                missing.append({"role": msg.get("role"), "preview": str(content)[:60]})
+        result["missing"] = missing
+        if missing:
+            logger.warning(
+                "[R16][invariant] %d/%d 条历史消息未命中事件日志"
+                "（可能来自旧会话或事件溯源中途开启）: %s",
+                len(missing), result["checked"], missing[:3],
+            )
+    except Exception as exc:
+        logger.warning("[R16][invariant] 检查失败（不阻断）: %s", exc)
+    return result
 
 
 def _project(evt: SessionEvent) -> dict | None:
