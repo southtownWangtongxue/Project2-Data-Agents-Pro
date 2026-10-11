@@ -50,18 +50,59 @@ async def create_skill_tools() -> tuple[list[Any], str]:
         if executor is not None:
             tools.append(executor)
 
-    # 拼接「已启用」技能的 SKILL.md 指令（注入 system_prompt）
-    parts = []
-    for skill in skill_registry.list_all(enabled_only=True):
-        instructions_text = skill.get("instructions", "")
-        if instructions_text:
-            parts.append(f"## {skill['name']}\n{instructions_text}")
-    instructions = "\n\n".join(parts)
+    if settings.SKILL_PROGRESSIVE_DISCLOSURE:
+        # ── R8：渐进式披露（对齐 Harness 技能子系统）──
+        # system prompt 仅注入 name+description 目录（token 从千级降到百级），
+        # 完整 SKILL.md 正文由模型按需调用 load_skill 工具加载。
+        dir_lines = [
+            "以下是当前可用的 Skill 目录。使用前先调用 load_skill 工具加载该 Skill 的完整说明："
+        ]
+        for s in skill_registry.list_all(enabled_only=True):
+            dir_lines.append(f"- {s['name']}: {s['description']}")
+        instructions = "\n".join(dir_lines)
+
+        def _make_load_skill():
+            async def load_skill(name: str) -> str:
+                """按需加载指定 Skill 的完整使用说明（SKILL.md 正文）。
+
+                在执行任何 Skill 之前必须先调用本工具获取其参数说明与使用示例。
+
+                Args:
+                    name: Skill 名称，需与 Skill 目录中列出的名称完全一致
+
+                Returns:
+                    str: 该 Skill 的完整说明文本；不存在或已禁用时返回错误提示
+                """
+                entry = skill_registry.get(name)
+                available = ", ".join(
+                    s["name"] for s in skill_registry.list_all(enabled_only=True)
+                )
+                if entry is None:
+                    return f"Skill '{name}' 不存在。可用 Skill: {available}"
+                if not entry.get("enabled", True):
+                    return f"Skill '{name}' 当前已禁用。可用 Skill: {available}"
+                body = entry.get("instructions", "") or ""
+                if not body:
+                    return f"Skill '{name}' 无正文说明，请参考其描述使用。"
+                return body
+
+            return load_skill
+
+        tools.append(_make_load_skill())
+        log.info(
+            f"[DeepAgent] Skill 渐进式披露: 目录注入 {len(skill_registry.list_all(enabled_only=True))} 项, 已注册 load_skill 工具"
+        )
+    else:
+        # 旧版全量注入（回退路径）
+        parts = []
+        for skill in skill_registry.list_all(enabled_only=True):
+            instructions_text = skill.get("instructions", "")
+            if instructions_text:
+                parts.append(f"## {skill['name']}\n{instructions_text}")
+        instructions = "\n\n".join(parts)
 
     log.info(
-        "[DeepAgent] Skills 工具加载完成: %d 个工具, %d 个 Skill",
-        len(tools),
-        skill_registry.count,
+        f"[DeepAgent] Skills 工具加载完成: {len(tools)} 个工具, {skill_registry.count} 个 Skill"
     )
     return tools, instructions
 

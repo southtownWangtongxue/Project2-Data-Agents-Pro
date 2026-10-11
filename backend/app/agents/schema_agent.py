@@ -10,15 +10,44 @@ from app.core.llm import get_model_name
 from app.core.llm import get_llm
 from app.utils.log_utils import log
 
+# ── Schema 元数据缓存（DEF-009 快速优化）──────────────────────
+# 表名列表与表结构属低频变化元数据，按引擎+表名做 5 分钟 TTL 缓存，
+# 避免每次对话都做完整 DB 内省（每表 2~3 次information_schema 往返）。
+_SCHEMA_CACHE: dict[str, tuple[float, object]] = {}
+_SCHEMA_CACHE_TTL = 300.0  # 秒
+
+
+def _cache_get(key: str):
+    import time as _time
+    hit = _SCHEMA_CACHE.get(key)
+    if hit is None:
+        return None
+    ts, value = hit
+    if _time.monotonic() - ts > _SCHEMA_CACHE_TTL:
+        _SCHEMA_CACHE.pop(key, None)
+        return None
+    return value
+
+
+def _cache_set(key: str, value) -> None:
+    import time as _time
+    _SCHEMA_CACHE[key] = (_time.monotonic(), value)
+
 
 async def get_all_table_names(engine: AsyncEngine) -> list[str]:
-    """获取数据库中所有表名（轻量，无字段详情）。"""
+    """获取数据库中所有表名（轻量，无字段详情，带 TTL 缓存）。"""
+    cache_key = f"tables::{engine.url}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
 
     def _sync_get(conn):
         return inspect(conn).get_table_names()
 
     async with engine.connect() as conn:
-        return await conn.run_sync(_sync_get)
+        tables = await conn.run_sync(_sync_get)
+    _cache_set(cache_key, tables)
+    return tables
 
 
 async def get_table_schemas(
@@ -41,6 +70,12 @@ async def get_table_schemas(
         - amount (DECIMAL(10,2), NOT NULL) - 订单金额
         - created_at (DATETIME) - 创建时间
     """
+    # 缓存键：引擎 + 表名集合（None 表示全部表）
+    cache_key = f"schemas::{engine.url}::{tuple(sorted(table_names)) if table_names is not None else 'ALL'}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        log.info(f"[SchemaAgent] 命中 schema 缓存: {cache_key.rsplit('::', 1)[1][:80]}")
+        return cached
 
     def _sync_get_schemas(conn):
         inspector = inspect(conn)
@@ -72,7 +107,9 @@ async def get_table_schemas(
         return "\n\n".join(parts) if parts else "（数据库中无用户表）"
 
     async with engine.connect() as conn:
-        return await conn.run_sync(_sync_get_schemas)
+        schemas = await conn.run_sync(_sync_get_schemas)
+    _cache_set(cache_key, schemas)
+    return schemas
 
 
 async def match_tables_by_llm(

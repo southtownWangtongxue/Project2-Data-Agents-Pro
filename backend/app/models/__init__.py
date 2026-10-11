@@ -18,6 +18,7 @@ async def create_tables():
     """在应用启动时创建所有模型对应的数据库表（不存在则创建），并播种初始数据"""
     from app.models.user import SysUser  # noqa: F401
     from app.models.session import ChatSession, ChatNode, SessionEvent  # noqa: F401
+    from app.models.approval import ApprovalRecord  # noqa: F401
 
     engine = get_engine()
     async with engine.begin() as conn:

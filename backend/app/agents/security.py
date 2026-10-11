@@ -1,7 +1,16 @@
 """
 Security Agent - 安全审计专家
-对生成的 SQL 进行分类分级：SELECT → 放行；INSERT/UPDATE/DELETE/DROP/ALTER → 高危
-使用正则表达式 + LLM 双重校验，确保数据安全
+对生成的 SQL 进行分类分级：只读语句 → 放行；其余 → 高危
+
+安全模型（deny-by-default）：
+    采用「只读白名单」而非「危险黑名单」——黑名单必然存在覆盖盲区，
+    任何未显式列入白名单的语句一律判定为高危并触发人工审批。
+
+判定流程：
+    1. 按分号拆分多语句（忽略字符串字面量与注释内的分号）
+    2. 逐条匹配只读白名单首关键词；任一条不命中 → dangerous
+    3. 命中白名单的语句再检查写操作特征（SELECT INTO / OUTFILE / FOR UPDATE…）
+    4. 全部通过且无风险信号 → safe；含风险信号时调用 LLM 二次确认（只可升级不可降级）
 """
 import json
 import re
@@ -10,31 +19,225 @@ from app.core.config import settings
 from app.core.llm import get_model_name
 from app.core.llm import get_llm
 
-# ── 正则分类模式 ────────────────────────────────────
-# 匹配 SQL 语句开头关键词，忽略前导空白与注释
-_SAFE_PATTERN = re.compile(
+# ── 只读白名单：仅这些关键词开头的语句允许放行 ──────────────
+# 说明：这是「白名单」而非黑名单。GRANT / EXEC / SET / CALL / MERGE /
+#       LOAD_FILE / COPY 等未列入的语句一律判定为高危。
+_SAFE_STMT_PATTERN = re.compile(
     r"^\s*"
-    r"(?!--\s|/\*)"  # 忽略以注释开头的行
-    r"(SELECT|SHOW|DESCRIBE|DESC(?!\b\w)|EXPLAIN)\b",
+    r"(SELECT|WITH|SHOW|DESCRIBE|DESC(?!\b\w)|EXPLAIN|VALUES|TABLE)\b",
     re.IGNORECASE,
 )
 
-_DANGEROUS_PATTERN = re.compile(
-    r"^\s*"
-    r"(?!--\s|/\*)"  # 忽略以注释开头的行
-    r"(INSERT|UPDATE|DELETE|DROP|TRUNCATE|ALTER|CREATE|REPLACE)\b",
+# ── 只读语句内部的写操作特征 ────────────────────────────────
+# SELECT ... INTO newtable（SQL Server/PG 建表写操作）
+# SELECT ... INTO OUTFILE / DUMPFILE（MySQL 写文件）
+# SELECT ... FOR UPDATE / LOCK IN SHARE MODE（加锁，影响并发与一致性）
+_WRITE_HINT_PATTERN = re.compile(
+    r"\b("
+    r"INTO\s+(?:OUTFILE|DUMPFILE)"      # MySQL 导出文件
+    r"|\bOUTFILE\b"
+    r"|\bDUMPFILE\b"
+    r"|\bINTO\b"                        # SELECT INTO 建表/写变量
+    r"|\bLOAD_FILE\b"
+    r"|\bFOR\s+UPDATE\b"
+    r"|\bLOCK\s+IN\s+SHARE\s+MODE\b"
+    r")",
     re.IGNORECASE,
 )
+
+# ── 风险信号：命中时触发 LLM 二次确认（只可升级为 dangerous）──
+_RISK_SIGNAL_PATTERN = re.compile(
+    r"\b("
+    r"SLEEP|BENCHMARK|PG_SLEEP|DBMS_PIPE|WAITFOR\s+DELAY"
+    r"|XP_CMDSHELL|SP_EXECUTESQL|UTL_HTTP|UTL_FILE"
+    r"|INFORMATION_SCHEMA\.USER_PRIVILEGES|MYSQL\.USER"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# ── 危险关键词：仅用于生成人类可读的拒绝原因，不参与放行判定 ──
+_DANGEROUS_KEYWORDS = (
+    "INSERT", "UPDATE", "DELETE", "DROP", "TRUNCATE", "ALTER", "CREATE",
+    "REPLACE", "GRANT", "REVOKE", "SET", "CALL", "EXEC", "EXECUTE",
+    "MERGE", "COPY", "RENAME", "COMMENT", "ANALYZE", "VACUUM", "LOCK",
+)
+
+# ── R11 审批档位：风险等级细分（dml 可被 workspace_write 档放行）──
+_DML_KEYWORDS = {"INSERT", "UPDATE", "DELETE", "REPLACE", "MERGE"}
+_DDL_KEYWORDS = {"DROP", "ALTER", "TRUNCATE", "CREATE", "RENAME", "COMMENT"}
+
+
+def _risk_level_of_keyword(keyword: str, method: str = "whitelist") -> str:
+    """将首关键词映射为风险等级: dml（数据写）/ ddl（结构变更）/ admin（权限/系统）。"""
+    kw = keyword.upper()
+    if kw in _DML_KEYWORDS:
+        return "dml"
+    if kw in _DDL_KEYWORDS:
+        return "ddl"
+    if method == "write-hint":
+        return "ddl"
+    return "admin"
+
+
+def split_statements(sql: str) -> list[str]:
+    """
+    将 SQL 文本按分号拆分为多条语句，忽略字符串字面量与注释内的分号。
+
+    支持的分隔场景：
+        - 单引号 / 双引号 / 反引号字符串（含 '' 与 \\ 转义）
+        - `--` 与 `#` 行注释、`/* */` 块注释
+
+    参数:
+        sql: 原始 SQL 文本
+
+    返回:
+        去空白后的语句列表（至少包含一个元素）
+    """
+    statements: list[str] = []
+    buf: list[str] = []
+    i, n = 0, len(sql)
+    in_single = in_double = in_backtick = False
+    in_line_comment = in_block_comment = False
+
+    while i < n:
+        ch = sql[i]
+        nxt = sql[i + 1] if i + 1 < n else ""
+
+        # ── 行注释内部 ──
+        if in_line_comment:
+            buf.append(ch)
+            if ch == "\n":
+                in_line_comment = False
+            i += 1
+            continue
+
+        # ── 块注释内部 ──
+        if in_block_comment:
+            if ch == "*" and nxt == "/":
+                buf.append(ch)
+                buf.append(nxt)
+                in_block_comment = False
+                i += 2
+                continue
+            buf.append(ch)
+            i += 1
+            continue
+
+        # ── 字符串字面量内部 ──
+        if in_single:
+            if ch == "\\" and nxt:                 # 反斜杠转义
+                buf.append(ch)
+                buf.append(nxt)
+                i += 2
+                continue
+            if ch == "'" and nxt == "'":           # SQL 双写单引号转义
+                buf.append(ch)
+                buf.append(nxt)
+                i += 2
+                continue
+            if ch == "'":
+                in_single = False
+            buf.append(ch)
+            i += 1
+            continue
+
+        if in_double:
+            if ch == "\\" and nxt:
+                buf.append(ch)
+                buf.append(nxt)
+                i += 2
+                continue
+            if ch == '"' and nxt == '"':
+                buf.append(ch)
+                buf.append(nxt)
+                i += 2
+                continue
+            if ch == '"':
+                in_double = False
+            buf.append(ch)
+            i += 1
+            continue
+
+        if in_backtick:
+            if ch == "`":
+                in_backtick = False
+            buf.append(ch)
+            i += 1
+            continue
+
+        # ── 正常态：识别定界符与注释起始 ──
+        if ch == "-" and nxt == "-":
+            in_line_comment = True
+            buf.append(ch)
+            buf.append(nxt)
+            i += 2
+            continue
+        if ch == "#":                              # MySQL 行注释
+            in_line_comment = True
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == "/" and nxt == "*":
+            in_block_comment = True
+            buf.append(ch)
+            buf.append(nxt)
+            i += 2
+            continue
+        if ch == "'":
+            in_single = True
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == '"':
+            in_double = True
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == "`":
+            in_backtick = True
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == ";":
+            statements.append("".join(buf))
+            buf = []
+            i += 1
+            continue
+
+        buf.append(ch)
+        i += 1
+
+    statements.append("".join(buf))
+    return [s.strip() for s in statements if s.strip()]
+
+
+def _strip_leading_comments(stmt: str) -> str:
+    """去除语句开头的行注释与块注释，便于匹配首关键词。"""
+    prev = None
+    while prev != stmt:
+        prev = stmt
+        stmt = re.sub(r"^\s*(--[^\n]*(\n|$))", "", stmt)
+        stmt = re.sub(r"^\s*(#[^\n]*(\n|$))", "", stmt)
+        stmt = re.sub(r"^\s*/\*.*?\*/", "", stmt, flags=re.DOTALL)
+    return stmt.strip()
+
+
+def _describe_keyword(stmt: str) -> str:
+    """提取语句首关键词，用于生成人类可读的拒绝原因。"""
+    match = re.match(r"^\s*([A-Za-z_]+)", _strip_leading_comments(stmt))
+    return match.group(1).upper() if match else "UNKNOWN"
 
 
 async def classify_sql(sql: str) -> dict:
     """
     对 SQL 语句进行安全分类，区分只读与写入/修改操作。
 
-    采用双检策略：
-    第一步：正则快速检测，根据 SQL 前缀关键词做初步分类；
-    第二步：若正则判定为危险，调用 LLM 进行语义级二次确认；
-    第三步：综合双检结果，采用保守策略（宁可误拦，不可漏放）。
+    采用 **只读白名单 + deny-by-default** 策略：
+        第一步：按分号拆分多语句，逐条匹配只读白名单；任一条不命中即判高危；
+        第二步：命中白名单的语句检查写操作特征（INTO / OUTFILE / FOR UPDATE…）；
+        第三步：无写特征但含风险信号（SLEEP / XP_CMDSHELL …）时调用 LLM 二次确认，
+                LLM 结论**只能升级为高危，不能降级为安全**；
+        第四步：全部通过才放行。
 
     参数:
         sql: 待分类的 SQL 语句字符串
@@ -42,61 +245,83 @@ async def classify_sql(sql: str) -> dict:
     返回:
         {
             "category": "safe" | "dangerous",
-            "method": "regex" | "regex+llm",
+            "method": "whitelist" | "write-hint" | "whitelist+llm",
             "reason": "分类原因描述"
         }
     """
-    # ── 第一步：正则快速分类 ─────────────────────────
-    safe_match = _SAFE_PATTERN.match(sql)
-    dangerous_match = _DANGEROUS_PATTERN.match(sql)
-
-    if safe_match and not dangerous_match:
-        # 明确的安全操作
-        keyword = safe_match.group(1).upper()
+    if not sql or not sql.strip():
         return {
-            "category": "safe",
-            "method": "regex",
-            "reason": f"正则匹配到安全关键词: {keyword}，判定为只读查询",
+            "category": "dangerous",
+            "method": "whitelist",
+            "reason": "空语句，按 deny-by-default 判定为高危",
         }
 
-    if dangerous_match:
-        keyword = dangerous_match.group(1).upper()
-        regex_category = "dangerous"
-        # ── 第二步：LLM 语义级二次确认 ────────────────
-        llm_result = await _llm_confirm_sql(sql)
+    statements = split_statements(sql)
+    risk_level = "admin"   # 默认最高风险档（deny-by-default）
 
-        # ── 第三步：综合裁决 ──────────────────────────
-        # 保守策略：正则判定为危险时，若 LLM 也认为是危险，则采纳；
-        # 若 LLM 认为是安全，仍以正则结果为准（宁可误拦不可漏放）；
-        # 实际应用中可在此触发 Human-in-the-loop 审批流程。
-        if llm_result.get("category") == "dangerous":
+    # ── 第一步：逐条匹配只读白名单（deny-by-default）──────────
+    for stmt in statements:
+        if not _SAFE_STMT_PATTERN.match(_strip_leading_comments(stmt)):
+            keyword = _describe_keyword(stmt)
+            risk_level = _risk_level_of_keyword(keyword)
+            hint = (
+                f"{keyword} 命中已知高危关键词"
+                if keyword in _DANGEROUS_KEYWORDS
+                else f"语句首关键词 {keyword} 不在只读白名单"
+                f"(SELECT/WITH/SHOW/DESCRIBE/DESC/EXPLAIN/VALUES/TABLE) 内"
+            )
             return {
                 "category": "dangerous",
-                "method": "regex+llm",
+                "risk_level": risk_level,
+                "method": "whitelist",
                 "reason": (
-                    f"正则匹配到危险关键词: {keyword}（{regex_category}），"
+                    f"{hint}，按 deny-by-default 判定为高危，"
+                    "触发 Human-in-the-loop 审批流程"
+                ),
+            }
+
+    # ── 第二步：检查只读语句内的写操作特征 ────────────────────
+    for stmt in statements:
+        hint = _WRITE_HINT_PATTERN.search(stmt)
+        if hint:
+            return {
+                "category": "dangerous",
+                "risk_level": "ddl",
+                "method": "write-hint",
+                "reason": (
+                    f"只读语句中检测到写操作特征 '{hint.group(1).strip()}'"
+                    f"（SELECT INTO / OUTFILE / 加锁等），判定为高危，"
+                    "触发 Human-in-the-loop 审批流程"
+                ),
+            }
+
+    # ── 第三步：风险信号 → LLM 二次确认（只可升级不可降级）────
+    if _RISK_SIGNAL_PATTERN.search(sql):
+        llm_result = await _llm_confirm_sql(sql)
+        if llm_result.get("category") != "safe":
+            return {
+                "category": "dangerous",
+                "method": "whitelist+llm",
+                "reason": (
+                    f"检测到风险信号（耗时/命令执行/权限表访问），"
                     f"LLM 二次确认: {llm_result.get('reason', '无补充说明')}，"
                     "触发 Human-in-the-loop 审批流程"
                 ),
             }
-        else:
-            # LLM 虽认为是安全操作，但正则已拦截，维持保守裁决
-            return {
-                "category": "dangerous",
-                "method": "regex+llm",
-                "reason": (
-                    f"正则匹配到危险关键词: {keyword}（{regex_category}），"
-                    f"LLM 判定为安全但采用保守策略，维持危险标记。"
-                    f"LLM 理由: {llm_result.get('reason', '无补充说明')}，"
-                    "触发 Human-in-the-loop 审批流程"
-                ),
-            }
+        return {
+            "category": "safe",
+            "risk_level": "read",
+            "method": "whitelist+llm",
+            "reason": f"命中只读白名单且 LLM 二次确认安全: {llm_result.get('reason', '')}",
+        }
 
-    # 未匹配到任何已知关键词，默认放行（偏保守的安全侧）
+    # ── 第四步：全部通过 → 放行 ──────────────────────────────
+    keywords = sorted({_describe_keyword(s) for s in statements})
     return {
         "category": "safe",
-        "method": "regex",
-        "reason": "未匹配到已知危险关键词，默认放行",
+        "risk_level": "read",
+        "method": "whitelist",
+        "reason": f"全部 {len(statements)} 条语句命中只读白名单: {', '.join(keywords)}",
     }
 
 

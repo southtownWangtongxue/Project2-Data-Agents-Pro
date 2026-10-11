@@ -5,7 +5,7 @@
  */
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import apiClient from '@/api/client'
+import apiClient, { getApiErrorMessage } from '@/api/client'
 
 interface McpServer {
   id: string; name: string; command: string; args: string[]; enabled: boolean
@@ -24,7 +24,7 @@ const stats = computed(() => ({
 }))
 
 async function load() {
-  try { const data = await apiClient.get('/config/mcp'); servers.value = data.servers } catch { ElMessage.error('加载失败') }
+  try { const data = await apiClient.get('/config/mcp'); servers.value = data.servers } catch (e) { ElMessage.error(getApiErrorMessage(e, '加载失败')) }
 }
 
 function openAdd() {
@@ -63,6 +63,27 @@ async function testConnection() {
     testResult.value = { type: 'error', message: e.response?.data?.message || e.response?.data?.detail || '测试失败' }
   } finally {
     testing.value = false
+  }
+}
+
+/* 行内连接测试：直接对已保存的服务器发起连通性验证（DEF-011） */
+const rowTestingId = ref('')
+async function testServer(row: McpServer) {
+  rowTestingId.value = row.id
+  try {
+    const data = await apiClient.post('/config/mcp/test', {
+      command: row.command,
+      args: row.args || [],
+    }) as { success: boolean; message: string }
+    if (data.success) {
+      ElMessage.success(`【${row.name}】连接成功：${data.message}`)
+    } else {
+      ElMessage.error(`【${row.name}】连接失败：${data.message}`)
+    }
+  } catch (e: any) {
+    ElMessage.error(`【${row.name}】连接失败：${e.response?.data?.message || e.response?.data?.detail || '测试失败'}`)
+  } finally {
+    rowTestingId.value = ''
   }
 }
 
@@ -164,8 +185,9 @@ onMounted(load)
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="80" align="center">
+        <el-table-column label="操作" width="130" align="center">
           <template #default="{ row, $index }">
+            <el-button link type="primary" :loading="rowTestingId === row.id" @click="testServer(row)">测试</el-button>
             <el-button link type="danger" @click="remove(row, $index)">删除</el-button>
           </template>
         </el-table-column>

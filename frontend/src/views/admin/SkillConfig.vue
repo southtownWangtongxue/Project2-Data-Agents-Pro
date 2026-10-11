@@ -9,7 +9,7 @@
  */
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import apiClient from '@/api/client'
+import apiClient, { getApiErrorMessage } from '@/api/client'
 
 interface Skill {
   id: string; name: string; description: string; icon: string
@@ -48,7 +48,7 @@ const filteredSkills = computed(() => {
 })
 
 async function load() {
-  try { const data = await apiClient.get('/config/skills'); skills.value = data.skills } catch { ElMessage.error('加载失败') }
+  try { const data = await apiClient.get('/config/skills'); skills.value = data.skills } catch (e) { ElMessage.error(getApiErrorMessage(e, '加载失败')) }
 }
 
 /* 启用 / 禁用（生命周期） */

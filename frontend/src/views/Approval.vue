@@ -4,12 +4,57 @@
  * 展示高危 SQL 审批任务列表
  * 设计风格：深色主题 + Apple 极简美学
  */
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useApprovalStore } from '@/stores/approval'
 import type { ApprovalTask } from '@/stores/approval'
+import apiClient from '@/api/client'
 
 const store = useApprovalStore()
+
+/* ── R11 审批档位 ── */
+const policyTier = ref('read_only')
+const policyLabel = ref('')
+const tierOptions = [
+  { value: 'read_only', label: '只读模式', desc: '所有写操作均需人工审批（默认，最严格）' },
+  { value: 'workspace_write', label: '数据写入模式', desc: 'DML（增删改）自动放行，表结构/权限操作仍需审批' },
+  { value: 'full_access', label: '完全放行', desc: '所有 SQL 自动执行，不再人工审批（高危，需二次确认）' },
+]
+
+async function loadPolicy() {
+  try {
+    const data = await apiClient.get('/approve/policy') as { tier: string; label: string }
+    policyTier.value = data.tier
+    policyLabel.value = data.label
+  } catch { /* 未登录/失败时静默，档位保持默认 */ }
+}
+
+async function changeTier(tier: string) {
+  if (tier === policyTier.value) return
+  const meta = tierOptions.find(t => t.value === tier)
+  try {
+    // full_access 高危：UI 层二次确认弹窗（API 层还要求 confirm=true 双保险）
+    if (tier === 'full_access') {
+      await ElMessageBox.confirm(
+        '完全放行模式下所有 SQL（含 DROP/DELETE 等高危操作）将不再人工审批，' +
+        '直接对数据库执行。确认要切换吗？',
+        '高危操作二次确认',
+        { type: 'warning', confirmButtonText: '我已知晓风险，确认切换', cancelButtonText: '取消' },
+      )
+    }
+    const data = await apiClient.put('/approve/policy', { tier, confirm: true }) as { label: string }
+    policyTier.value = tier
+    policyLabel.value = data.label
+    ElMessage.success(`审批档位已切换：${data.label}`)
+  } catch (e: any) {
+    policyTier.value = policyTier.value   // 回退选择器
+    if (e !== 'cancel' && e?.message !== 'cancel') {
+      ElMessage.error(e.response?.data?.detail || '档位切换失败')
+    }
+  }
+}
+
+onMounted(loadPolicy)
 
 /* 审批操作加载中标记 */
 const approvingMap = ref<Record<string, boolean>>({})
@@ -135,6 +180,32 @@ function isApprovingTask(threadId: string): boolean {
         </div>
       </div>
     </header>
+
+    <!-- R11 审批档位 -->
+    <div class="policy-card">
+      <div class="policy-info">
+        <span class="policy-title">审批档位</span>
+        <span class="policy-label">{{ policyLabel || '未加载' }}</span>
+      </div>
+      <div class="policy-options">
+        <label
+          v-for="opt in tierOptions"
+          :key="opt.value"
+          class="policy-option"
+          :class="{ 'is-active': policyTier === opt.value, 'is-danger': opt.value === 'full_access' }"
+        >
+          <input
+            type="radio"
+            name="approval-tier"
+            :value="opt.value"
+            :checked="policyTier === opt.value"
+            @change="changeTier(opt.value)"
+          />
+          <span class="policy-option-title">{{ opt.label }}</span>
+          <span class="policy-option-desc">{{ opt.desc }}</span>
+        </label>
+      </div>
+    </div>
 
     <!-- 任务列表表格 -->
     <div class="approval-table-wrapper">
@@ -288,6 +359,82 @@ function isApprovingTask(threadId: string): boolean {
 }
 
 /* === 页面标题栏 === */
+/* ── R11 审批档位卡片 ── */
+.policy-card {
+  flex-shrink: 0;
+  margin-bottom: 16px;
+  padding: 14px 18px;
+  background: var(--color-surface, #0f0f11);
+  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.08));
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+.policy-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 150px;
+}
+.policy-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary, rgba(255, 255, 255, 0.88));
+}
+.policy-label {
+  font-size: 11px;
+  color: var(--color-text-muted, rgba(255, 255, 255, 0.45));
+}
+.policy-options {
+  display: flex;
+  gap: 10px;
+  flex: 1;
+  flex-wrap: wrap;
+}
+.policy-option {
+  flex: 1;
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px;
+  background: transparent;
+  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.08));
+  border-radius: 10px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.policy-option:hover {
+  border-color: var(--color-primary, #7056f8);
+}
+.policy-option.is-active {
+  border-color: var(--color-primary, #7056f8);
+  background: rgba(112, 86, 248, 0.1);
+}
+.policy-option.is-danger.is-active {
+  border-color: #ef4444;
+  background: rgba(239, 68, 68, 0.08);
+}
+.policy-option input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.policy-option-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-primary, rgba(255, 255, 255, 0.88));
+}
+.policy-option.is-danger.is-active .policy-option-title {
+  color: #ef4444;
+}
+.policy-option-desc {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--color-text-muted, rgba(255, 255, 255, 0.45));
+}
+
 .approval-header {
   flex-shrink: 0;
   display: flex;

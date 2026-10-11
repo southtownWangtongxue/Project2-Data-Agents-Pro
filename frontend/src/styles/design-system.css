@@ -128,3 +128,17 @@ body {
   background: rgba(99, 102, 241, 0.3);
   color: var(--color-text-primary);
 }
+
+/* === 无障碍降级：用户系统偏好减少动效（DEF-010） ===
+ * 关闭所有 CSS 动画与过渡，仅保留极短的不透明度过渡，
+ * 兼顾低性能设备与眩晕敏感用户。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

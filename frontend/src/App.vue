@@ -21,7 +21,6 @@ interface NavItem {
 const authNavItems: NavItem[] = [
   { path: '/', label: '首页', icon: 'home' },
   { path: '/chat', label: '智能对话', icon: 'chat' },
-  { path: '/chat-x', label: 'AI 对话 (X)', icon: 'chatx' },
   { path: '/approval', label: '审批管理', icon: 'approval' },
   { path: '/admin', label: '配置中心', icon: 'admin' },
 ]

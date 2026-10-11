@@ -9,12 +9,13 @@
 import contextvars
 import json
 import logging
+import os as _os
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from langgraph.errors import GraphInterrupt
+from langgraph.errors import GraphInterrupt, GraphRecursionError
 
 from app.api.deps import get_current_user
 from app.graph.workflow import get_graph, get_graph_async, use_deep_agent, get_deep_agent
@@ -30,8 +31,12 @@ from app.core.event_sourcing import (
     SessionEventStore,
     EventType,
     event_sourcing_enabled,
+    turn_event_enabled,
+    check_history_invariant,
     MAX_RESULT_ROWS,
 )
+from app.core.compaction import compact_history
+from app.core.agent_loop import AgentLoopRunner, agent_loop_enabled, agent_loop_shadow
 from app.core.stream_protocol import SSEEventType, make_event
 
 logger = logging.getLogger(__name__)
@@ -62,12 +67,10 @@ def _resolve_enabled_provider(model: str | None = None) -> dict | None:
         provider = cm.get_llm_config(model)
         if provider and provider.get("enabled", True):
             return provider
-    # 回退：第一个 enabled provider
-    providers = getattr(cm, "providers", None)
-    if providers:
-        for p in providers.values():
-            if p.get("enabled", True):
-                return p
+    # 回退：第一个 enabled provider（注意：ConfigManager 的属性是 llm_providers，为 list[dict]）
+    for p in cm.llm_providers:
+        if p.get("enabled", True):
+            return p
     return None
 
 
@@ -321,6 +324,16 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
     stream_queue = stream_ctx.create_queue()
     _ctx_token = set_stream_context(stream_ctx)
 
+    # 提前声明 merge_queue（下面会用到），让 StreamContext 可以直接写入优先级事件
+    merge_queue: _asyncio.Queue[tuple[str, object]] = _asyncio.Queue()
+    stream_ctx.merge_queue = merge_queue  # ← 关键：连接快捷通道
+
+    # DEF-009：节点级耗时埋点（节点事件入口统一计时，供性能画像使用）
+    import time as _time
+    _run_t_start = _time.monotonic()
+    _node_t_prev = _run_t_start
+    _node_timings: list[str] = []
+
     logger.info("[chat] _stream_chat: session_thread_id=%s (reused=%s), run_id=%s, question=%s",
                 session_thread_id, bool(existing_thread_id), run_id, question[:80])
 
@@ -333,6 +346,9 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
     # 用于标题生成的数据收集
     collected_analysis = ""     # 收集分析/回答文本
     collected_sql = ""          # 收集 SQL 语句（辅助标题推断）
+    # DEF-009：标题 LLM 调用提前到 analyst 节点完成时启动（与 reporter/chart 并行），
+    # 输入与原 finish 时刻完全一致，仅消除串行等待（实测节省 ~7.5s）
+    title_task: _asyncio.Task | None = None
 
     # 多轮对话：根据已有节点数确定本轮 node_index
     if existing_thread_id:
@@ -354,6 +370,11 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
 
     if es_enabled:
         await _track(EventType.USER_MESSAGE, role="user", content=question)
+        # R16：turn 边界事件（node_index 即轮次标识；事件 id 升序即 step 序）
+        if turn_event_enabled():
+            await _track(EventType.TURN_START, role="system", payload={
+                "turn_index": node_index, "question_preview": question[:100],
+            })
 
     try:
         # ── 单队列单消费者（阶段二 2.1）：graph 事件与节点内 push 同队列，天然保序 ──
@@ -436,6 +457,12 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
 
             # source == "node": 处理节点完成事件
             for node_name, state_update in data.items():
+                # ── DEF-009：节点级耗时埋点（间隔=本节点自身耗时）──
+                _now = _time.monotonic()
+                _node_timings.append(f"{node_name}={_now - _node_t_prev:.1f}s")
+                logger.info("[PERF] 节点 %s 完成: 自身 %.2fs / 累计 %.2fs",
+                            node_name, _now - _node_t_prev, _now - _run_t_start)
+                _node_t_prev = _now
                 # 阶段二 2.2：兜底分配 step_id（节点未推送 node_started 时）
                 _sse_step_id.set(node_steps.get(node_name) or _next_step(node_name))
                 logger.info(f"[SSE-LOOP] 处理节点事件: {node_name}")
@@ -657,6 +684,11 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                     analysis_text = state_update.get("analysis_text", "")
                     if analysis_text:
                         collected_analysis = analysis_text  # 收集用于标题生成
+                        # 标题输入已齐备：后台预生成（与后续 chart 节点并行，DEF-009）
+                        if title_task is None:
+                            title_task = _asyncio.create_task(
+                                generate_node_title(question, collected_analysis, provider)
+                            )
                         logger.info(
                             "[SSE] 推送分析结果: %s",
                             analysis_text[:80],
@@ -693,13 +725,57 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                     text = state_update.get("analysis_text", "")
                     if text:
                         collected_analysis = text[:200]  # 收集用于标题生成
+                        # 标题输入已齐备：后台预生成（DEF-009）
+                        if title_task is None:
+                            title_task = _asyncio.create_task(
+                                generate_node_title(question, collected_analysis, provider)
+                            )
                         logger.info(f"[SSE] RAG 检索结果: {text[:80]}")
                         await _track(EventType.ANALYSIS, role="assistant", content=text)
+
+                # ── __interrupt__: 高危 SQL 人工审批中断（Human-in-the-Loop）──
+                # LangGraph 在 stream_mode="updates" 下把中断作为「__interrupt__ 节点事件」
+                # 投递，而非抛 GraphInterrupt 异常。此前未处理该分支，导致写类 SQL 被
+                # 拦截后 SSE 静默结束：前端既收不到 approval_required 也收不到 done，
+                # 「改数据必批」红线在链路上不可达。
+                elif node_name == "__interrupt__":
+                    _raw = (
+                        state_update.get("__interrupt__", state_update)
+                        if isinstance(state_update, dict) else state_update
+                    )
+                    if isinstance(_raw, (list, tuple)):
+                        _raw = _raw[0] if _raw else None
+                    _payload = getattr(_raw, "value", _raw)
+                    if not isinstance(_payload, dict):
+                        _payload = {"reason": str(_payload or "")}
+                    _apv_sql = _payload.get("sql", "") or ""
+                    _apv_reason = (
+                        _payload.get("reason", "")
+                        or _payload.get("message", "")
+                        or "检测到高危 SQL 操作（非只读），需要管理员审批"
+                    )
+                    logger.info("[SSE] 检测到审批中断: sql=%s", str(_apv_sql)[:120])
+                    yield _sse_event({
+                        "type": "approval_required",
+                        "thread_id": session_thread_id,
+                        "question": question,
+                        "sql": _apv_sql,
+                        "reason": _apv_reason,
+                    })
 
                 # ── finish: 工作流结束 ────────────────────
                 elif node_name == "finish":
                     yield _thinking_event("finish", "completed", "完成")
                     logger.info(f"[SSE] 工作流执行完毕, node_index={node_index}")
+                    # DEF-009：输出本轮节点耗时序列（自身耗时），用于性能画像
+                    logger.info("[PERF] 节点耗时序列: %s | 总计 %.1fs",
+                                " > ".join(_node_timings), _time.monotonic() - _run_t_start)
+                    # R16：turn 边界收尾
+                    if es_enabled and turn_event_enabled():
+                        await _track(EventType.TURN_END, role="system", payload={
+                            "turn_index": node_index,
+                            "elapsed_s": round(_time.monotonic() - _run_t_start, 1),
+                        })
 
                     # done 先行：标题生成（1~3s LLM 调用）移出关键路径，
                     # 前端 onDone 后已解锁输入，title 为增量更新，挂连接等待安全
@@ -707,7 +783,11 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
 
                     try:
                         answer_summary = collected_analysis or collected_sql or ""
-                        node_title = await generate_node_title(question, answer_summary, provider)
+                        # 复用 analyst 完成时已启动的预生成任务；未启动时现场生成
+                        node_title = (
+                            await title_task if title_task is not None
+                            else await generate_node_title(question, answer_summary, provider)
+                        )
                         # 使用 chat.py 层的 node_index（来自 MySQL count），而非 state_update 中的值
                         await _save_chat_node(session_thread_id, node_index, node_title, question, run_id)
                         if node_index == 0:
@@ -758,7 +838,7 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
         set_stream_context(StreamContext())
 
 
-async def _stream_chat_deepagent(question: str, user_name: str, history: list[dict] | None = None, existing_thread_id: str | None = None, model: str | None = None, mode: str = "data", web_search: bool = False):
+async def _stream_chat_deepagent(question: str, user_name: str, history: list[dict] | None = None, existing_thread_id: str | None = None, model: str | None = None, mode: str = "data", web_search: bool = False, runtime_context: str = ""):
     """
     DeepAgent 模式 SSE 流式生成器 —— 基于 deepagents 库的智能调度。
 
@@ -785,7 +865,10 @@ async def _stream_chat_deepagent(question: str, user_name: str, history: list[di
     # 锁定当前模型 provider（动态路由：界面所选模型 → 实际 API 调用）
     from app.core.llm import set_provider, describe_route
     from app.core.config_manager import get_config_manager
-    set_provider(get_config_manager().get_llm_config(model))
+    # 修复：显式保存 provider 引用，供 __end__ 阶段 generate_node_title 使用
+    # （原先未赋值，task 模式标题生成抛 NameError 被静默吞掉）
+    provider = get_config_manager().get_llm_config(model)
+    set_provider(provider)
     logger.info("[LLM路由] 实际调用(DeepAgent): %s", describe_route())
 
     agent = await get_deep_agent()
@@ -794,7 +877,14 @@ async def _stream_chat_deepagent(question: str, user_name: str, history: list[di
     session_thread_id = existing_thread_id if existing_thread_id else f"{user_name}:{uuid.uuid4()}"
     # 执行级 run_id：每次调用都生成新的
     run_id = f"{user_name}:{uuid.uuid4()}"
-    config = {"configurable": {"thread_id": run_id}}
+    # deepagents 编译期默认 recursion_limit=9999（近乎无上限），子 Agent 委派一旦
+    # 陷入「model → tools → subagent」循环将永不收敛、不产出 done 且持续消耗额度。
+    # 这里显式收紧步数上限；超出后 LangGraph 抛 GraphRecursionError，
+    # 由下方 except 分支优雅收尾（status + title + done）。
+    config = {
+        "configurable": {"thread_id": run_id},
+        "recursion_limit": int(_os.getenv("DEEPAGENT_RECURSION_LIMIT", "60")),
+    }
 
     logger.info("[chat] _stream_chat_deepagent: session_thread_id=%s (reused=%s), run_id=%s, question=%s",
                 session_thread_id, bool(existing_thread_id), run_id, question[:80])
@@ -837,6 +927,11 @@ async def _stream_chat_deepagent(question: str, user_name: str, history: list[di
 
     if es_enabled:
         await _track(EventType.USER_MESSAGE, role="user", content=question)
+        # R16：turn 边界事件（DeepAgent 分支）
+        if turn_event_enabled():
+            await _track(EventType.TURN_START, role="system", payload={
+                "turn_index": node_index, "question_preview": question[:100],
+            })
 
     # DeepAgent 使用标准消息格式（含多轮历史）
     previous_msgs = history or []
@@ -850,6 +945,14 @@ async def _stream_chat_deepagent(question: str, user_name: str, history: list[di
                 {"role": "system", "content": f"[会话长期目标] {goal_text}\n请始终围绕该目标执行任务并回答用户问题。"},
                 *input_data["messages"],
             ]
+
+    # ── R12：每请求运行时上下文（驱动器注入：用户/日期/模式/审批档位）──
+    # DeepAgent 的 system_prompt 由全局单例构建一次，运行期变量以 system 消息逐请求注入
+    if runtime_context:
+        input_data["messages"] = [
+            {"role": "system", "content": runtime_context},
+            *input_data["messages"],
+        ]
 
     # ── 联网搜索提示：web_search=True 时注入系统指令 ──
     if web_search:
@@ -867,11 +970,88 @@ async def _stream_chat_deepagent(question: str, user_name: str, history: list[di
     # 用于标题生成的数据收集
     collected_deep_text = ""
 
+    # 收尾函数：事件溯源落盘 + 标题生成保存 + done 事件。
+    # 抽取为独立函数，供 __end__ 分支与"循环结束兜底"两处复用（DEF-008 伴生修复：
+    # LangGraph updates 模式在 deepagents 图结束时可能不产出 __end__ 更新，
+    # 若只挂 __end__ 处理器，task 模式会静默断流——无 title、无 done）。
+    _done_emitted = False
+
+    async def _finalize_run() -> list[dict]:
+        """执行收尾并返回待推送的 SSE 事件列表（幂等：只允许执行一次）。"""
+        nonlocal _done_emitted
+        if _done_emitted:
+            return []
+        _done_emitted = True
+        events: list[dict] = []
+        # R16：turn 边界收尾
+        if es_enabled and turn_event_enabled():
+            await _track(EventType.TURN_END, role="system", payload={"turn_index": node_index})
+        # 事件溯源：落盘本轮完整回答文本为 analysis 事件
+        if es_enabled and deep_full_text:
+            await _track(EventType.ANALYSIS, role="assistant", content=deep_full_text)
+        # 先生成并推送标题，再发送 done
+        try:
+            node_title = await generate_node_title(question, collected_deep_text, provider)
+            logger.info("[DeepAgent] 标题生成: %s", node_title)
+            await _save_chat_node(session_thread_id, node_index, node_title, question, run_id)
+            logger.info("[DeepAgent] 节点已保存: thread_id=%s node_index=%d",
+                        session_thread_id, node_index)
+            if node_index == 0:
+                await _upsert_chat_session(session_thread_id, user_name, node_title)
+                logger.info("[DeepAgent] 会话已创建: session=%s title=%s",
+                            session_thread_id, node_title)
+            events.append({
+                "type": "title",
+                "content": node_title,
+                "thread_id": session_thread_id,
+                "node_index": node_index,
+            })
+        except Exception as title_exc:
+            logger.warning("[DeepAgent] 标题/保存失败: %s", title_exc, exc_info=True)
+        events.append({"type": "done"})
+        return events
+
+    # 迭代保护（DEF：子 Agent 委派可能陷入「model → tools → subagent」死循环，
+    # 请求永不收敛、无 done 事件，并持续消耗 LLM 额度）。
+    # 超过 DEEPAGENT_MAX_SECONDS 后主动中断流并走正常收尾（title + done）。
+    import time as _time
+
+    _started_at = _time.monotonic()
+    _max_seconds = float(_os.getenv("DEEPAGENT_MAX_SECONDS", "300"))
+
     try:
         # stream_mode=["updates", "messages"] → 双模式：
         #  - "messages": (AIMessageChunk, metadata) 元组 — 逐 token 实时流式
         #  - "updates":  {node_name: state_update} — 节点完成事件（工具调用/完成）
-        async for event in agent.astream(input_data, config, stream_mode=["updates", "messages"]):
+        _aiter = agent.astream(input_data, config, stream_mode=["updates", "messages"]).__aiter__()
+        while True:
+            # 墙钟守卫：单步 await 本身也可能长时间挂起（子 Agent 全管线 20~40s），
+            # 因此必须对 __anext__() 设置「剩余超时」，否则死循环永远无法中断。
+            _remain = _max_seconds - (_time.monotonic() - _started_at)
+            if _remain <= 0:
+                logger.warning(
+                    "[DeepAgent SSE] 执行超过 %.0fs 仍未收敛，主动中断: thread_id=%s",
+                    _max_seconds, session_thread_id,
+                )
+                yield _sse_event({
+                    "type": "status",
+                    "content": f"任务执行超过 {int(_max_seconds)}s 仍未完成，已主动结束本次执行。",
+                })
+                break
+            try:
+                event = await _asyncio.wait_for(_aiter.__anext__(), timeout=_remain)
+            except StopAsyncIteration:
+                break
+            except TimeoutError:
+                logger.warning(
+                    "[DeepAgent SSE] 单步等待超过 %.0fs，主动中断: thread_id=%s",
+                    _max_seconds, session_thread_id,
+                )
+                yield _sse_event({
+                    "type": "status",
+                    "content": f"任务执行超过 {int(_max_seconds)}s 仍未完成，已主动结束本次执行。",
+                })
+                break
             mode, data = event
 
             if mode == "messages":
@@ -978,6 +1158,17 @@ async def _stream_chat_deepagent(question: str, user_name: str, history: list[di
                     elif node_name == "__end__":
                         logger.info("[DeepAgent] __end__ 到达: thread_id=%s node_index=%d text_len=%d",
                                     session_thread_id, node_index, len(collected_deep_text) if collected_deep_text else 0)
+                        for _ev in await _finalize_run():
+                            yield _sse_event(_ev)
+
+        # DEF-008 伴生修复：updates 模式可能不产出 __end__ 更新，
+        # 循环正常结束但 done 未发出时兜底收尾，避免 task 模式静默断流。
+        # 注意：本兜底必须位于 astream 循环「之外」（与 async for 同级），
+        # 否则会在每个节点事件后提前收尾，导致 task 模式首帧即发 done、正文丢失。
+        if not _done_emitted:
+            logger.info("[DeepAgent SSE] astream 结束且未收到 __end__，兜底收尾: thread_id=%s", session_thread_id)
+            for _ev in await _finalize_run():
+                yield _sse_event(_ev)
                         # 事件溯源：落盘本轮完整回答文本为 analysis 事件
                         if es_enabled and deep_full_text:
                             await _track(EventType.ANALYSIS, role="assistant", content=deep_full_text)
@@ -1013,9 +1204,44 @@ async def _stream_chat_deepagent(question: str, user_name: str, history: list[di
             "sql": interrupt_data.get("sql", "") if isinstance(interrupt_data, dict) else "",
             "reason": interrupt_data.get("reason", "") if isinstance(interrupt_data, dict) else "",
         })
+    except GraphRecursionError:
+        logger.warning(
+            "[DeepAgent SSE] 达到步数上限（recursion_limit），优雅收尾: thread_id=%s",
+            session_thread_id,
+        )
+        yield _sse_event({
+            "type": "status",
+            "content": "任务步数已达上限，已结束本次执行以避免无限循环。",
+        })
+        for _ev in await _finalize_run():
+            yield _sse_event(_ev)
     except Exception as exc:
         from app.core.llm import describe_route, get_model_name
         logger.exception("[DeepAgent SSE] 流式对话异常 | 路由: %s", describe_route())
+
+        # DEF-008：尚未产出任何正文时，降级到 legacy 工作流重试一次，
+        # 避免 DeepAgent 分支因 LLM/初始化异常导致本次请求直接失败。
+        if not (collected_deep_text or "").strip():
+            fallback_mode = mode if mode in ("data", "report", "doc") else "data"
+            logger.warning(
+                "[DeepAgent SSE] 无有效输出，降级 legacy 工作流: thread_id=%s mode=%s",
+                session_thread_id, fallback_mode,
+            )
+            try:
+                async for fallback_ev in _stream_chat(
+                    question, user_name, history, session_thread_id, model, fallback_mode, web_search
+                ):
+                    yield fallback_ev
+                return
+            except Exception as fallback_exc:
+                logger.exception("[DeepAgent SSE] legacy 降级也失败: thread_id=%s", session_thread_id)
+                yield _error_event(
+                    f"DeepAgent 与降级工作流均失败: {fallback_exc}（实际模型: {get_model_name()}）",
+                    code="INTERNAL_ERROR",
+                    recoverable=True,
+                )
+                return
+
         yield _error_event(
             f"处理异常: {str(exc)}（实际模型: {get_model_name()}）",
             code="INTERNAL_ERROR",
@@ -1056,19 +1282,75 @@ async def chat_completions(body: ChatRequest, user: dict = Depends(get_current_u
         for m in body.messages[:-1]
     ] if len(body.messages) > 1 else []
 
+    # 压缩前的原始历史（R20 影子比对基准：驱动器压缩结果 vs 旧路径压缩结果）
+    _raw_history = list(history_msgs)
+
+    # ── R20：统一循环驱动器（P2 第二步：驱动器接管分发）──
+    # 无论开关如何都构造 LoopRequest（纯函数无副作用）；
+    # AGENT_LOOP_ENABLED=true（默认）：采用驱动器产物（压缩/变量/上下文），
+    #   分发由 _loop_req.profile 决定；
+    # AGENT_LOOP_ENABLED=false：回退旧构造（仅压缩），分发规则不变——回滚通道。
+    # AGENT_LOOP_SHADOW：影子比对（观察期工具，默认关闭）。
+    _runtime_context = ""
+    _loop_req = AgentLoopRunner.build_request(
+        question=question,
+        user_name=user_name,
+        history=history_msgs,
+        thread_id=body.thread_id,
+        mode=body.mode,
+        model=body.model,
+        web_search=body.web_search,
+        deepagent_on=use_deep_agent(),
+    )
+    if agent_loop_enabled():
+        history_msgs = _loop_req.history
+        _runtime_context = _loop_req.runtime_context
+        if _loop_req.compaction_stats.get("triggered"):
+            log.info(
+                f"[chat_completions] 上下文已压缩: {_loop_req.compaction_stats['original']} 条 → "
+                f"摘要+{_loop_req.compaction_stats['kept']} 条 "
+                f"(digest {_loop_req.compaction_stats['digest_chars']} 字符)"
+            )
+        if agent_loop_shadow():
+            # 影子比对（观察期工具）：与旧路径压缩结果比对，差异仅记日志
+            _legacy_len = len(compact_history(_raw_history)[0])
+            _shadow = AgentLoopRunner.shadow_compare(_loop_req, _legacy_len)
+            log.info(
+                f"[AgentLoop][shadow] profile={_loop_req.profile} history={len(history_msgs)} "
+                f"比对={'OK' if _shadow['ok'] else _shadow['diffs']}"
+            )
+    else:
+        history_msgs, _compaction = compact_history(history_msgs)
+        if _compaction.get("triggered"):
+            log.info(
+                f"[chat_completions] 上下文已压缩: {_compaction['original']} 条 → "
+                f"摘要+{_compaction['kept']} 条 (digest {_compaction['digest_chars']} 字符)"
+            )
+
+    # ── R16：不变量检查（"进入模型上下文的内容必须已落库"）──
+    # 纯检查不阻断：未命中的历史消息记入日志（旧会话/溯源中途开启属预期）。
+    # TURN_EVENT_ENABLED 开关控制；event_sourcing 关闭时自动跳过。
+    if body.thread_id:
+        _invariant = await check_history_invariant(body.thread_id, history_msgs)
+        if _invariant.get("missing"):
+            log.warning(
+                f"[chat_completions][R16] 不变量检查: "
+                f"{len(_invariant['missing'])}/{_invariant['checked']} 条历史未命中事件日志"
+            )
+
     log.info(f"[chat_completions] SSE 流式对话, "
              f"user={user_name}, "
-             f"mode={"deepagent" if use_deep_agent() else "legacy"},"
+             f"mode={_loop_req.profile},"
              f" question={question}, history_len={len(history_msgs)}, "
              f"thread_id={body.thread_id or "(None — 新建会话)"}"
     )
 
-    # 通用任务（task）模式始终走 DeepAgent：具备 TodoList 任务拆解、子 Agent 委派
-    # 与 Skills/MCP 工具调用能力，可真正执行通用任务；不受全局 USE_DEEP_AGENT 开关限制。
-    if use_deep_agent() or body.mode == "task":
+    # R20：分发由驱动器 Profile 决策接管（规则与旧逻辑一致：
+    # USE_DEEP_AGENT 全局开启或 mode=task → deepagent，其余 → legacy-graph）
+    if _loop_req.is_deepagent:
         return StreamingResponse(
             _wrap_cancellable(
-                _stream_chat_deepagent(question, user_name, history_msgs, body.thread_id, body.model, body.mode, body.web_search)
+                _stream_chat_deepagent(question, user_name, history_msgs, body.thread_id, body.model, body.mode, body.web_search, _runtime_context)
             ),
             media_type="text/event-stream",
             headers={
@@ -1382,8 +1664,12 @@ async def _get_last_run_state(session_thread_id: str) -> dict | None:
     return None
 
 
-async def _delete_session_mysql(thread_id: str):
-    """从 MySQL 删除会话元数据和所有节点"""
+async def _delete_session_mysql(thread_id: str) -> int:
+    """从 MySQL 删除会话元数据和所有节点。
+
+    返回:
+        被删除的会话行数（0 表示会话不存在）
+    """
     from app.models.session import ChatSession, ChatNode
     from app.db.session import get_db
     from sqlalchemy import delete
@@ -1391,11 +1677,14 @@ async def _delete_session_mysql(thread_id: str):
     try:
         async for db in get_db():
             await db.execute(delete(ChatNode).where(ChatNode.thread_id == thread_id))
-            await db.execute(delete(ChatSession).where(ChatSession.thread_id == thread_id))
+            result = await db.execute(
+                delete(ChatSession).where(ChatSession.thread_id == thread_id)
+            )
             await db.commit()
-            return
+            return result.rowcount or 0
     except Exception as exc:
         logger.warning(f"[sessions] MySQL 删除失败: {exc}")
+        return 0
 
 
 # ================================================================
@@ -1666,25 +1955,25 @@ async def get_session_messages(
     from app.db.session import get_db
     from sqlalchemy import select
 
-    user_name = user["user_name"]
+    # 1. 权限检查：非 admin 访问他人会话直接 403
+    #    说明：admin 允许跨用户访问（管理用途），但会记录审计日志
+    user_name = _check_thread_owner(thread_id, user)
     is_admin = user.get("user_type") == "00"
-
-    # 1. 权限检查
-    if not is_admin and ":" in thread_id:
-        thread_user = thread_id.split(":", 1)[0]
-        if thread_user != user_name:
-            return {"thread_id": thread_id, "error": "无权查看他人的会话", "messages": [], "nodes": []}
+    if is_admin and ":" in thread_id and not thread_id.startswith(f"{user_name}:"):
+        logger.info("[sessions] 管理员跨用户读取会话: admin=%s thread_id=%s", user_name, thread_id)
 
     # 2. 查询节点标题和会话标题
     title = ""
     nodes: list[dict] = []
     latest_run_id = ""  # 初始化，避免 except 分支中未定义
+    session_exists = False
     try:
         async for db in get_db():
             session_result = await db.execute(
                 select(ChatSession).where(ChatSession.thread_id == thread_id)
             )
             session_row = session_result.scalar_one_or_none()
+            session_exists = session_row is not None
             if session_row:
                 title = session_row.title or ""
 
@@ -1703,6 +1992,10 @@ async def get_session_messages(
             break
     except Exception as exc:
         logger.warning(f"[sessions] MySQL 节点查询失败: {exc}")
+
+    # 2.1 会话不存在 → 404（避免返回空 200 造成前端误判为"存在但无内容"）
+    if not session_exists and not nodes:
+        raise HTTPException(status_code=404, detail="会话不存在")
 
     # 3. 优先从事件日志投影恢复（Phase 1 事件溯源：append-only + surface 投影）
     if event_sourcing_enabled():
@@ -1855,14 +2148,19 @@ async def export_session_events(
     )
 
 
-@router.get("/sessions/{thread_id}/trajectory", summary="会话轨迹（阶段4 B2）")
+@router.get("/sessions/{thread_id}/trajectory", summary="会话轨迹（阶段4 B2 / R17 来源检查）")
 async def get_session_trajectory(
     thread_id: str,
+    full: bool = False,
     user: dict = Depends(get_current_user),
 ):
     """
     返回会话的完整事件轨迹（含过程态事件 plan/clarification/tool_chain），
     供前端轨迹时间线渲染（对齐 Harness 的 Trajectory step 级记录）。
+
+    参数:
+        full: 为 true 时 content 返回完整正文（默认截断 200 字符作预览）；
+              同时返回 payload 与 run_id，供前端"来源检查"展开查看。
 
     权限：
         非 admin 仅能查看自己的会话。
@@ -1880,13 +2178,38 @@ async def get_session_trajectory(
             "id": evt.id,
             "event_type": evt.event_type,
             "role": evt.role,
-            "content": (evt.content or "")[:200],
+            "content": (evt.content or "") if full else (evt.content or "")[:200],
+            "payload": evt.payload,
+            "run_id": evt.run_id,
             "node_index": evt.node_index,
             "created_at": evt.created_at.isoformat() if evt.created_at else None,
         }
         for evt in events
     ]
     return {"thread_id": thread_id, "events": trajectory}
+
+
+@router.get("/sessions/{thread_id}/derived-messages", summary="LLM 视角派生历史（R16）")
+async def get_session_derived_messages(
+    thread_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """
+    从事件日志派生模型可见的对话历史（{"role","content"} 格式）。
+
+    R16 事件底座的验证接口：与前端回传的 history 并行比对，
+    一致性验证通过后，R20 统一循环将以本接口替代前端全量回传。
+    权限：非 admin 仅能查看自己的会话。
+    """
+    user_name = user["user_name"]
+    is_admin = user.get("user_type") == "00"
+    if not is_admin and ":" in thread_id:
+        thread_user = thread_id.split(":", 1)[0]
+        if thread_user != user_name:
+            raise HTTPException(status_code=403, detail="无权查看他人的会话")
+
+    messages = await SessionEventStore.derive_llm_messages(thread_id)
+    return {"thread_id": thread_id, "messages": messages, "total": len(messages)}
 
 
 @router.post("/sessions/{thread_id}/fork", summary="分支会话（阶段2 A6）")
@@ -2019,14 +2342,25 @@ async def delete_session(thread_id: str, user: dict = Depends(get_current_user))
     """
     import inspect
 
-    user_name = user["user_name"]
-    is_admin = user.get("user_type") == "00"
+    # 权限检查：复用统一归属校验（非 admin 仅能删除自己的会话）
+    user_name = _check_thread_owner(thread_id, user)
 
-    # 权限检查
-    if not is_admin and ":" in thread_id:
-        thread_user = thread_id.split(":", 1)[0]
-        if thread_user != user_name:
-            return {"success": False, "thread_id": thread_id, "error": "无权删除他人的会话"}
+    # 0. 存在性检查：会话不存在时返回 404，避免静默 success:true 误导前端
+    from app.models.session import ChatSession
+    from app.db.session import get_db
+    from sqlalchemy import select
+    try:
+        async for db in get_db():
+            result = await db.execute(
+                select(ChatSession.thread_id).where(ChatSession.thread_id == thread_id)
+            )
+            if result.scalar_one_or_none() is None:
+                raise HTTPException(status_code=404, detail="会话不存在")
+            break
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning(f"[sessions] 会话存在性检查失败（继续删除流程）: {exc}")
 
     # 1. MySQL 删除
     await _delete_session_mysql(thread_id)

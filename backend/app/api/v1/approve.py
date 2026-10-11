@@ -3,6 +3,9 @@
 
 管理员通过此接口审批/驳回高危 SQL 操作请求，
 与 LangGraph 工作流中的 Human-in-the-loop 机制对接。
+
+R10 审批审计：每次审批动作（通过/驳回/越权拒绝）持久化到 MySQL
+approval_records 表，不再仅依赖 Redis checkpoint（TTL 1h 后丢失）。
 """
 import logging
 
@@ -15,6 +18,34 @@ from app.api.deps import get_current_user
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/approve", tags=["approve"])
+
+
+async def _audit_approval(
+    task_id: str,
+    owner_user: str,
+    action: str,
+    comment: str,
+    approver_user: str,
+) -> None:
+    """写入审批审计记录（失败仅告警，不阻断审批主流程）。"""
+    try:
+        from app.models.approval import ApprovalRecord
+        from app.db.session import _get_session_factory
+
+        factory = _get_session_factory()
+        async with factory() as session:
+            session.add(ApprovalRecord(
+                task_id=task_id,
+                owner_user=owner_user or "",
+                action=action,
+                comment=comment or "",
+                approver_user=approver_user,
+            ))
+            await session.commit()
+        logger.info("[Approve][Audit] 审计已落库: task=%s action=%s approver=%s",
+                    task_id, action, approver_user)
+    except Exception as exc:
+        logger.warning("[Approve][Audit] 审计落库失败（不影响审批）: %s", exc)
 
 
 class ApproveRequest(BaseModel):
@@ -50,16 +81,26 @@ async def approve_task(
         管理员使用该 thread_id 调用本接口进行审批。
 
     权限：
-        需登录（Bearer token）；非 admin 用户仅能审批自己会话（thread_id 前缀
-        ``{user_name}:``）的审批任务。
+        需登录（Bearer token）；仅 admin（user_type=00）可审批。
+        发起人与审批人职责分离：即使是非 admin 会话的发起者，也不能自行审批
+        自己触发的高危 SQL（deny-by-default 的审批关卡）。
     """
-    # 会话归属校验：仅允许审批自己的会话（admin 除外）
+    # 职责分离：高危操作审批仅允许管理员执行（DEF-007）
+    is_admin = user.get("user_type") == "00" or user.get("user_name") == "admin"
     thread_id = body.task_id
     owner = thread_id.split(":", 1)[0] if ":" in thread_id else ""
-    is_admin = user.get("user_type") == "00" or user.get("user_name") == "admin"
-    if not is_admin and owner != user.get("user_name"):
-        logger.warning("[Approve] 越权审批被拒绝: user=%s task_id=%s", user.get("user_name"), thread_id)
-        raise HTTPException(status_code=403, detail="无权审批该会话的操作请求")
+    if not is_admin:
+        logger.warning(
+            "[Approve] 非管理员审批被拒绝（职责分离）: user=%s task_id=%s",
+            user.get("user_name"), body.task_id,
+        )
+        # R10 审计：越权尝试也落库
+        await _audit_approval(
+            task_id=thread_id, owner_user=owner, action=body.action,
+            comment="[拒绝] 非管理员审批被拒（职责分离）",
+            approver_user=str(user.get("user_name") or ""),
+        )
+        raise HTTPException(status_code=403, detail="高危操作审批仅允许管理员执行")
 
     graph = get_graph()
     config = {"configurable": {"thread_id": body.task_id}}
@@ -71,6 +112,11 @@ async def approve_task(
             config,
         )
         logger.info(f"[Approve] task_id={body.task_id} 审批通过")
+        # R10 审计
+        await _audit_approval(
+            task_id=thread_id, owner_user=owner, action="approve",
+            comment=body.comment, approver_user=str(user.get("user_name") or ""),
+        )
         return {
             "status": "approved",
             "task_id": body.task_id,
@@ -83,8 +129,104 @@ async def approve_task(
             config,
         )
         logger.info(f"[Approve] task_id={body.task_id} 审批驳回: {body.comment}")
+        # R10 审计
+        await _audit_approval(
+            task_id=thread_id, owner_user=owner, action="reject",
+            comment=body.comment, approver_user=str(user.get("user_name") or ""),
+        )
         return {
             "status": "rejected",
             "task_id": body.task_id,
             "result": result,
         }
+
+
+@router.get("/policy", summary="查询审批档位（R11）")
+async def get_approval_policy(user: dict = Depends(get_current_user)):
+    """查询当前审批预设档位：read_only / workspace_write / full_access。"""
+    from app.core.approval_policy import get_tier, TIER_LABELS
+    tier = get_tier()
+    return {"tier": tier, "label": TIER_LABELS.get(tier, tier)}
+
+
+class PolicyRequest(BaseModel):
+    """档位设置请求体"""
+    tier: str = Field(
+        ...,
+        description="目标档位: read_only / workspace_write / full_access",
+    )
+    confirm: bool = Field(
+        default=False,
+        description="二次确认标志；切换到 full_access 时必须为 true",
+    )
+
+
+@router.put("/policy", summary="设置审批档位（R11，admin，full_access 需二次确认）")
+async def set_approval_policy(
+    body: PolicyRequest,
+    user: dict = Depends(get_current_user),
+):
+    """
+    设置审批预设档位。
+
+    - read_only：所有写操作人工审批（默认，最严）
+    - workspace_write：DML 自动放行，DDL/权限操作仍需审批
+    - full_access：全部自动放行——**必须二次确认**（confirm=true），否则 400
+    """
+    is_admin = user.get("user_type") == "00" or user.get("user_name") == "admin"
+    if not is_admin:
+        raise HTTPException(status_code=403, detail="审批档位仅管理员可修改")
+
+    from app.core.approval_policy import set_tier, TIER_LABELS
+    ok, error = set_tier(body.tier, confirm=body.confirm)
+    if not ok:
+        raise HTTPException(status_code=400, detail=error)
+
+    logger.info("[Approve][Policy] 审批档位已变更: tier=%s operator=%s",
+                body.tier, user.get("user_name"))
+    return {"ok": True, "tier": body.tier, "label": TIER_LABELS.get(body.tier, body.tier)}
+
+
+@router.get("/records", summary="审批审计记录查询（管理员）")
+async def list_approval_records(
+    limit: int = 50,
+    user: dict = Depends(get_current_user),
+):
+    """
+    查询审批审计记录（R10 审批关卡链），按时间倒序返回最新记录。
+
+    权限：仅 admin（user_type=00）。
+    """
+    is_admin = user.get("user_type") == "00" or user.get("user_name") == "admin"
+    if not is_admin:
+        raise HTTPException(status_code=403, detail="审计记录仅管理员可查")
+
+    limit = max(1, min(limit, 200))
+    from sqlalchemy import select
+    from app.models.approval import ApprovalRecord
+    from app.db.session import _get_session_factory
+
+    factory = _get_session_factory()
+    async with factory() as session:
+        result = await session.execute(
+            select(ApprovalRecord)
+            .order_by(ApprovalRecord.id.desc())
+            .limit(limit)
+        )
+        rows = result.scalars().all()
+
+    return {
+        "total": len(rows),
+        "records": [
+            {
+                "id": r.id,
+                "task_id": r.task_id,
+                "owner_user": r.owner_user,
+                "action": r.action,
+                "comment": r.comment,
+                "approver_user": r.approver_user,
+                "created_at": str(r.created_at),
+            }
+            for r in rows
+        ],
+    }

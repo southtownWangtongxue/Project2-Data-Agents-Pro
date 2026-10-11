@@ -2,7 +2,7 @@
 文件导出接口
 支持将查询结果导出为 Excel 或 CSV 格式
 """
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 import io
@@ -12,6 +12,8 @@ from datetime import datetime
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+
+from app.api.deps import get_current_user
 
 router = APIRouter(prefix="/export", tags=["export"])
 
@@ -25,7 +27,7 @@ class ExportRequest(BaseModel):
 
 
 @router.post("/csv", summary="导出为 CSV 格式")
-async def export_csv(body: ExportRequest):
+async def export_csv(body: ExportRequest, user: dict = Depends(get_current_user)):
     """
     将查询结果导出为 CSV 文件并返回文件流。
     """
@@ -51,7 +53,7 @@ async def export_csv(body: ExportRequest):
 
 
 @router.post("/excel", summary="导出为 Excel 格式")
-async def export_excel(body: ExportRequest):
+async def export_excel(body: ExportRequest, user: dict = Depends(get_current_user)):
     """
     将查询结果导出为带样式的 .xlsx 文件并返回文件流。
 

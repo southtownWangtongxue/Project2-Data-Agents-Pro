@@ -1,0 +1,10 @@
+{
+  "_comment": "R23 命令白名单（由用户自行维护）：run_command_tool 仅允许执行首 token 命中本清单的命令。示例见下方 commands 数组，按需增删。",
+  "commands": [
+    "python",
+    "pip",
+    "git",
+    "dir",
+    "type"
+  ]
+}
