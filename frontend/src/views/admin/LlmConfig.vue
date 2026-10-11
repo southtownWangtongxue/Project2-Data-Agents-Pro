@@ -5,7 +5,7 @@
  */
 import { ref, computed, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import apiClient from '@/api/client'
+import apiClient, { getApiErrorMessage } from '@/api/client'
 
 interface LLMProvider {
   id: string; name: string; api_base: string; api_key_env: string
@@ -54,7 +54,7 @@ async function load() {
     const data = await apiClient.get('/config/llm')
     providers.value = data.providers
     modeDefaults.value = data.mode_defaults
-  } catch { ElMessage.error('加载失败') }
+  } catch (e) { ElMessage.error(getApiErrorMessage(e, '加载失败')) }
 }
 
 /* 新增 */

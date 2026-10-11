@@ -24,6 +24,23 @@ async def require_admin(user: dict = Depends(get_current_user)):
     return user
 
 
+# ── R19 配置分层：生效 dump + 补丁重载 ──
+
+@router.get("/effective", summary="全量生效特性开关（R19 审计）")
+async def dump_effective_config(user: dict = Depends(require_admin)):
+    """dump 白名单内全部特性开关的生效值与来源（default / patch）。"""
+    from app.core.config_layer import dump_effective
+    return {"flags": dump_effective()}
+
+
+@router.post("/patch/reload", summary="重载运维补丁层（R19）")
+async def reload_config_patch(user: dict = Depends(require_admin)):
+    """手动重载 configs/patch.json 并重新应用覆盖（watchdog 亦会自动监听）。"""
+    from app.core.config_layer import reload_patch
+    applied = reload_patch()
+    return {"ok": True, "applied": applied}
+
+
 # ── LLM Providers ──
 
 @router.get("/llm")
@@ -66,6 +83,17 @@ async def create_llm(provider: LLMProvider, _admin=Depends(require_admin)):
     return {"ok": True}
 
 
+# 注意：静态路径 /llm/mode-defaults 必须先于 /llm/{provider_id} 注册，
+# 否则会被路径参数路由抢先匹配（FastAPI 按注册顺序匹配），导致该接口永远不可达。
+@router.put("/llm/mode-defaults")
+async def update_mode_defaults(body: dict, _admin=Depends(require_admin)):
+    mgr = get_config_manager()
+    data = mgr.get("llm_providers.json")
+    data["mode_defaults"] = body
+    mgr.save("llm_providers.json", data)
+    return {"ok": True}
+
+
 @router.put("/llm/{provider_id}")
 async def update_llm(provider_id: str, provider: LLMProvider, _admin=Depends(require_admin)):
     mgr = get_config_manager()
@@ -91,15 +119,6 @@ async def delete_llm(provider_id: str, _admin=Depends(require_admin)):
     if len(providers) == len(data.get("providers", [])):
         raise HTTPException(404, f"Provider {provider_id} 不存在")
     data["providers"] = providers
-    mgr.save("llm_providers.json", data)
-    return {"ok": True}
-
-
-@router.put("/llm/mode-defaults")
-async def update_mode_defaults(body: dict, _admin=Depends(require_admin)):
-    mgr = get_config_manager()
-    data = mgr.get("llm_providers.json")
-    data["mode_defaults"] = body
     mgr.save("llm_providers.json", data)
     return {"ok": True}
 

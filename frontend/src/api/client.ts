@@ -37,10 +37,42 @@ client.interceptors.response.use(
         window.location.href = '/login'
       }
     }
-    console.error('[API Error]', error.response?.data || error.message)
+    console.error('[API Error]', getApiErrorMessage(error, error.message))
     return Promise.reject(error)
   },
 )
+
+/**
+ * 从 axios 错误中提取可展示的提示文案。
+ *
+ * 后端错误体形如 `{"detail": "需要管理员权限"}`（或 422 的 detail 数组），
+ * 直接把对象塞进 ElMessage / console 会显示成 `[object Object]`，
+ * 排查与提示都不可用。这里统一归一化：
+ *   1. detail 为字符串 → 直接返回（如「需要管理员权限」）
+ *   2. detail 为数组（参数校验）→ 取首条 msg
+ *   3. detail 为对象 → 取 msg / message 字段
+ *   4. 均无 → 返回 fallback（调用方传入，如「加载失败」）
+ */
+export function getApiErrorMessage(error: unknown, fallback = '请求失败'): string {
+  const data = (error as { response?: { data?: unknown } })?.response?.data
+  if (typeof data === 'string' && data) return data
+  if (data && typeof data === 'object') {
+    const detail = (data as Record<string, unknown>).detail
+    if (typeof detail === 'string' && detail) return detail
+    if (Array.isArray(detail) && detail.length) {
+      const first = detail[0] as Record<string, unknown> | string
+      if (typeof first === 'string') return first
+      const msg = (first as Record<string, unknown>)?.msg
+      if (typeof msg === 'string' && msg) return msg
+    }
+    if (detail && typeof detail === 'object') {
+      const msg = (detail as Record<string, unknown>).msg ?? (detail as Record<string, unknown>).message
+      if (typeof msg === 'string' && msg) return msg
+    }
+  }
+  const message = (error as { message?: string })?.message
+  return typeof message === 'string' && message ? message : fallback
+}
 
 /* 响应拦截器已在运行时解包 response.data，
  * 此处重写类型让 get/post/put/patch/delete 返回 data 而非 AxiosResponse，

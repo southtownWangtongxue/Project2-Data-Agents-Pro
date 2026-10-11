@@ -6,9 +6,11 @@
  */
 import { ref, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
 const router = useRouter()
+const auth = useAuthStore()
 
 /* 侧边栏折叠状态 */
 const collapsed = ref(false)
@@ -19,6 +21,8 @@ interface MenuConfig {
   label: string
   icon: string
   description: string
+  /** 是否仅管理员可见（对应后端 /config/* 的 require_admin 拦截） */
+  adminOnly?: boolean
 }
 
 const menuItems: MenuConfig[] = [
@@ -27,18 +31,21 @@ const menuItems: MenuConfig[] = [
     label: 'LLM 模型',
     icon: 'model',
     description: '管理大语言模型提供商与参数',
+    adminOnly: true,
   },
   {
     path: '/admin/skills',
     label: 'Skill 技能',
     icon: 'skill',
     description: '控制各模式可用技能开关',
+    adminOnly: true,
   },
   {
     path: '/admin/mcp',
     label: 'MCP 服务',
     icon: 'mcp',
     description: 'Model Context Protocol 服务器',
+    adminOnly: true,
   },
   {
     path: '/admin/knowledge',
@@ -56,6 +63,12 @@ const menuItems: MenuConfig[] = [
 
 /* 当前激活的菜单项 */
 const activeMenu = computed(() => route.path)
+
+/* 可见菜单项：仅管理员页签对非管理员隐藏，
+ * 与后端权限保持一致（知识库 / 定时任务对全员开放）。 */
+const visibleMenuItems = computed(() =>
+  auth.isAdmin ? menuItems : menuItems.filter((item) => !item.adminOnly),
+)
 
 /* 导航跳转 */
 function navigateTo(path: string) {
@@ -93,7 +106,7 @@ function navigateTo(path: string) {
       <nav class="sidebar-nav">
         <div class="nav-section-label" v-show="!collapsed">系统配置</div>
         <button
-          v-for="item in menuItems"
+          v-for="item in visibleMenuItems"
           :key="item.path"
           class="nav-item"
           :class="{ active: activeMenu === item.path }"
