@@ -63,22 +63,43 @@ class TestClassifySQL:
 
     @pytest.mark.asyncio
     async def test_insert_is_dangerous(self):
-        """INSERT 语句应为危险"""
+        """INSERT 语句应为危险
+
+        安全红线「写必批」：正则层 deny-by-default 已足以判定危险，
+        断言必须是严格等于 dangerous —— 早期版本写成
+        `in ("safe", "dangerous")` 属恒真断言，无法拦截回归。
+        """
         result = await classify_sql("INSERT INTO orders VALUES (1, 'test')")
-        # 注意: 危险操作需要 LLM 二次确认，可能失败（无 LLM 环境）
-        assert result["category"] in ("safe", "dangerous")
+        assert result["category"] == "dangerous"
 
     @pytest.mark.asyncio
     async def test_delete_is_dangerous(self):
         """DELETE 语句应为危险"""
         result = await classify_sql("DELETE FROM orders WHERE id = 1")
-        assert result["category"] in ("safe", "dangerous")
+        assert result["category"] == "dangerous"
 
     @pytest.mark.asyncio
     async def test_show_is_safe(self):
         """SHOW 语句应为安全"""
         result = await classify_sql("SHOW TABLES")
         assert result["category"] == "safe"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "SELECT * FROM t; DROP TABLE users",          # 多语句注入
+            "GRANT ALL ON *.* TO 'hacker'@'%'",           # 权限变更
+            "EXEC xp_cmdshell('rm -rf /')",               # 命令执行
+            "SELECT * INTO newtable FROM old",            # SELECT INTO 写表
+            "UPDATE users SET role='admin'",              # 越权更新
+            "DROP TABLE users",                            # 结构变更
+        ],
+    )
+    async def test_dangerous_sql_variants(self, sql: str):
+        """各类写类/危险 SQL 必须被判定为 dangerous（含历史绕过样本）"""
+        result = await classify_sql(sql)
+        assert result["category"] == "dangerous", f"未拦截: {sql}"
 
 
 class TestRAGAgent:
