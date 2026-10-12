@@ -7,18 +7,15 @@
  * - 模式切换 + 联网搜索 集成在输入框组件中
  */
 import { ref, watch, nextTick, onMounted, onUnmounted, computed } from 'vue'
+import { BubbleList } from 'ant-design-x-vue'
 import { useChatStore, type ChatMessage, type Step } from '@/stores/chat'
-import { marked } from 'marked'
-import { format as formatSQLText } from 'sql-formatter'
 import apiClient from '@/api/client'
 import ChatSidebar from '@/components/ChatSidebar.vue'
 import ChatInput from '@/components/ChatInput.vue'
-import ClarifierCard from '@/components/ClarifierCard.vue'
-import ExecutionCard from '@/components/ExecutionCard.vue'
 import NodeSeparator from '@/components/NodeSeparator.vue'
-import ReasoningBlock from '@/components/ReasoningBlock.vue'
-import SubagentNode from '@/components/SubagentNode.vue'
 import TrajectoryView from '@/components/TrajectoryView.vue'
+import MessageRenderer from '@/components/chat/MessageRenderer.vue'
+import StepChain from '@/components/chat/StepChain.vue'
 
 const store = useChatStore()
 
@@ -187,226 +184,71 @@ function toggleTrajectory() {
   }
 }
 
-/* 消息反馈（阶段3 A5）—— 本地点赞/点踩，可扩展为落库 */
-const feedbackMap = ref<Record<string, string>>({})
-
-function setFeedback(msgId: string, kind: 'good' | 'bad') {
-  feedbackMap.value[msgId] = feedbackMap.value[msgId] === kind ? '' : kind
-}
-
-/* 复制 SQL */
-async function copySQL(sql: string) {
-  try {
-    await navigator.clipboard.writeText(sql)
-  } catch {
-    const textarea = document.createElement('textarea')
-    textarea.value = sql
-    document.body.appendChild(textarea)
-    textarea.select()
-    document.execCommand('copy')
-    document.body.removeChild(textarea)
-  }
-}
-
-/* Markdown 渲染（安全模式：禁止 raw HTML） */
-marked.setOptions({ breaks: true, gfm: true })
-function renderMarkdown(text: string): string {
-  if (!text) return ''
-  return marked.parse(text) as string
-}
-
-/* SQL 格式化 */
-function formatSQL(sql: string): string {
-  if (!sql) return ''
-  try {
-    return formatSQLText(sql, { language: 'mysql', tabWidth: 2 })
-  } catch {
-    return sql // 格式化失败时返回原始 SQL
-  }
-}
-
-/* 折叠切换 */
-function toggleCollapse(msg: ChatMessage) {
-  msg.collapsed = !msg.collapsed
-}
-
-/* 消息 CSS 类 */
-function messageClass(msg: ChatMessage): Record<string, boolean> {
-  return {
-    'message-user': msg.role === 'user',
-    'message-status': msg.type === 'status',
-    'message-error': msg.type === 'error',
-    'message-assistant': msg.role === 'assistant' && msg.type !== 'error',
-    'message-system-card': msg.type === 'reasoning' || msg.type === 'thinking' || msg.type === 'tool_call' || msg.type === 'tool_result' || msg.type === 'tool_chain' || msg.type === 'clarification' || msg.type === 'plan',
-  }
-}
-
-/* tool 信息（对齐 Harness 单行折叠：统一图标，无「调用:/完成:」前缀，避免实时流视觉跳变） */
-function toolInfo(msg: ChatMessage): { label: string; icon: string } {
-  switch (msg.type) {
-    case 'thinking': return { label: `${msg.agent || ''} — ${msg.phase || '思考中'}`, icon: '💭' }
-    case 'tool_call':
-    case 'tool_result':
-    case 'tool_chain': return { label: `${msg.toolName || '工具'}`, icon: '🔧' }
-    default: return { label: '', icon: '📋' }
-  }
-}
-
-/* 工具单行摘要（对齐 Harness：优先显示结果/状态/输入，保持一行） */
-function formatToolMeta(meta?: Record<string, unknown>): string {
-  if (!meta) return ''
-  const pick = (k: string): string => {
-    const v = meta[k]
-    if (v === undefined || v === null || v === '') return ''
-    const s = typeof v === 'string' ? v : JSON.stringify(v)
-    return s.length > 60 ? s.slice(0, 60) + '…' : s
-  }
-  return pick('result') || pick('status') || pick('input') || pick('info') || ''
-}
-
-/* 将任意值安全序列化为可读文本（对象用 JSON.stringify，杜绝 [object Object]） */
-function stringifyValue(v: unknown, maxLen = 500): string {
-  if (v === undefined || v === null) return ''
-  if (typeof v === 'string') return v.slice(0, maxLen)
-  if (typeof v === 'number' || typeof v === 'boolean') return String(v)
-  try {
-    const s = JSON.stringify(v, null, 2)
-    return (s ?? '').slice(0, maxLen)
-  } catch {
-    return String(v).slice(0, maxLen)
-  }
-}
-
-/* 工具卡片展开内容（对齐 Harness：统一遍历 toolMeta 全部字段，杜绝字段丢失/展开为空） */
-function toolExpandContent(msg: ChatMessage): string {
-  const meta = msg.toolMeta || {}
-
-  // 无 toolMeta 但可从关联消息推导摘要的特例（execute_sql / sql_coder / analyst）
-  if (Object.keys(meta).length === 0) {
-    if (msg.toolName === 'execute_sql') {
-      const lastResult = [...store.messages].reverse().find(m => m.type === 'result')
-      if (lastResult?.data) return `返回 ${lastResult.data.length} 条记录`
-    }
-    if (msg.toolName === 'sql_coder') {
-      const lastSQL = [...store.messages].reverse().find(m => m.type === 'sql')
-      if (lastSQL?.sql) return `SQL 查询已生成`
-    }
-    if (msg.toolName === 'analyst') {
-      const lastAnalysis = [...store.messages].reverse().find(m => m.role === 'assistant' && m.type === 'text')
-      if (lastAnalysis?.content) return `分析结果:\n${String(lastAnalysis.content).slice(0, 500)}`
-    }
-  }
-
-  // 统一遍历所有字段，友好显示字段名
-  const labelMap: Record<string, string> = {
-    input: '输入', result: '结果', status: '状态', info: '说明',
-    sql: 'SQL', args: '参数', agent: '代理', phase: '阶段',
-    chart_type: '图表类型', row_count: '返回行数',
-  }
-  const parts: string[] = []
-  for (const [k, v] of Object.entries(meta)) {
-    if (v === undefined || v === null || v === '') continue
-    const label = labelMap[k] || k
-    parts.push(`${label}:\n${stringifyValue(v)}`)
-  }
-  return parts.join('\n\n')
-}
-
-/* Clarifier 追问 */
-function selectClarifyOption(option: string) {
-  store.sendMessage(option)
-}
-
-/* ECharts 配置 */
-function getEChartsOption(msg: ChatMessage): Record<string, unknown> | null {
-  const chartCfg = msg.chartConfig
-  if (!chartCfg) return null
-  const config = (chartCfg as Record<string, unknown>).echarts_config as Record<string, unknown> || chartCfg
-  return injectDarkTheme(config)
-}
-
-function injectDarkTheme(config: Record<string, unknown>): Record<string, unknown> {
-  const result = { ...config }
-  if (!result.textStyle) result.textStyle = { color: '#a1a1aa' }
-  if (result.legend && typeof result.legend === 'object') {
-    const legend = result.legend as Record<string, unknown>
-    if (!legend.textStyle) legend.textStyle = { color: '#a1a1aa' }
-  }
-  if (result.xAxis && typeof result.xAxis === 'object') {
-    const xAxis = result.xAxis as Record<string, unknown>
-    if (!xAxis.axisLabel) xAxis.axisLabel = { color: '#a1a1aa' }
-  }
-  if (result.yAxis && typeof result.yAxis === 'object') {
-    const yAxis = result.yAxis as Record<string, unknown>
-    if (!yAxis.axisLabel) yAxis.axisLabel = { color: '#a1a1aa' }
-  }
-  if (!result.backgroundColor) result.backgroundColor = 'transparent'
-  return result
-}
-
 /* 任务清单进度 */
 const tasksCompletedCount = computed(() => store.tasks.filter(t => t.status === 'completed').length)
 
-/* 追问建议 */
-const followUpSuggestions = computed(() => {
-  const lastAssistant = [...store.messages].reverse().find(m => m.role === 'assistant' && m.type === 'text')
-  if (!lastAssistant || store.isLoading) return []
-  const hasResult = store.messages.some(m => m.type === 'result')
-  const hasChart = store.messages.some(m => m.type === 'chart')
-  const suggestions: string[] = []
-  if (hasResult) suggestions.push('导出数据', '深入分析')
-  if (hasChart) suggestions.push('换一种图表')
-  suggestions.push('换个角度分析')
-  return suggestions.slice(0, 3)
-})
-
-/* ── 步骤分组渲染（阶段二 2.2）──
- * renderMessages：将每个步骤的连续消息区段按「thinking → tool → 正文」固定类型序
- * 稳定排序后输出，不再依赖到达顺序；无 stepId 的消息（旧会话回放等）原样平铺不丢失。
- * stepHeaderBefore：消息为其步骤在渲染序列中的第一条时返回 Step 元数据（渲染步骤头）。 */
-
-/* 组内类型排序权重：思考类 0 < 工具类 1 < 其他（正文/SQL/结果/图表）2 */
-const STEP_TYPE_RANK: Record<string, number> = {
-  reasoning: 0,
-  thinking: 0,
-  tool_call: 1,
-  tool_chain: 1,
-  tool_result: 1,
+/* ── 渲染块编排（重构 R1）：Bubble.List 数据源 ──
+ * store.messages → 渲染块序列：
+ *   - user 消息 → 用户气泡
+ *   - 有 stepId 且存在 Step 元数据的连续区段 → StepChain（组内固定类型序在 StepChain 内完成）
+ *   - 其余（旧会话回放/系统级事件）→ 平铺消息
+ * 轮次分隔线随块携带（基于首条消息的原始索引判定）。 */
+interface RenderBlock {
+  key: string
+  role: 'user' | 'ai'
+  msg?: ChatMessage
+  step?: Step
+  messages?: ChatMessage[]
+  sep: { turnIndex: number; title: string } | null
 }
 
-const renderMessages = computed<ChatMessage[]>(() => {
-  const out: ChatMessage[] = []
+const renderBlocks = computed<RenderBlock[]>(() => {
+  const blocks: RenderBlock[] = []
   const msgs = store.messages
   let i = 0
   while (i < msgs.length) {
-    const sid = msgs[i].stepId || 0
-    if (!sid || !store.steps.has(sid)) {
-      out.push(msgs[i])
+    const msg = msgs[i]
+    const sid = msg.stepId || 0
+    const step = sid ? store.steps.get(sid) : undefined
+    if (msg.role === 'user' || !step) {
+      const sep = hasSeparatorBefore(i)
+      blocks.push({
+        key: msg.id,
+        role: msg.role === 'user' ? 'user' : 'ai',
+        msg,
+        sep: sep ? { turnIndex: sep.turnIndex, title: sep.title } : null,
+      })
       i++
       continue
     }
-    // 收集该步骤的连续区段，按固定类型序稳定排序（同类型保持到达顺序）
+    // 收集该步骤的连续区段（组内排序在 StepChain 内完成）
     let j = i
     const seg: ChatMessage[] = []
     while (j < msgs.length && (msgs[j].stepId || 0) === sid) {
       seg.push(msgs[j])
       j++
     }
-    seg.sort((a, b) => (STEP_TYPE_RANK[a.type || ''] ?? 2) - (STEP_TYPE_RANK[b.type || ''] ?? 2))
-    out.push(...seg)
+    const sep = hasSeparatorBefore(i)
+    blocks.push({
+      key: `step-${sid}`,
+      role: 'ai',
+      step,
+      messages: seg,
+      sep: sep ? { turnIndex: sep.turnIndex, title: sep.title } : null,
+    })
     i = j
   }
-  return out
+  return blocks
 })
 
-/* 步骤组标题：该消息是其步骤在渲染序列中的第一条时返回 Step 元数据 */
-function stepHeaderBefore(index: number): Step | null {
-  const msgs = renderMessages.value
-  const sid = msgs[index]?.stepId || 0
-  if (!sid) return null
-  const prev = index > 0 ? msgs[index - 1] : undefined
-  if (prev && (prev.stepId || 0) === sid) return null
-  return store.steps.get(sid) || null
+/* Bubble.List items（块对象整体透传给 #message 插槽） */
+const bubbleItems = computed(() =>
+  renderBlocks.value.map(b => ({ key: b.key, role: b.role, block: b })),
+)
+
+const roles = {
+  ai: { placement: 'start' as const },
+  user: { placement: 'end' as const },
 }
 
 /* 检查当前消息是否是新轮次的起始（用于插入分隔线） */
@@ -679,245 +521,18 @@ function scrollToNode(nodeIndex: number) {
           </div>
         </div>
 
-        <!-- 消息列表（含节点分隔线；阶段二 2.2：步骤分组 + 组内固定类型序） -->
-        <template v-for="(msg, msgIndex) in renderMessages" :key="msg.id">
-          <!-- 步骤组标题（带运行中/完成状态，位于每步骤首条消息之前） -->
-          <div v-if="stepHeaderBefore(msgIndex)" class="step-group-header">
-            <span class="step-group-index">步骤 {{ stepHeaderBefore(msgIndex)!.id }}</span>
-            <span class="step-group-label">{{ stepHeaderBefore(msgIndex)!.label }}</span>
-            <span class="step-group-status" :class="stepHeaderBefore(msgIndex)!.status">
-              {{ stepHeaderBefore(msgIndex)!.status === 'running' ? '运行中' : '已完成' }}
-            </span>
-          </div>
-          <!-- 多轮对话节点分隔线 -->
-          <NodeSeparator
-            v-if="hasSeparatorBefore(msgIndex)"
-            :index="hasSeparatorBefore(msgIndex)!.turnIndex"
-            :title="hasSeparatorBefore(msgIndex)!.title"
-          />
-          <div
-            class="message-item"
-            :class="messageClass(msg)"
-          >
-          <!-- 用户消息 -->
-          <template v-if="msg.role === 'user' && msg.type === 'text'">
-            <div class="message-bubble message-bubble--user">{{ msg.content }}</div>
+        <!-- 消息列表（Bubble.List；块内：轮次分隔线 / 气泡 / 步骤链；渲染逻辑在 MessageRenderer/StepChain） -->
+        <BubbleList class="msg-bubble-list" :items="bubbleItems" :roles="roles" auto-scroll>
+          <template #message="{ item }">
+            <NodeSeparator
+              v-if="item.block.sep"
+              :index="item.block.sep.turnIndex"
+              :title="item.block.sep.title"
+            />
+            <MessageRenderer v-if="item.block.msg" :msg="item.block.msg" />
+            <StepChain v-else-if="item.block.step" :step="item.block.step" :messages="item.block.messages || []" />
           </template>
-
-          <!-- 状态消息 -->
-          <template v-else-if="msg.type === 'status'">
-            <div class="message-status-text">
-              <span class="status-dot"></span>{{ msg.content }}
-            </div>
-          </template>
-
-          <!-- SQL -->
-          <template v-else-if="msg.type === 'sql'">
-            <div class="message-sql">
-              <div class="sql-header">
-                <div class="sql-label">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
-                  </svg>
-                  SQL 查询
-                </div>
-                <button class="sql-copy-btn" @click="copySQL(msg.sql || '')">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
-                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-                  </svg>
-                  复制
-                </button>
-              </div>
-              <pre class="sql-code"><code>{{ formatSQL(msg.sql || '') }}</code></pre>
-            </div>
-          </template>
-
-          <!-- 查询结果 -->
-          <template v-else-if="msg.type === 'result'">
-            <div class="message-result">
-              <div class="result-header">
-                <div class="result-label">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
-                    <line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/>
-                    <line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/>
-                  </svg>
-                  查询结果
-                </div>
-                <div class="result-actions">
-                  <span class="result-count" v-if="msg.data">{{ msg.data.length }} 条记录</span>
-                  <button v-if="msg.data?.length && msg.columns?.length" class="export-btn"
-                    @click="store.exportData(msg.data!, msg.columns!, 'csv')">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                      <polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
-                    </svg>
-                    CSV
-                  </button>
-                  <button v-if="msg.data?.length && msg.columns?.length" class="export-btn export-btn--excel"
-                    @click="store.exportData(msg.data!, msg.columns!, 'excel')">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                      <polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
-                    </svg>
-                    Excel
-                  </button>
-                </div>
-              </div>
-              <div class="result-table-wrapper">
-                <el-table
-                  :data="msg.data || []" border stripe size="small" max-height="360" style="width: 100%"
-                  :header-cell-style="{ background: '#27272a', color: '#fafafa', borderColor: '#3f3f46' }"
-                  :cell-style="{ background: '#18181b', color: '#a1a1aa', borderColor: '#3f3f46' }"
-                >
-                  <el-table-column
-                    v-for="col in msg.columns" :key="col" :prop="col" :label="col"
-                    min-width="120" show-overflow-tooltip
-                  />
-                </el-table>
-              </div>
-            </div>
-          </template>
-
-          <!-- 图表 -->
-          <template v-else-if="msg.type === 'chart'">
-            <div class="message-chart">
-              <div class="chart-header">
-                <div class="chart-label">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-                  </svg>
-                  {{ (msg.chartConfig as Record<string, unknown>)?.chart_title || '数据可视化' }}
-                </div>
-                <span class="chart-type-tag" v-if="(msg.chartConfig as Record<string, unknown>)?.chart_type">
-                  {{ (msg.chartConfig as Record<string, unknown>)?.chart_type }}
-                </span>
-              </div>
-              <div class="chart-container">
-                <VChart v-if="getEChartsOption(msg)" :option="getEChartsOption(msg)!" autoresize
-                  style="height: 360px; width: 100%"
-                />
-                <div v-else class="chart-empty">
-                  <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.4">
-                    <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-                  </svg>
-                  <span>图表配置为空</span>
-                </div>
-              </div>
-            </div>
-          </template>
-
-          <!-- 错误 -->
-          <template v-else-if="msg.type === 'error'">
-            <div class="message-error-row">
-              <div class="message-error-text">
-                <span class="error-icon">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
-                  </svg>
-                </span>
-                {{ msg.content }}
-                <span v-if="msg.errorCode" class="error-code">[{{ msg.errorCode }}]</span>
-              </div>
-              <button v-if="msg.recoverable !== false" class="retry-btn" :disabled="store.isLoading"
-                @click="store.retryLastMessage()">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <polyline points="1 4 1 10 7 10"/><polyline points="23 20 23 14 17 14"/>
-                  <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/>
-                </svg>
-                重试
-              </button>
-            </div>
-          </template>
-
-          <!-- 深度思考卡片（Phase 4：模型 reasoning 内容，与正文类型化隔离） -->
-          <template v-else-if="msg.type === 'reasoning'">
-            <ReasoningBlock :msg="msg" />
-          </template>
-
-          <!-- 思考卡片（优化的 DeepSeek 风格） -->
-          <template v-else-if="msg.type === 'thinking'">
-            <div class="thinking-card" @click="toggleCollapse(msg)">
-              <div class="thinking-header">
-                <span class="thinking-icon">
-                  <svg v-if="msg.collapsed" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
-                  </svg>
-                  <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="20 6 9 17 4 12"/>
-                  </svg>
-                </span>
-                <span class="thinking-label">{{ msg.agent }}</span>
-                <span class="thinking-phase">{{ msg.phase }}</span>
-                <svg class="thinking-chevron" :class="{ 'is-open': !msg.collapsed }"
-                  width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <polyline points="6 9 12 15 18 9"/>
-                </svg>
-              </div>
-              <div v-if="!msg.collapsed && msg.content" class="thinking-body">{{ msg.content }}</div>
-            </div>
-          </template>
-
-          <!-- 子代理执行节点（阶段4 B4） -->
-          <SubagentNode v-else-if="msg.type === 'tool_result' && msg.toolName === 'subagent'" :msg="msg" />
-
-          <!-- 工具卡片（可展开查看详情） -->
-          <template v-else-if="(msg.type === 'tool_call' || msg.type === 'tool_result' || msg.type === 'tool_chain') && msg.toolName !== 'subagent'">
-            <div class="tool-card" :class="msg.type" @click="toggleCollapse(msg)">
-              <div class="tool-header">
-                <span class="tool-icon">{{ toolInfo(msg).icon }}</span>
-                <span class="tool-label">{{ toolInfo(msg).label }}</span>
-                <span v-if="formatToolMeta(msg.toolMeta)" class="tool-meta">{{ formatToolMeta(msg.toolMeta) }}</span>
-                <svg class="tool-chevron" :class="{ 'is-open': !msg.collapsed }"
-                  width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <polyline points="6 9 12 15 18 9"/>
-                </svg>
-              </div>
-              <div v-if="!msg.collapsed && toolExpandContent(msg)" class="tool-body">
-                {{ toolExpandContent(msg) }}
-              </div>
-            </div>
-          </template>
-
-          <!-- Clarifier 追问卡片 -->
-          <template v-else-if="msg.type === 'clarification'">
-            <ClarifierCard :msg="msg" @select="selectClarifyOption" />
-          </template>
-
-          <!-- Planner 执行计划 -->
-          <template v-else-if="msg.type === 'plan'">
-            <ExecutionCard :msg="msg" />
-          </template>
-
-          <!-- 助手文本（Markdown 渲染 + 流式光标） -->
-          <template v-else-if="msg.role === 'assistant'">
-            <div
-              class="message-bubble message-bubble--assistant markdown-body"
-              :class="{ 'is-streaming': store.isLoading && msg.id === store.lastAssistantMsgId }"
-              v-html="renderMarkdown(msg.content || '')"
-            ></div>
-            <!-- 消息反馈（阶段3 A5） -->
-            <div class="msg-feedback">
-              <button class="fb-btn" :class="{ 'is-active': feedbackMap[msg.id] === 'good' }" title="好的回答" @click="setFeedback(msg.id, 'good')">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/></svg>
-              </button>
-              <button class="fb-btn" :class="{ 'is-active': feedbackMap[msg.id] === 'bad' }" title="有问题的回答" @click="setFeedback(msg.id, 'bad')">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zM17 2h3a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-3"/></svg>
-              </button>
-            </div>
-          </template>
-
-          <!-- 追问建议 -->
-          <template v-if="msg.role === 'assistant' && msg.type === 'text' && !store.isLoading && followUpSuggestions.length">
-            <div class="followup-bar">
-              <span class="followup-label">追问：</span>
-              <button v-for="sug in followUpSuggestions" :key="sug" class="followup-chip"
-                @click="handleSend(sug)">{{ sug }}</button>
-            </div>
-          </template>
-        </div>
-        </template>
+        </BubbleList>
 
         <!-- 轨迹面板（阶段4 B2，浮动） -->
         <Transition name="traj-panel">
