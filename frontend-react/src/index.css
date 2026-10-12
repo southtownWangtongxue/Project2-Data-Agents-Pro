@@ -1,0 +1,87 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ========== 碳黑驾驶舱 + 紫磷光 设计令牌 ========== */
+:root {
+  --cockpit-900: #0D0D0F;
+  --cockpit-800: #18181B;
+  --cockpit-700: #1F1F23;
+  --cockpit-600: #27272A;
+  --brand: #7056F8;
+  --brand-light: #8B6FFF;
+  --success: #10B981;
+  --warning: #F59E0B;
+  --danger: #EF4444;
+  --text-1: #FAFAFA;
+  --text-2: #A1A1AA;
+  --text-3: #71717A;
+  --border: rgba(255, 255, 255, 0.08);
+  --font-mono: 'DIN Next', 'JetBrains Mono', SFMono-Regular, Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background: var(--cockpit-900);
+  color: var(--text-1);
+  font-family: 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+/* 滚动条 —— 驾驶舱细条 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--cockpit-600);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 数据读数统一等宽 */
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 步骤状态脉冲(紫磷光) */
+@keyframes brand-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(0.8);
+  }
+}
+.brand-pulse {
+  animation: brand-pulse 1.4s ease-in-out infinite;
+}
+
+/* 入场:欢迎页 staggered reveal */
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.rise-in {
+  animation: rise-in 0.35s ease-out both;
+}
