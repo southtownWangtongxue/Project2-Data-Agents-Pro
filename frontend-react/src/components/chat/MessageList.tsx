@@ -10,13 +10,9 @@
 import { useMemo } from 'react'
 import { Bubble } from '@ant-design/x'
 import { useChatStore } from '@/stores/chat'
-import type { Msg, Step } from '@/sdk/protocol'
+import { buildBlocks } from '@/sdk/blocks'
 import MessageItem from './MessageItem'
 import StepChain from './StepChain'
-
-type Block =
-  | { kind: 'msg'; key: string; role: 'user' | 'ai'; msg: Msg }
-  | { kind: 'step'; key: string; role: 'ai'; step: Step; messages: Msg[] }
 
 const roleConfig = {
   ai: { variant: 'borderless' as const, placement: 'start' as const },
@@ -27,29 +23,8 @@ export default function MessageList() {
   const store = useChatStore()
   const { messages, steps } = store.chat
 
-  const blocks = useMemo<Block[]>(() => {
-    const out: Block[] = []
-    let i = 0
-    while (i < messages.length) {
-      const msg = messages[i]
-      const sid = msg.stepId || 0
-      const step = sid ? steps.get(sid) : undefined
-      if (msg.role === 'user' || !step) {
-        out.push({ kind: 'msg', key: msg.id, role: msg.role === 'user' ? 'user' : 'ai', msg })
-        i++
-        continue
-      }
-      let j = i
-      const seg: Msg[] = []
-      while (j < messages.length && (messages[j].stepId || 0) === sid) {
-        seg.push(messages[j])
-        j++
-      }
-      out.push({ kind: 'step', key: `step-${sid}`, role: 'ai', step, messages: seg })
-      i = j
-    }
-    return out
-  }, [messages, steps])
+  /* 渲染块编排:同 stepId 全局聚合(并行节点交错不拆步骤头),见 sdk/blocks.ts 单测 */
+  const blocks = useMemo(() => buildBlocks(messages, steps), [messages, steps])
 
   const items = blocks.map(b =>
     b.kind === 'step'
