@@ -10,6 +10,7 @@ import json
 from app.core.config import settings
 from app.core.llm import get_model_name
 from app.core.llm import get_llm
+from app.core.reasoning import extract_reasoning
 from app.core.stream import get_stream_context
 from app.utils.log_utils import log
 
@@ -17,20 +18,16 @@ from app.utils.log_utils import log
 
 
 async def _push_reasoning_increment(ctx, chunk) -> None:
-    """提取思考模型的 reasoning_content 增量并推送为 reasoning 事件。
+    """提取思考模型的推理增量并推送为 reasoning 事件。
 
-    兼容两种取法（与 chat.py DeepAgent 路径一致）：
+    兼容两种取法(与 chat.py DeepAgent 路径一致):
     - Qwen/DashScope OpenAI 兼容模式：delta.additional_kwargs["reasoning_content"]
-    - 部分实现直接暴露 delta.reasoning_content 属性
+    - OpenRouter 等：delta.reasoning(SDK extra 字段)
 
     只推 reasoning_content，不推 content（content 是内部 JSON，不可见）。
-    非思考模型无 reasoning_content，保持静默（不做假流式）。
+    非思考模型无推理字段，保持静默（不做假流式）。
     """
-    if not (chunk.choices and ctx.queue):
-        return
-    delta = chunk.choices[0].delta
-    add_kwargs = getattr(delta, "additional_kwargs", None) or {}
-    reasoning = add_kwargs.get("reasoning_content", "") or getattr(delta, "reasoning_content", "") or ""
+    reasoning = extract_reasoning(chunk)
     if reasoning:
         await ctx.push({"type": "reasoning", "content": reasoning, "agent": "clarify_plan"})
 

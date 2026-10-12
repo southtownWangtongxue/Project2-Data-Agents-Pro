@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from app.core.config import settings
 from app.core.llm import get_model_name
 from app.core.llm import get_llm
+from app.core.reasoning import extract_reasoning
 from app.core.stream import get_stream_context
 
 
@@ -60,6 +61,10 @@ async def generate_sql(
     ctx = get_stream_context()
     content_chunks = []
     async for chunk in response:
+        # 思考增量优先推送(兼容 OpenRouter reasoning / Qwen reasoning_content)
+        reasoning = extract_reasoning(chunk)
+        if reasoning and ctx.queue:
+            await ctx.push({"type": "reasoning", "content": reasoning, "agent": "sql_coder"})
         if chunk.choices and chunk.choices[0].delta.content:
             token = chunk.choices[0].delta.content
             content_chunks.append(token)
