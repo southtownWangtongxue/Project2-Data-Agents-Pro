@@ -57,6 +57,8 @@ export interface SSEEvent {
   reason?: string
   node_index?: number
   feedback?: string
+  /* status 事件附带:审批被拒/超时后打戳前端审批卡(协议只增) */
+  approval_state?: string
 }
 
 /* 领域消息类型(store 中的消息,stepId 为分组键) */

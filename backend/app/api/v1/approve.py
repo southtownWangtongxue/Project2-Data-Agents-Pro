@@ -102,6 +102,20 @@ async def approve_task(
         )
         raise HTTPException(status_code=403, detail="高危操作审批仅允许管理员执行")
 
+    # ── HITL 流内等待优先 ──
+    # 存在活跃的 SSE 审批等待时,仅送达决策(由该流自行 Command(resume) 恢复并续流,
+    # 续流事件直接进入原对话);无活跃流(旧调用方/页面已关闭)时回退直连恢复兜底。
+    from app.core import hitl
+    decision = {"approved": body.action == "approve", "comment": body.comment or ""}
+    if hitl.resolve(body.task_id, decision):
+        logger.info("[Approve] 已通知活跃 SSE 流恢复: task=%s action=%s approver=%s",
+                    body.task_id, body.action, user.get("user_name"))
+        await _audit_approval(
+            task_id=thread_id, owner_user=owner, action=body.action,
+            comment=body.comment, approver_user=str(user.get("user_name") or ""),
+        )
+        return {"status": "notified", "task_id": body.task_id}
+
     graph = get_graph()
     config = {"configurable": {"thread_id": body.task_id}}
 

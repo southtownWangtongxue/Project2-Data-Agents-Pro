@@ -307,7 +307,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       try {
         await api('/chat/approve', {
           method: 'POST',
-          body: { task_id: msg.approval.threadId, approved: state === 'approved', comment },
+          body: { task_id: msg.approval.threadId, action: state === 'approved' ? 'approve' : 'reject', comment },
         })
         set(s => ({ chat: resolveApproval(s.chat, msgId, state, comment) }))
       } catch (e) {

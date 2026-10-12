@@ -16,7 +16,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from langgraph.errors import GraphInterrupt, GraphRecursionError
+from langgraph.types import Command
 
+from app.core import hitl
 from app.api.deps import get_current_user
 from app.graph.workflow import get_graph, get_graph_async, use_deep_agent, get_deep_agent
 from app.core.config_manager import get_config_manager
@@ -119,6 +121,17 @@ class ChatRequest(BaseModel):
 # ================================================================
 
 import asyncio as _asyncio
+
+def _extract_interrupt_data(evt) -> dict:
+    """从 updates 模式的 __interrupt__ 节点事件中提取审批载荷(sql/reason)。"""
+    raw = evt.get("__interrupt__", evt) if isinstance(evt, dict) else evt
+    if isinstance(raw, (list, tuple)):
+        raw = raw[0] if raw else None
+    payload = getattr(raw, "value", raw)
+    if not isinstance(payload, dict):
+        payload = {"reason": str(payload or "")}
+    return payload
+
 
 def _sse_event(data: dict) -> str:
     """
@@ -383,19 +396,59 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
             try:
                 logger.info("[SSE-GRAPH] graph.astream() 开始")
                 event_count = 0
+                resume_cmd = None
+                # 第一段:初始运行(可能在 security 节点因高危 SQL 中断等待审批)
                 async for evt in graph.astream(initial_state, config, stream_mode="updates"):
                     event_count += 1
                     logger.info(f"[SSE-GRAPH] 收到图事件 #{event_count} keys: {list(evt.keys())}")
+                    if isinstance(evt, dict) and "__interrupt__" in evt:
+                        # ── HITL 流内等待(对话内审批)──
+                        # updates 模式下中断以 __interrupt__ 节点事件投递:
+                        # 通知主循环发 approval_required(流保持打开),流内等待决策,
+                        # 通过后 Command(resume) 恢复并续流,拒绝则终止。
+                        interrupt_data = _extract_interrupt_data(evt)
+                        logger.info("[SSE-GRAPH] 审批中断,流内等待决策(≤300s): %s", str(interrupt_data)[:120])
+                        await stream_queue.put(("approval", interrupt_data))
+                        decision = await hitl.wait_for(session_thread_id, timeout=300)
+                        if decision is None:
+                            decision = {"approved": False, "comment": "审批超时（5 分钟），自动拒绝"}
+                        if decision.get("approved"):
+                            logger.info("[SSE-GRAPH] 审批通过,恢复图执行")
+                            resume_cmd = Command(resume=decision)
+                            break
+                        logger.info("[SSE-GRAPH] 审批拒绝,终止流程")
+                        await stream_queue.put(("rejected", decision))
+                        return
                     # 节点内 push 的 token 已先于本事件入队，直接入队即可保序
                     await stream_queue.put(("node", evt))
+                # 恢复段:审批通过后从断点继续执行(事件经同一主循环处理)
+                if resume_cmd is not None:
+                    async for evt in graph.astream(resume_cmd, config, stream_mode="updates"):
+                        event_count += 1
+                        await stream_queue.put(("node", evt))
                 logger.info(f"[SSE-GRAPH] graph.astream() 完成, 共 {event_count} 个事件")
             except GraphInterrupt as gi:
-                # LangGraph human-in-the-loop 中断
-                await stream_queue.put(("interrupt", gi))
+                # 异常路径兜底(中断以异常抛出时同样走流内等待)
+                interrupt_data = _extract_interrupt_data(gi.args[0] if gi.args else {})
+                await stream_queue.put(("approval", interrupt_data))
+                decision = await hitl.wait_for(session_thread_id, timeout=300)
+                if decision is None:
+                    decision = {"approved": False, "comment": "审批超时（5 分钟），自动拒绝"}
+                if decision.get("approved"):
+                    try:
+                        async for evt in graph.astream(Command(resume=decision), config, stream_mode="updates"):
+                            await stream_queue.put(("node", evt))
+                    except Exception as exc:
+                        logger.exception("[SSE] 审批恢复执行异常")
+                        await stream_queue.put(("error", exc))
+                else:
+                    await stream_queue.put(("rejected", decision))
             except Exception as exc:
                 logger.exception("[SSE] Graph 流式执行异常")
                 await stream_queue.put(("error", exc))
-            await stream_queue.put(("done", None))
+            finally:
+                hitl.cancel(session_thread_id)
+                await stream_queue.put(("done", None))
 
         graph_task = _asyncio.create_task(_forward_graph())
 
@@ -433,9 +486,9 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                 )
                 break
 
-            if source == "interrupt":
-                gi = data
-                interrupt_data = gi.args[0] if gi.args else {}
+            if source == "approval":
+                # ── HITL:审批卡下发,流保持打开(等待期间由 15s 心跳维持连接)──
+                interrupt_data = data if isinstance(data, dict) else {}
                 yield _sse_event({
                     "type": "approval_required",
                     "thread_id": session_thread_id,
@@ -443,7 +496,16 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                     "sql": interrupt_data.get("sql", "") if isinstance(interrupt_data, dict) else "",
                     "reason": interrupt_data.get("reason", "") if isinstance(interrupt_data, dict) else "",
                 })
-                break
+                continue
+
+            if source == "rejected":
+                decision = data if isinstance(data, dict) else {}
+                yield _sse_event({
+                    "type": "status",
+                    "content": f"该高危操作已被拒绝，流程终止（{decision.get('comment') or '无审批意见'}）",
+                    "approval_state": "rejected",
+                })
+                continue
 
             if source == "token":
                 # 节点内推送的预组表事件（token/reasoning/node_started 等），直接产出
@@ -733,35 +795,9 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                         logger.info(f"[SSE] RAG 检索结果: {text[:80]}")
                         await _track(EventType.ANALYSIS, role="assistant", content=text)
 
-                # ── __interrupt__: 高危 SQL 人工审批中断（Human-in-the-Loop）──
-                # LangGraph 在 stream_mode="updates" 下把中断作为「__interrupt__ 节点事件」
-                # 投递，而非抛 GraphInterrupt 异常。此前未处理该分支，导致写类 SQL 被
-                # 拦截后 SSE 静默结束：前端既收不到 approval_required 也收不到 done，
-                # 「改数据必批」红线在链路上不可达。
-                elif node_name == "__interrupt__":
-                    _raw = (
-                        state_update.get("__interrupt__", state_update)
-                        if isinstance(state_update, dict) else state_update
-                    )
-                    if isinstance(_raw, (list, tuple)):
-                        _raw = _raw[0] if _raw else None
-                    _payload = getattr(_raw, "value", _raw)
-                    if not isinstance(_payload, dict):
-                        _payload = {"reason": str(_payload or "")}
-                    _apv_sql = _payload.get("sql", "") or ""
-                    _apv_reason = (
-                        _payload.get("reason", "")
-                        or _payload.get("message", "")
-                        or "检测到高危 SQL 操作（非只读），需要管理员审批"
-                    )
-                    logger.info("[SSE] 检测到审批中断: sql=%s", str(_apv_sql)[:120])
-                    yield _sse_event({
-                        "type": "approval_required",
-                        "thread_id": session_thread_id,
-                        "question": question,
-                        "sql": _apv_sql,
-                        "reason": _apv_reason,
-                    })
+                # ── __interrupt__: 高危 SQL 审批中断 ──
+                # 已迁移至 _forward_graph 拦截处理(HITL 流内等待 + Command(resume) 续流),
+                # 主循环不再见到 __interrupt__ 节点事件。
 
                 # ── finish: 工作流结束 ────────────────────
                 elif node_name == "finish":

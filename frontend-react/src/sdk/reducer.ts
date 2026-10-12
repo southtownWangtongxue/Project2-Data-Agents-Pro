@@ -77,6 +77,14 @@ export function applyEvent(prev: ChatState, ev: SSEEvent): ChatState {
 
     case E.STATUS: {
       s.messages.push({ id: msgId(), role: 'system', kind: 'status', content: ev.content || '' })
+      // 审批被拒/超时:打戳当前会话所有 pending 审批卡(协议只增字段 approval_state)
+      if (ev.approval_state === 'rejected') {
+        s.messages = s.messages.map(m =>
+          m.kind === 'approval' && m.approval?.state === 'pending' && m.approval.threadId === s.threadId
+            ? { ...m, approval: { ...m.approval, state: 'rejected', comment: '审批超时，自动拒绝' } }
+            : m,
+        )
+      }
       return s
     }
 
