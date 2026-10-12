@@ -31,7 +31,6 @@ async function loadPolicy() {
 
 async function changeTier(tier: string) {
   if (tier === policyTier.value) return
-  const meta = tierOptions.find(t => t.value === tier)
   try {
     // full_access 高危：UI 层二次确认弹窗（API 层还要求 confirm=true 双保险）
     if (tier === 'full_access') {

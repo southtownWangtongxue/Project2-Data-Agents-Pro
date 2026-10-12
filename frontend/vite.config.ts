@@ -14,7 +14,8 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        // 后端地址可经环境变量覆盖（如本机 8000 被系统服务占用时改用 8100）
+        target: `http://localhost:${process.env.BACKEND_PORT || 8000}`,
         changeOrigin: true,
       },
       '/docs': {

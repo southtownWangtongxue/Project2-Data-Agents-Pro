@@ -989,7 +989,9 @@ async def _stream_chat_deepagent(question: str, user_name: str, history: list[di
         # 事件溯源：落盘本轮完整回答文本为 analysis 事件
         if es_enabled and deep_full_text:
             await _track(EventType.ANALYSIS, role="assistant", content=deep_full_text)
-        # 先生成并推送标题，再发送 done
+        # done 先行：标题生成（1~3s LLM 调用）移出关键路径——若 title 在 done 之前
+        # 生成，前端 isLoading 会多转 1~3s 圈（阶段一 1.3 语义，合并时勿回退）
+        events.append({"type": "done"})
         try:
             node_title = await generate_node_title(question, collected_deep_text, provider)
             logger.info("[DeepAgent] 标题生成: %s", node_title)
@@ -1007,8 +1009,7 @@ async def _stream_chat_deepagent(question: str, user_name: str, history: list[di
                 "node_index": node_index,
             })
         except Exception as title_exc:
-            logger.warning("[DeepAgent] 标题/保存失败: %s", title_exc, exc_info=True)
-        events.append({"type": "done"})
+            logger.warning("[DeepAgent] 标题/保存失败（不影响已发出的 done）: %s", title_exc, exc_info=True)
         return events
 
     # 迭代保护（DEF：子 Agent 委派可能陷入「model → tools → subagent」死循环，
@@ -1169,30 +1170,6 @@ async def _stream_chat_deepagent(question: str, user_name: str, history: list[di
             logger.info("[DeepAgent SSE] astream 结束且未收到 __end__，兜底收尾: thread_id=%s", session_thread_id)
             for _ev in await _finalize_run():
                 yield _sse_event(_ev)
-                        # 事件溯源：落盘本轮完整回答文本为 analysis 事件
-                        if es_enabled and deep_full_text:
-                            await _track(EventType.ANALYSIS, role="assistant", content=deep_full_text)
-                        # done 先行：标题生成移出关键路径，前端 onDone 后已解锁输入，
-                        # title 为增量更新，done 后继续挂连接等待安全
-                        yield _sse_event({"type": "done"})
-                        try:
-                            node_title = await generate_node_title(question, collected_deep_text, provider)
-                            logger.info("[DeepAgent] 标题生成: %s", node_title)
-                            await _save_chat_node(session_thread_id, node_index, node_title, question, run_id)
-                            logger.info("[DeepAgent] 节点已保存: thread_id=%s node_index=%d",
-                                        session_thread_id, node_index)
-                            if node_index == 0:
-                                await _upsert_chat_session(session_thread_id, user_name, node_title)
-                                logger.info("[DeepAgent] 会话已创建: session=%s title=%s",
-                                            session_thread_id, node_title)
-                            yield _sse_event({
-                                "type": "title",
-                                "content": node_title,
-                                "thread_id": session_thread_id,
-                                "node_index": node_index,
-                            })
-                        except Exception as title_exc:
-                            logger.warning("[DeepAgent] 标题/保存失败（不影响已发出的 done）: %s", title_exc, exc_info=True)
 
     except GraphInterrupt as gi:
         interrupt_data = gi.args[0] if gi.args else {}
