@@ -1,33 +1,64 @@
 /**
  * ApprovalCard.tsx —— 对话内审批卡(HITL)
- * 紫色左边线 + 醒目操作;pending 脉冲;完成后打戳归档。
+ *
+ * 语义:SSE 流在审批点挂起等待(对话被阻塞,心跳维持连接)。
+ * - pending:紫磷光脉冲 + 「对话已暂停」说明 + 通过/拒绝
+ * - approved:打戳归档,等待后端续流事件汇入对话
+ * - rejected:打戳归档 + 终止说明
  */
 import { useState } from 'react'
-import { Button, Input, Space, Tag } from 'antd'
+import { App, Button, Input, Space, Spin, Tag } from 'antd'
 import type { Msg } from '@/sdk/protocol'
 import { useChatStore } from '@/stores/chat'
 
 export default function ApprovalCard({ msg }: { msg: Msg }) {
   const store = useChatStore()
+  const { message } = App.useApp()
   const [comment, setComment] = useState('')
+  const [submitting, setSubmitting] = useState(false)
   const approval = msg.approval!
   const pending = approval.state === 'pending'
+
+  const decide = async (state: 'approved' | 'rejected') => {
+    setSubmitting(true)
+    try {
+      await store.resolveApprovalMsg(msg.id, state, comment)
+    } catch (e) {
+      message.error(`审批提交失败:${(e as Error).message}`)
+    } finally {
+      setSubmitting(false)
+    }
+  }
 
   return (
     <div className="max-w-[88%] rounded-lg border border-[var(--warning)]/30 bg-[var(--warning)]/[0.04] p-3">
       <div className="flex items-center gap-2 mb-2">
-        <span className={`w-2 h-2 rounded-full ${pending ? 'bg-[var(--warning)] brand-pulse' : 'bg-[var(--success)]'}`} />
+        {pending ? (
+          <span className="w-2 h-2 rounded-full bg-[var(--warning)] brand-pulse" />
+        ) : (
+          <span className="w-2 h-2 rounded-full bg-[var(--success)]" />
+        )}
         <span className="text-[13px] font-semibold text-[var(--warning)]">高危操作待审批</span>
+        {submitting && <Spin size="small" />}
         {!pending && (
           <Tag color={approval.state === 'approved' ? 'green' : 'red'} className="ml-auto">
             {approval.state === 'approved' ? '已通过' : '已拒绝'}
           </Tag>
         )}
       </div>
+
+      {pending && (
+        <div className="text-[11px] text-[var(--text-3)] mb-2 flex items-center gap-1.5">
+          <span className="w-1.5 h-1.5 rounded-full bg-brand brand-pulse" />
+          对话已在此处暂停,你的决定将直接决定后续执行(5 分钟内未处理将自动拒绝)
+        </div>
+      )}
+
       {approval.reason && <div className="text-[12px] text-[var(--text-2)] mb-1.5">原因:{approval.reason}</div>}
       {approval.sql && (
         <pre className="mono text-[12px] text-[#e2e8f0] bg-[#0d0d0f] border border-[var(--border)] rounded p-2 mb-2 whitespace-pre-wrap break-all">{approval.sql}</pre>
       )}
+
       {pending ? (
         <div className="space-y-2">
           <Input
@@ -35,23 +66,30 @@ export default function ApprovalCard({ msg }: { msg: Msg }) {
             placeholder="审批意见(可选)"
             value={comment}
             onChange={e => setComment(e.target.value)}
+            onPressEnter={() => decide('approved')}
           />
           <Space>
             <Button
               size="small"
               type="primary"
+              loading={submitting}
               style={{ background: '#7056F8', borderColor: '#7056F8' }}
-              onClick={() => store.resolveApprovalMsg(msg.id, 'approved', comment)}
+              onClick={() => decide('approved')}
             >
               通过并继续
             </Button>
-            <Button size="small" danger onClick={() => store.resolveApprovalMsg(msg.id, 'rejected', comment)}>
+            <Button size="small" danger loading={submitting} onClick={() => decide('rejected')}>
               拒绝
             </Button>
           </Space>
         </div>
       ) : (
-        approval.comment && <div className="text-[11px] text-[var(--text-3)]">意见:{approval.comment}</div>
+        <div className="text-[11px] text-[var(--text-3)]">
+          {approval.state === 'approved'
+            ? '已放行,执行结果将自动续流到本对话'
+            : '流程已终止'}
+          {approval.comment && <span className="ml-2">意见:{approval.comment}</span>}
+        </div>
       )}
     </div>
   )

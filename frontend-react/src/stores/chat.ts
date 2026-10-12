@@ -311,7 +311,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         })
         set(s => ({ chat: resolveApproval(s.chat, msgId, state, comment) }))
       } catch (e) {
+        // 审批失败(如非管理员/权限不足)必须让用户知道,不能静默
         console.error('[chat] 审批提交失败:', e)
+        throw e
       }
     },
 
