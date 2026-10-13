@@ -56,7 +56,10 @@ export default function ApprovalCard({ msg }: { msg: Msg }) {
 
       {approval.reason && <div className="text-[12px] text-[var(--text-2)] mb-1.5">原因:{approval.reason}</div>}
       {approval.sql && (
-        <pre className="mono text-[12px] text-[#e2e8f0] bg-[#0d0d0f] border border-[var(--border)] rounded p-2 mb-2 whitespace-pre-wrap break-all">{approval.sql}</pre>
+        <pre className="mono text-[12px] rounded p-2 mb-2 whitespace-pre-wrap break-all"
+          style={{ color: 'var(--text-1)', background: 'var(--code-bg)', border: '1px solid var(--border)' }}>
+          {approval.sql}
+        </pre>
       )}
 
       {pending ? (
@@ -73,7 +76,6 @@ export default function ApprovalCard({ msg }: { msg: Msg }) {
               size="small"
               type="primary"
               loading={submitting}
-              style={{ background: '#7056F8', borderColor: '#7056F8' }}
               onClick={() => decide('approved')}
             >
               通过并继续

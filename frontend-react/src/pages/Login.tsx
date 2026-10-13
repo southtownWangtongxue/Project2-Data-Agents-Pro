@@ -60,7 +60,6 @@ export default function Login() {
               size="large"
               block
               loading={loading}
-              style={{ background: '#7056F8', borderColor: '#7056F8' }}
             >
               登 录
             </Button>

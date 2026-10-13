@@ -32,7 +32,7 @@ export default function Aurora() {
         className="absolute inset-0 opacity-[0.35]"
         style={{
           backgroundImage:
-            'linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px)',
+            'linear-gradient(var(--aurora-grid) 1px, transparent 1px), linear-gradient(90deg, var(--aurora-grid) 1px, transparent 1px)',
           backgroundSize: '48px 48px',
           maskImage: 'radial-gradient(ellipse at center, black 30%, transparent 75%)',
           WebkitMaskImage: 'radial-gradient(ellipse at center, black 30%, transparent 75%)',

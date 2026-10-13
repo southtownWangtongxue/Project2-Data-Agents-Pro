@@ -54,6 +54,8 @@ interface ChatStore {
   model: string
   /* thinking_mode:当前模型是否开启思考展示(关→仅隐藏,不丢弃) */
   thinkingModeEnabled: boolean
+  /* 消息反馈(like/dislike);后端暂无上报端点,仅本地会话内生效 */
+  feedbacks: Record<string, 'like' | 'dislike'>
   /* 排队(运行中再发送则入队) */
   pendingQueue: { text: string; mode: string; webSearch: boolean }[]
 
@@ -68,6 +70,7 @@ interface ChatStore {
   setMode: (m: string) => void
   setWebSearch: (v: boolean) => void
   setModel: (m: string) => void
+  setFeedback: (msgId: string, value: 'like' | 'dislike' | 'default') => void
   resolveApprovalMsg: (msgId: string, state: 'approved' | 'rejected', comment: string) => Promise<void>
   exportData: (data: any[], columns: string[], format: 'csv' | 'excel') => Promise<void>
   loadSuggestions: (force?: boolean) => Promise<void>
@@ -194,6 +197,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     webSearch: false,
     model: localStorage.getItem(STORAGE_MODEL_KEY) || '',
     thinkingModeEnabled: true,
+    feedbacks: {},
     pendingQueue: [],
 
     sendMessage: async (text, mode = get().mode, webSearch = get().webSearch, model = get().model) => {
@@ -296,6 +300,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     setMode: m => set({ mode: m }),
     setWebSearch: v => set({ webSearch: v }),
+    setFeedback: (msgId, value) =>
+      set(s => {
+        const next = { ...s.feedbacks }
+        if (value === 'default') delete next[msgId]
+        else next[msgId] = value
+        return { feedbacks: next }
+      }),
     setModel: m => {
       localStorage.setItem(STORAGE_MODEL_KEY, m)
       set({ model: m })
@@ -341,7 +352,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     clearMessages: () => {
       abortRef.current?.abort()
       abortRef.current = null
-      set({ chat: initialChatState(), isLoading: false, pendingQueue: [], turns: [], currentTurnIndex: 0 })
+      set({ chat: initialChatState(), isLoading: false, pendingQueue: [], turns: [], currentTurnIndex: 0, feedbacks: {} })
     },
 
     newSession: () => get().clearMessages(),

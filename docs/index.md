@@ -16,33 +16,52 @@ features:
   - icon: 💬
     title: 零门槛交互
     details: 业务人员无需掌握 SQL，直接用自然语言提问即可获得查询结果、可视化图表和数据分析报告。前端实时任务清单展示每步进度。
-  - icon: 🛡️
-    title: 安全可控
-    details: 读数据随意，改数据必批——所有写操作须经管理员人工审批后执行，搭配正则+LLM 双重 SQL 审计。
   - icon: ⚡
     title: 实时流式体验
     details: SQL 生成、数据分析全程逐字流式输出，节点进度通过任务清单实时更新（running spinner→completed checkmark），完成后自动折叠。
-  - icon: 🔌
-    title: 多方言适配
-    details: 支持 MySQL、PostgreSQL、SQL Server、Oracle 四种数据库方言，新增数据库仅需配置，无需修改 Agent 核心代码。
+  - icon: 🛡️
+    title: 安全可控
+    details: 读数据随意，改数据必批——所有写操作须经管理员人工审批后执行，搭配正则+LLM 双重 SQL 审计与数据脱敏。
   - icon: 🧠
-    title: Plan-and-Execute + ReAct
-    details: 13 节点 LangGraph 工作流（意图合并、质量评估、降级兜底），支持多轮对话追问、图表快捷路径、Human-in-the-loop 审批中断。
-  - icon: 📋
-    title: 智能去重展示
-    details: SQL 仅格式化卡片一处展示，分析文本流式 Markdown 输出，工具卡片过滤冗余字段，避免信息重复干扰阅读。
-  - icon: ⚡
-    title: 流式响应
-    details: 基于 FastAPI SSE 流式传输，首字节延迟 < 1s，简单查询端到端 < 5s，复杂查询 < 15s。
+    title: Multi-Agent 协同
+    details: 8 个专职 Agent 通过 13 节点 LangGraph 工作流协同，Plan-and-Execute + ReAct 质量评估，支持多轮追问与 Human-in-the-loop 审批中断。
+  - icon: 📊
+    title: 智能可视化
+    details: 自动生成 ECharts 图表配置，支持柱状图、饼图、折线图等，查询结果一键导出 CSV / Excel。
+  - icon: 🔌
+    title: 多数据源适配
+    details: 支持 MySQL、PostgreSQL、SQL Server、Oracle 四种数据库方言，新增数据库仅需配置，无需修改 Agent 核心代码。
+  - icon: 🧾
+    title: 对话内审批
+    details: 审批由独立页面收敛为对话内 Human-in-the-loop：图在断点挂起 SSE 流，管理员通过/拒绝并附意见后同一条流续跑到底。
+  - icon: 🎛️
+    title: 会话化配置中心
+    details: 模型能力（工具调用 / 图片输入 / 思考模式与思考强度）、技能、MCP、定时任务与审批策略统一在配置中心管理。
+  - icon: 🧩
+    title: 官方组件基线
+    details: 前端基于 Vite + React 19 + Ant Design X 2.9 构建，交互对齐官方独立式样板间，XStream 解析 SSE，x-markdown 承载流式 Markdown。
+
+## 平台概览
+
+| 指标 | 数值 | 说明 |
+|------|------|------|
+| Agent 数 | 8 | planner / schema_retriever / sql_coder / executor / analyst / reporter / misc / quality 等专职 Agent |
+| 工作流节点 | 13 | LangGraph 状态图节点数（含审批中断与降级兜底） |
+| SSE 事件类型 | 18 | thread_id / status / thinking / reasoning / token / tool_call / tool_result / sql / result / chart / plan / clarification / error / title / done / approval_required / quality_feedback / node_started |
+| SQL 方言 | 4 | MySQL / PostgreSQL / SQL Server / Oracle |
+
+::: tip 前端已切换为 React 版
+应用内不再保留独立介绍首页，根路由直接进入 `/chat` 对话工作台。原前端（Vue 3）已冻结归档在 `frontend/`，历史版本可按 tag `vue-legacy` 检出；当前维护版本位于 `frontend-react/`。
+:::
 ---
 
 ## 架构全景图
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                        表现层 (Frontend)                     │
-│          Vue 3 + Element Plus + ECharts + Pinia             │
-│            ChatBox  │  ChartRenderer  │  AdminPanel          │
+│                        表现层 (frontend-react)                │
+│        React 19 + Vite + Ant Design X + XStream + x-markdown  │
+│           Chat 工作台  │  轨迹抽屉  │  配置中心                 │
 └──────────────────────────┬──────────────────────────────────┘
                            │  HTTP/SSE
 ┌──────────────────────────▼──────────────────────────────────┐
@@ -83,9 +102,9 @@ features:
 | [RAG 知识库](./advanced/rag-config.md) | Milvus 配置、文档上传、检索调优 |
 | [新增数据库](./advanced/database-access.md) | 方言配置、连接接入 |
 | [安全机制](./advanced/security.md) | SQL 审计、数据脱敏、审批流 |
-| [前端开发](./develop/frontend-dev.md) | Vue 3 组件开发、SSE 集成 |
+| [前端开发](./develop/frontend-dev.md) | React 19 + Ant Design X 组件开发、SSE 事件接入 |
 | [Agent 开发](./develop/agent-dev.md) | 新增 Worker Agent、Graph 注册 |
-| [AntDesignX Vue 改造开发计划](./plans/2026-08-05-ant-design-x-vue-integration.md) | AntDesignX Vue 渐进式接入的 6 阶段计划与提示词 |
+| [对话界面设计](./reference/chat-ui-playground-alignment.md) | 对话页对齐官方独立式样板间的结构、组件层级与主题规范 |
 
 ## 核心原则
 
@@ -98,7 +117,7 @@ features:
 | 后端框架 | Python 3.10+, FastAPI (SSE 流式) |
 | Agent 编排 | LangGraph 1.x (有状态工作流 + 人工打断) |
 | Agent 框架 | LangChain 1.x, deepAgents 0.5.x |
-| 前端 | Vue 3 + Vite + Element Plus + ECharts |
+| 前端 | React 19 + Vite + Ant Design X 2.9 + x-markdown + ECharts（历史 Vue 3 版冻结于 `frontend/`） |
 | ORM | SQLAlchemy (多方言适配) |
 | 向量库 | Milvus 2.x |
 | 缓存/状态 | Redis |

@@ -1,36 +1,70 @@
 /**
- * ChatSidebar.tsx —— 会话侧栏(会话增删/重命名/长期目标)
- * 偏差说明:未用 antdx Conversations——需要 goal 编辑/标题重命名/跳轮次等
- * 业务扩展,其菜单 API 不足;视觉对齐 antdx Conversations 列表语言。
+ * ChatSidebar.tsx —— 会话侧栏(antdx Conversations + 侧栏底部账户区)
+ *
+ * 结构对齐官方独立式样板间 side:logo 区 → Conversations(flex-1) → sideFooter。
+ * 业务扩展:会话长期目标(goal)以菜单项形式挂在会话上。
  */
-import { useState } from 'react'
-import { Modal, Input, message as antdMsg } from 'antd'
-import ClickSpark from '@/components/bits/ClickSpark'
-import { useChatStore } from '@/stores/chat'
+import { useMemo, useState } from 'react'
+import { Modal, Input, message as antdMsg, Tooltip } from 'antd'
+import { Conversations } from '@ant-design/x'
+import { Pencil, Target, Trash2 } from 'lucide-react'
+import { useChatStore, type SessionInfo } from '@/stores/chat'
+import { useAuthStore } from '@/stores/auth'
+import { useThemeStore } from '@/stores/theme'
 import { api } from '@/api/client'
+
+const GROUP_TODAY = '今天'
+const GROUP_YESTERDAY = '昨天'
+const GROUP_EARLIER = '更早'
+
+function groupOf(s: SessionInfo): string {
+  if (!s.created_at) return GROUP_EARLIER
+  const d = new Date(s.created_at)
+  const today = new Date()
+  const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime()
+  const ts = d.getTime()
+  if (ts >= startOfToday) return GROUP_TODAY
+  if (ts >= startOfToday - 24 * 3600 * 1000) return GROUP_YESTERDAY
+  return GROUP_EARLIER
+}
 
 export default function ChatSidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
   const store = useChatStore()
+  const auth = useAuthStore()
+  const theme = useThemeStore()
   const [goalOpen, setGoalOpen] = useState(false)
   const [goalText, setGoalText] = useState('')
+  const [goalThread, setGoalThread] = useState<string>('')
 
-  const openGoal = async () => {
-    if (!store.chat.threadId) {
+  /** 按「今天/昨天/更早」分组,组内保持接口返回的倒序 */
+  const items = useMemo(() => {
+    const grouped = new Map<string, { key: string; label: string; group: string }[]>()
+    for (const s of store.sessions) {
+      const g = groupOf(s)
+      if (!grouped.has(g)) grouped.set(g, [])
+      grouped.get(g)!.push({ key: s.thread_id, label: s.title || '未命名会话', group: g })
+    }
+    return [...grouped.entries()].flatMap(([, list]) => list)
+  }, [store.sessions])
+
+  const openGoal = async (threadId: string) => {
+    if (!threadId) {
       antdMsg.info('新会话暂无目标,先发起一轮对话')
       return
     }
     try {
-      const data = await api<{ goal: string }>(`/chat/sessions/${encodeURIComponent(store.chat.threadId)}/goal`)
+      const data = await api<{ goal: string }>(`/chat/sessions/${encodeURIComponent(threadId)}/goal`)
       setGoalText(data.goal || '')
     } catch {
       setGoalText('')
     }
+    setGoalThread(threadId)
     setGoalOpen(true)
   }
 
   const saveGoal = async () => {
     try {
-      await api(`/chat/sessions/${encodeURIComponent(store.chat.threadId)}/goal`, {
+      await api(`/chat/sessions/${encodeURIComponent(goalThread)}/goal`, {
         method: 'PUT',
         body: { goal: goalText },
       })
@@ -47,91 +81,133 @@ export default function ChatSidebar({ collapsed, onToggle }: { collapsed: boolea
     await store.editSessionTitle(threadId, title)
   }
 
+  const labelText = (label?: React.ReactNode) =>
+    typeof label === 'string' ? label : '未命名会话'
+
+  const remove = (threadId: string, title: string) => {
+    Modal.confirm({
+      title: '删除会话',
+      content: `确认删除「${title || '未命名会话'}」?该操作不可恢复。`,
+      okText: '删除',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: () => store.deleteSession(threadId),
+    })
+  }
+
+  /* 折叠态:仅保留图标条 */
   if (collapsed) {
     return (
-      <aside className="w-12 flex-shrink-0 border-r border-[var(--border)] flex flex-col items-center py-3 gap-3">
-        <button type="button" onClick={onToggle} title="展开侧栏"
-          className="w-8 h-8 rounded-md border border-[var(--border)] bg-transparent text-[var(--text-2)] cursor-pointer hover:text-[var(--text-1)]">
-          →
-        </button>
-        <button type="button" onClick={() => store.newSession()} title="新建会话"
-          className="w-8 h-8 rounded-md border border-brand/30 bg-brand/10 text-brand-light cursor-pointer">+</button>
+      <aside
+        className="h-full w-12 flex-shrink-0 flex flex-col items-center gap-3 py-4 border-r"
+        style={{ borderColor: 'var(--border)', background: 'var(--panel)' }}
+      >
+        <span className="w-7 h-7 rounded-lg flex items-center justify-center text-white text-[13px] font-bold"
+          style={{ background: 'linear-gradient(135deg,#7056F8,#8B6FFF)' }}>D</span>
+        <Tooltip title="展开侧栏" placement="right">
+          <button type="button" onClick={onToggle}
+            className="w-8 h-8 rounded-md border bg-transparent cursor-pointer text-[var(--text-2)] hover:text-[var(--text-1)] transition-colors"
+            style={{ borderColor: 'var(--border)' }}>→</button>
+        </Tooltip>
+        <Tooltip title="新建会话" placement="right">
+          <button type="button" onClick={() => store.newSession()} title="新建会话"
+            className="w-8 h-8 rounded-md border cursor-pointer text-[var(--brand-light)] transition-colors"
+            style={{ borderColor: 'rgba(112,86,248,0.35)', background: 'rgba(112,86,248,0.12)' }}>+</button>
+        </Tooltip>
       </aside>
     )
   }
 
   return (
-    <aside className="w-64 flex-shrink-0 border-r border-[var(--border)] flex flex-col bg-[rgba(20,20,22,0.6)]">
-      {/* 头部 */}
-      <div className="flex items-center gap-2 px-3 h-12 border-b border-[var(--border)]">
-        <span className="font-semibold text-[13px] text-[var(--text-1)]">会话</span>
-        <div className="ml-auto flex gap-1">
-          <button type="button" onClick={openGoal} title="会话长期目标"
-            className="px-2 py-1 text-[11px] text-[var(--text-3)] bg-transparent border border-[var(--border)] rounded cursor-pointer hover:text-[var(--text-1)]">
-            🎯 目标
-          </button>
-          <ClickSpark>
-            <button type="button" onClick={() => store.newSession()} title="新建会话"
-              className="px-2 py-1 text-[11px] text-brand-light bg-brand/10 border border-brand/25 rounded cursor-pointer hover:bg-brand/20">
-              + 新建
-            </button>
-          </ClickSpark>
+    <aside
+      className="h-full w-[280px] flex-shrink-0 flex flex-col px-3 box-border"
+      style={{ background: 'var(--panel)' }}
+    >
+      {/* 🌟 logo 区 */}
+      <div className="flex items-center gap-2 py-6 px-6 box-border">
+        <span className="w-6 h-6 rounded-md flex items-center justify-center text-white text-[13px] font-bold flex-shrink-0"
+          style={{ background: 'linear-gradient(135deg,#7056F8,#8B6FFF)' }}>D</span>
+        <span className="font-bold text-[16px] text-[var(--text-1)] truncate">DataAgent Pro</span>
+        <Tooltip title="折叠侧栏" placement="right">
           <button type="button" onClick={onToggle} title="折叠侧栏"
-            className="px-1.5 py-1 text-[11px] text-[var(--text-3)] bg-transparent border border-[var(--border)] rounded cursor-pointer">←</button>
-        </div>
+            className="ml-auto w-6 h-6 rounded border bg-transparent cursor-pointer text-[var(--text-3)] hover:text-[var(--text-1)] transition-colors"
+            style={{ borderColor: 'var(--border)' }}>←</button>
+        </Tooltip>
       </div>
 
-      {/* 会话列表 */}
-      <div className="flex-1 overflow-y-auto py-2">
-        {store.sessionsLoading && (
-          <div className="px-3 py-2 text-[11px] text-[var(--text-3)]">加载中…</div>
-        )}
-        {!store.sessionsLoading && store.sessions.length === 0 && (
-          <div className="px-3 py-6 text-center text-[11px] text-[var(--text-3)]">暂无会话,发起第一轮对话吧</div>
-        )}
-        {store.sessions.map(s => {
-          const active = s.thread_id === store.chat.threadId
-          return (
-            <div
-              key={s.thread_id}
-              className={`group relative mx-2 mb-0.5 pl-3 pr-2.5 py-2 rounded-lg cursor-pointer transition-colors ${
-                active ? 'bg-brand/10' : 'hover:bg-[var(--cockpit-800)]'
-              }`}
-              onClick={() => store.loadSession(s.thread_id)}
-            >
-              {/* 激活轨:左侧紫条(驾驶舱语言) */}
-              <span
-                className={`absolute left-0 top-1/2 -translate-y-1/2 w-[2px] rounded-full transition-all ${
-                  active ? 'h-5 bg-brand shadow-[0_0_8px_rgba(112,86,248,0.8)]' : 'h-0'
-                }`}
-              />
-              <div className="flex items-center gap-1.5">
-                <span className="text-[12px] text-[var(--text-1)] truncate flex-1">{s.title || '未命名会话'}</span>
-                <span className="hidden group-hover:flex gap-1 flex-shrink-0">
-                  <button type="button" title="重命名"
-                    onClick={e => { e.stopPropagation(); rename(s.thread_id, s.title) }}
-                    className="text-[10px] text-[var(--text-3)] hover:text-[var(--text-1)] bg-transparent border-none cursor-pointer">✎</button>
-                  <button type="button" title="删除"
-                    onClick={e => {
-                      e.stopPropagation()
-                      Modal.confirm({
-                        title: '删除会话',
-                        content: `确认删除「${s.title || '未命名会话'}」?该操作不可恢复。`,
-                        okText: '删除',
-                        okButtonProps: { danger: true },
-                        cancelText: '取消',
-                        onOk: () => store.deleteSession(s.thread_id),
-                      })
-                    }}
-                    className="text-[10px] text-[var(--text-3)] hover:text-[#f87171] bg-transparent border-none cursor-pointer">✕</button>
-                </span>
-              </div>
-              {s.question && (
-                <div className="text-[10px] text-[var(--text-3)] truncate mt-0.5">{s.question}</div>
-              )}
-            </div>
-          )
-        })}
+      {/* 🌟 会话管理 */}
+      {items.length === 0 && !store.sessionsLoading ? (
+        <div className="flex-1 flex flex-col items-center justify-center gap-1 text-center">
+          <span className="text-[12px] text-[var(--text-3)]">暂无会话</span>
+          <span className="text-[11px] text-[var(--text-3)] opacity-70">发起第一轮对话后自动归档</span>
+        </div>
+      ) : (
+        <Conversations
+          className="flex-1 min-h-0 overflow-y-auto mt-3"
+          style={{ padding: 0 }}
+          activeKey={store.chat.threadId || undefined}
+          onActiveChange={key => key && store.loadSession(String(key))}
+          groupable
+          creation={{
+            onClick: () => {
+              if (store.chat.messages.length === 0 && store.sessions.length === 0) {
+                antdMsg.info('已经是新会话,直接提问即可')
+                return
+              }
+              store.newSession()
+            },
+          }}
+          items={items}
+          styles={{ item: { padding: '0 8px' } }}
+          menu={conversation => ({
+            items: [
+              {
+                key: 'rename',
+                label: '重命名',
+                icon: <Pencil size={14} />,
+                onClick: () => rename(String(conversation.key), labelText(conversation.label)),
+              },
+              {
+                key: 'goal',
+                label: '长期目标',
+                icon: <Target size={14} />,
+                onClick: () => openGoal(String(conversation.key)),
+              },
+              {
+                key: 'delete',
+                label: '删除',
+                icon: <Trash2 size={14} />,
+                danger: true,
+                onClick: () => remove(String(conversation.key), labelText(conversation.label)),
+              },
+            ],
+          })}
+        />
+      )}
+
+      {/* 🌟 侧栏底部:账户 / 主题 / 目标 */}
+      <div
+        className="h-10 flex items-center justify-between border-t mt-3 pt-3 pb-3"
+        style={{ borderColor: 'var(--border)' }}
+      >
+        <span className="flex items-center gap-2 min-w-0">
+          <span className="w-6 h-6 rounded-full flex items-center justify-center text-[11px] text-white flex-shrink-0"
+            style={{ background: 'linear-gradient(135deg,#3f3f46,#52525b)' }}>
+            {(auth.user?.nick_name || auth.user?.user_name || 'U').slice(0, 1).toUpperCase()}
+          </span>
+          <span className="text-[12px] text-[var(--text-2)] truncate">
+            {auth.user?.nick_name || auth.user?.user_name || '未登录'}
+          </span>
+        </span>
+        <span className="flex items-center gap-1">
+          <Tooltip title="切换主题">
+            <button type="button" onClick={theme.toggle} title="切换明暗主题"
+              className="w-7 h-7 rounded-md border bg-transparent cursor-pointer text-[var(--text-2)] hover:text-[var(--text-1)] transition-colors"
+              style={{ borderColor: 'var(--border)' }}>
+              {theme.mode === 'dark' ? '☾' : '☀'}
+            </button>
+          </Tooltip>
+        </span>
       </div>
 
       {/* 长期目标编辑 */}

@@ -22,4 +22,16 @@ export default defineConfig({
       },
     },
   },
+  /* 本地验收/前端联调:预览构建产物,行为与 dev 一致(含 /api 代理) */
+  preview: {
+    host: '0.0.0.0',
+    port: 4173,
+    allowedHosts: true,
+    proxy: {
+      '/api': {
+        target: `http://localhost:${process.env.BACKEND_PORT || 8000}`,
+        changeOrigin: true,
+      },
+    },
+  },
 })

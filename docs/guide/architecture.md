@@ -8,7 +8,7 @@
 
 ```
 ┌──────────────────────────────────────────────┐
-│  表现层     Vue 3 + Element Plus + ECharts    │  用户界面
+│  表现层     React 19 + Ant Design X + ECharts   │  用户界面
 ├──────────────────────────────────────────────┤
 │  网关层     FastAPI (REST + SSE Streaming)    │  请求路由
 ├──────────────────────────────────────────────┤
@@ -24,11 +24,12 @@
 
 ### 表现层
 
-- 基于 **Vue 3** Composition API + **Vite** 构建
-- UI 组件库：**Element Plus**
-- 可视化：**ECharts**（图表渲染）+ **ECharts JSON** 动态配置
-- 状态管理：**Pinia**
-- 流式通信：**EventSource (SSE)** 接收后端流式响应
+- 基于 **React 19** + **Vite 6** + **TypeScript** 构建（源码位于 `frontend-react/`）
+- UI 组件库：**Ant Design X 2.9**（Bubble.List / Sender / Conversations / Welcome / Prompts / ThoughtChain / Actions / Attachments）+ **Ant Design 6**（ConfigProvider 暗色令牌）
+- 流式层：**@ant-design/x-sdk** 的 `XStream` 解析后端 SSE；**@ant-design/x-markdown** 渲染流式 Markdown（`streaming.hasNextChunk`）
+- 可视化：**ECharts**（图表渲染）+ 后端下发的 ECharts JSON 动态配置
+- 领域状态：**zustand**（chat / auth / config），SSE 事件分发收敛为纯函数 reducer（有 vitest 覆盖）
+- 历史 Vue 3 版本（`frontend/`，Element Plus + Pinia）已冻结归档，tag `vue-legacy`
 
 ### 网关层
 

@@ -7,10 +7,10 @@
 <p align="center">
   <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License" />
   <img src="https://img.shields.io/badge/Python-3.10+-3776AB.svg" alt="Python" />
-  <img src="https://img.shields.io/badge/Vue-3-42b883.svg" alt="Vue" />
+  <img src="https://img.shields.io/badge/React-19-61dafb.svg" alt="React" />
   <img src="https://img.shields.io/badge/FastAPI-async-009688.svg" alt="FastAPI" />
   <img src="https://img.shields.io/badge/LangGraph-1.x-ff6f61.svg" alt="LangGraph" />
-  <img src="https://img.shields.io/badge/Ant%20Design%20X-1.6-7056f8.svg" alt="Ant Design X" />
+  <img src="https://img.shields.io/badge/Ant%20Design%20X-2.9-7056f8.svg" alt="Ant Design X" />
 </p>
 
 <p align="center">
@@ -31,7 +31,7 @@
 - 📊 **即时可视化与导出**：自动生成 ECharts 图表配置，支持 Excel / CSV 导出。
 - ⚡ **流式响应（SSE）**：执行计划、SQL、工具调用、分析结论逐 token 流式呈现，首字节 < 1s。
 - 🧠 **RAG 知识库**：从向量库（Milvus）检索业务口径与指标定义，让回答贴合企业语境。
-- 🎨 **暗色主题对话工作台**：会话列表 / 思维链 / 执行节点卡片 / 问题建议 / 模型选择器，基于 Element Plus + 自研设计系统打磨。
+- 🎨 **暗色主题对话工作台**：会话栏 / 步骤链 / 14 类消息卡片 / 追问建议 / 模型选择器，基于 **React 19 + Ant Design X 2.9**（Bubble.List、Sender、Conversations、Welcome、Prompts、ThoughtChain、XStream）构建，交互对齐官方独立式样板间。
 - 🔌 **动态模型路由**：模型 provider 通过配置热加载，前端统一选择，支持 Qwen / GLM 等私有部署模型。
 - 🐳 **一键容器化**：Docker Compose 启动 Redis + Milvus + MySQL + 基础设施全套依赖。
 
@@ -79,7 +79,7 @@
 | 后端框架 | Python 3.10+ · FastAPI（异步 + SSE 流式） |
 | Agent 编排 | LangGraph 1.x（状态图 · Human-in-the-Loop） |
 | Agent 框架 | LangChain 1.x · deepAgents 0.5.x |
-| 前端 | Vue 3 · Vite · Element Plus · ECharts · Ant Design X Vue |
+| 前端 | React 19 · Vite 6 · TypeScript · Ant Design X 2.9（x-sdk / x-markdown） · zustand · ECharts |
 | ORM / 驱动 | SQLAlchemy（多方言：MySQL / PostgreSQL / SQL Server / Oracle） |
 | 向量库 | Milvus 2.x（RAG 知识库） |
 | 缓存 / 状态 | Redis（Graph 中断状态快照） |
@@ -118,16 +118,18 @@ uv run uvicorn app.main:app --reload --port 8000
 ### 3. 启动前端
 
 ```bash
-cd frontend
+cd frontend-react
 npm install
 npm run dev                   # 开发服务器，默认 http://localhost:5173
 ```
+
+> 历史 Vue 3 前端已冻结归档在 `frontend/`（tag `vue-legacy`），不再维护；镜像与 CI 均以 `frontend-react/` 为准。
 
 登录默认管理员账号：`admin` / `12345678`
 
 ### 4. 开始对话
 
-打开 `http://localhost:5173`，登录后进入「智能对话」即可用自然语言提问，例如：
+打开 `http://localhost:5173`，登录后直接进入对话工作台（根路由 `/` 已重定向到 `/chat`，无独立介绍首页），即可用自然语言提问，例如：
 
 > 「统计数据库总表数」「帮我分析各区域销售额的同比变化」
 
@@ -208,12 +210,13 @@ DataAgent-Pro/
 │   │   ├── rag/              # Milvus 检索
 │   │   └── skills/           # 技能目录
 │   └── configs/              # LLM provider 等配置（热加载）
-├── frontend/                 # Vue 3 前端
+├── frontend-react/           # React 19 前端（当前维护版本）
 │   └── src/
-│       ├── views/ChatXVue.vue     # Ant Design X Vue 新对话页
-│       ├── components/x/          # XConversations / XBubbleList / XSender / XWelcome / XThoughtChain
-│       ├── stores/chat.ts         # 对话状态（含 currentModel 路由）
-│       └── composables/useSSE.ts  # SSE 事件路由
+│       ├── pages/Chat.tsx         # 对话工作台（三段式布局：侧栏 / 消息区 / 输入区）
+│       ├── components/chat/       # Bubble.List / Sender / 步骤链 / 14 类消息卡片
+│       ├── sdk/                   # DataAgentProvider(XStream) + SSE 事件 reducer
+│       └── stores/                # zustand：chat / auth / config
+├── frontend/                 # Vue 3 前端（已冻结，tag vue-legacy 归档，不再维护）
 ├── docs/                     # VitePress 文档（开发计划、需求规格、配置体系）
 ├── deploy/                   # 单体镜像配套：nginx.conf / supervisord.conf / entrypoint.sh
 ├── init-scripts/             # 数据库初始化 SQL
@@ -227,18 +230,20 @@ DataAgent-Pro/
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `POST` | `/api/v1/chat/completions` | 核心对话（SSE：文本 / 图表配置 / 中间状态） |
-| `POST` | `/api/v1/chat/approve` | 管理员审批回调（高危 SQL） |
-| `POST` | `/api/v1/chat/stop` | 中断 Agent 执行 |
+| `POST` | `/api/v1/chat/approve` | 对话内审批决策（高危 SQL，流内挂起后恢复续流） |
+| `POST` | `/api/v1/chat/cancel` | 中断 Agent 执行 |
+| `GET` | `/api/v1/chat/sessions` | 会话列表 / 详情 / 重命名 / 删除 |
 | `GET` | `/api/v1/datasource/list` | 列出可访问数据源 |
-| `POST` | `/api/v1/export/excel` | 异步导出 Excel / CSV |
+| `POST` | `/api/v1/export/{csv,excel}` | 异步导出 Excel / CSV |
 
-SSE 事件类型：`status` · `schema` · `sql` · `text` · `result` · `error` · `done` · `approval_required`。
+SSE 事件类型（18 类）：`thread_id` · `status` · `thinking` · `reasoning` · `token` · `tool_call` · `tool_result` · `sql` · `result` · `chart` · `plan` · `clarification` · `error` · `title` · `done` · `approval_required` · `quality_feedback` · `node_started`。
 
 ## 📚 文档
 
 完整文档（需求规格、配置体系、开发计划）基于 VitePress 构建，位于 `docs/`：
 
-- 开发计划与 Ant Design X Vue 接入方案：`docs/plans/2026-08-05-ant-design-x-vue-integration.md`
+- 对话渲染层重构设计：`docs/plans/2026-10-12-chat-antdx-refactor-design.md`
+- 对话界面对齐官方样板间规范：`docs/reference/chat-ui-playground-alignment.md`
 - 需求规格说明书、配置体系说明书：`docs/`
 
 本地预览文档：
@@ -251,9 +256,9 @@ npm run docs:dev
 
 ## ✅ 质量验证
 
-- 前端 `vue-tsc --noEmit` 类型检查通过
-- 对话全流程经浏览器端到端验证（会话列表 / 消息流 / 思维链 / 欢迎页 / 模型路由 / 暗色主题）
-- 回归保障：对话页 `/chat` 端到端可用（流式渲染 / 会话管理 / 思维链 / 模型路由）
+- 前端 `tsc -b` 类型检查 + `vite build` 通过，核心数据流有 vitest 覆盖（SSE Provider / reducer / 审批状态机）
+- 后端 `pytest` 全绿
+- 对话全流程经浏览器端到端验证（会话列表 / 消息流 / 步骤链 / 空态 / 模型路由 / 对话内审批 / 暗色主题）
 
 ## 🤝 贡献
 

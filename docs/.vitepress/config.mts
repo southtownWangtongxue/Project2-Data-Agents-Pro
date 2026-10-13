@@ -18,6 +18,7 @@ export default defineConfig({
           { text: 'DeepSeek Harness 集成分析', link: '/reference/deepseek-harness-integration-analysis' },
           { text: 'DeepSeek Harness 实测体验', link: '/reference/deepseek-harness-hands-on' },
           { text: 'Harness 界面与执行机制对比分析', link: '/reference/harness-ui-analysis' },
+          { text: '对话界面对齐官方样板间规范', link: '/reference/chat-ui-playground-alignment' },
           { text: '运行时架构图', link: '/reference/runtime-architecture' },
         ],
       },
@@ -48,6 +49,7 @@ export default defineConfig({
         { text: 'DeepSeek Harness 集成分析', link: '/reference/deepseek-harness-integration-analysis' },
         { text: 'DeepSeek Harness 实测体验', link: '/reference/deepseek-harness-hands-on' },
         { text: 'Harness 界面与执行机制对比分析', link: '/reference/harness-ui-analysis' },
+        { text: '对话界面对齐官方样板间规范', link: '/reference/chat-ui-playground-alignment' },
         { text: '运行时架构图', link: '/reference/runtime-architecture' },
       ],
       '/': [

@@ -2,22 +2,47 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ========== 碳黑驾驶舱 + 紫磷光 设计令牌 ========== */
-:root {
-  --cockpit-900: #0D0D0F;
-  --cockpit-800: #18181B;
-  --cockpit-700: #1F1F23;
-  --cockpit-600: #27272A;
-  --brand: #7056F8;
-  --brand-light: #8B6FFF;
-  --success: #10B981;
-  --warning: #F59E0B;
-  --danger: #EF4444;
-  --text-1: #FAFAFA;
-  --text-2: #A1A1AA;
-  --text-3: #71717A;
+/* ========== 碳黑驾驶舱 + 紫磷光 设计令牌(暗色为默认) ========== */
+:root,
+:root[data-theme='dark'] {
+  --cockpit-900: #0d0d0f;
+  --cockpit-800: #18181b;
+  --cockpit-700: #1f1f23;
+  --cockpit-600: #27272a;
+  --brand: #7056f8;
+  --brand-light: #8b6fff;
+  --success: #10b981;
+  --warning: #f59e0b;
+  --danger: #ef4444;
+  --text-1: #fafafa;
+  --text-2: #a1a1aa;
+  --text-3: #71717a;
   --border: rgba(255, 255, 255, 0.08);
+  --border-light: rgba(255, 255, 255, 0.16);
+  --panel: rgba(20, 20, 22, 0.6);
+  --code-bg: #0d0d0f;
+  --shadow-card: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --aurora-grid: rgba(255, 255, 255, 0.025);
   --font-mono: 'DIN Next', 'JetBrains Mono', SFMono-Regular, Consolas, monospace;
+  color-scheme: dark;
+}
+
+/* ========== 亮色模式:同一套语义映射到浅色三层 ========== */
+:root[data-theme='light'] {
+  --cockpit-900: #fafafb;
+  --cockpit-800: #ffffff;
+  --cockpit-700: #f4f4f6;
+  --cockpit-600: #e4e4e7;
+  --text-1: #18181b;
+  --text-2: #52525b;
+  --text-3: #8b8b93;
+  --border: rgba(0, 0, 0, 0.1);
+  --border-light: rgba(0, 0, 0, 0.18);
+  --panel: rgba(255, 255, 255, 0.72);
+  --code-bg: #f7f7f9;
+  --shadow-card: 0 8px 24px rgba(15, 15, 20, 0.08);
+  --aurora-grid: rgba(0, 0, 0, 0.04);
+  color-scheme: light;
 }
 
 * {
@@ -63,15 +88,15 @@ body,
     transform: scale(1);
   }
   50% {
-    opacity: 0.5;
-    transform: scale(0.8);
+    opacity: 0.45;
+    transform: scale(0.78);
   }
 }
 .brand-pulse {
   animation: brand-pulse 1.4s ease-in-out infinite;
 }
 
-/* 入场:欢迎页 staggered reveal */
+/* 入场:欢迎页/卡片 staggered reveal */
 @keyframes rise-in {
   from {
     opacity: 0;
@@ -84,4 +109,46 @@ body,
 }
 .rise-in {
   animation: rise-in 0.35s ease-out both;
+}
+
+/* ========== Ant Design X 对齐官方独立式样板间 ========== */
+
+/* 流式气泡:底部 2px 品牌渐变线(官方 updating 态语言,改为品牌紫) */
+.ant-bubble-content-updating {
+  background-image: linear-gradient(90deg, #7056f8 0%, #8b6fff 45%, #22d3ee 100%);
+  background-size: 100% 2px;
+  background-repeat: no-repeat;
+  background-position: bottom;
+}
+
+/* 消息区:正文气泡不出现多余外边距,间距交给 Bubble.List */
+.ant-bubble-list {
+  gap: 12px;
+}
+
+/* 流式正文 Markdown:去掉最后一个元素的下边距,避免气泡内出现悬空空白 */
+.x-markdown > *:last-child {
+  margin-bottom: 0;
+}
+
+/* x-markdown 代码块:使用驾驶舱代码底色,避免与气泡底色冲突 */
+.x-markdown pre {
+  background: var(--code-bg) !important;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+/* 侧栏会话项:去掉 antd 默认激活底色叠加,改由 tokens 控制 */
+.ant-conversations-item-active {
+  font-weight: 500;
+}
+
+/* Sender:与官方一致的悬浮阴影与圆角 */
+.ant-sender {
+  box-shadow: var(--shadow-card);
+}
+
+/* 建议 prompts:默认虚线边框改为实线,避免空态显得松散 */
+.ant-prompts-item {
+  transition: border-color 0.2s ease, transform 0.2s ease;
 }

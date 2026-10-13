@@ -8,11 +8,13 @@ export default function ErrorCard({ msg }: { msg: Msg }) {
   const store = useChatStore()
   return (
     <div className="flex flex-col items-center gap-2.5 w-full py-2">
-      <div className="inline-flex items-center gap-3 px-4 py-3 rounded-lg text-sm text-[#f87171] max-w-[82%] leading-relaxed"
-        style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)' }}>
+      <div className="inline-flex items-center gap-3 px-4 py-3 rounded-lg text-sm max-w-[82%] leading-relaxed"
+        style={{ color: 'var(--danger)', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)' }}>
         <span>⚠</span>
         {msg.content}
-        {msg.errorCode && <span className="mono text-[11px] text-[#fca5a5]">[{msg.errorCode}]</span>}
+        {msg.errorCode && (
+          <span className="mono text-[11px] opacity-80">[{msg.errorCode}]</span>
+        )}
       </div>
       {msg.recoverable !== false && (
         <button

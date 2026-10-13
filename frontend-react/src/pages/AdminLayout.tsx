@@ -5,6 +5,7 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useEffect } from 'react'
 import { getToken } from '@/api/client'
+import { useThemeStore } from '@/stores/theme'
 
 const MENU = [
   { to: '/admin/llm', label: '模型配置', icon: '◈', desc: '多模型接入 · 全模态能力 · 思考强度' },
@@ -15,6 +16,7 @@ const MENU = [
 
 export default function AdminLayout() {
   const navigate = useNavigate()
+  const theme = useThemeStore()
 
   useEffect(() => {
     if (!getToken()) navigate('/login', { replace: true })
@@ -23,11 +25,16 @@ export default function AdminLayout() {
   return (
     <div className="h-full flex bg-[var(--cockpit-900)]">
       {/* 侧边导航 */}
-      <aside className="w-60 flex-shrink-0 border-r border-[var(--border)] flex flex-col bg-[rgba(20,20,22,0.6)]">
-        <div className="h-12 flex items-center gap-2 px-4 border-b border-[var(--border)]">
+      <aside className="w-60 flex-shrink-0 border-r flex flex-col" style={{ borderColor: 'var(--border)', background: 'var(--panel)' }}>
+        <div className="h-12 flex items-center gap-2 px-4 border-b" style={{ borderColor: 'var(--border)' }}>
           <span className="font-semibold text-[13px]">配置中心</span>
+          <button type="button" onClick={theme.toggle} title="切换明暗主题"
+            className="w-7 h-7 rounded-md border bg-transparent cursor-pointer text-[var(--text-2)] hover:text-[var(--text-1)] transition-colors"
+            style={{ borderColor: 'var(--border)' }}>
+            {theme.mode === 'dark' ? '☾' : '☀'}
+          </button>
           <button type="button" onClick={() => navigate('/chat')}
-            className="ml-auto text-[11px] text-[var(--text-3)] hover:text-brand-light bg-transparent border-none cursor-pointer transition-colors">
+            className="ml-auto text-[11px] text-[var(--text-3)] hover:text-[var(--brand-light)] bg-transparent border-none cursor-pointer transition-colors">
             ← 返回对话
           </button>
         </div>

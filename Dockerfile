@@ -23,10 +23,10 @@ FROM node:20-alpine AS frontend-build
 WORKDIR /build
 
 # 先复制依赖清单，利用缓存层
-COPY frontend/package.json frontend/package-lock.json ./
+COPY frontend-react/package.json frontend-react/package-lock.json ./
 RUN npm ci
 
-COPY frontend/ ./
+COPY frontend-react/ ./
 RUN npm run build
 
 # ── 阶段 2：后端依赖 ─────────────────────────────────────────────────

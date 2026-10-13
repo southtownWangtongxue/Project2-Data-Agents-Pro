@@ -22,7 +22,7 @@ cd ..
 
 # 前端依赖
 echo "[3/4] 安装前端依赖..."
-cd frontend
+cd frontend-react
 npm install
 cd ..
 
@@ -32,4 +32,4 @@ echo "  后端: http://localhost:8000/docs"
 echo "  前端: http://localhost:5173"
 echo ""
 echo "  启动后端: cd backend && uv run uvicorn app.main:app --reload"
-echo "  启动前端: cd frontend && npm run dev"
+echo "  启动前端: cd frontend-react && npm run dev"

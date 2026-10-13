@@ -1,6 +1,9 @@
 /**
- * pages/Chat.tsx —— 对话主区(三栏驾驶舱)
- * 左:会话侧栏(可折叠) | 中:消息区/空态 + 输入区 | 底:状态条
+ * pages/Chat.tsx —— 对话工作台
+ *
+ * 布局对齐 Ant Design X 官方「独立式」样板间:
+ *   layout(100vh flex) → side(280px) → chat(flex column, justify-between)
+ *   chat = chatList(flex-1, overflow-y auto, 居中 max-w) + chatSender(底部固定)
  */
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -20,7 +23,9 @@ export default function Chat() {
   const store = useChatStore()
   const auth = useAuthStore()
   const config = useConfigStore()
-  const [collapsed, setCollapsed] = useState(false)
+  const [collapsed, setCollapsed] = useState(
+    () => typeof window !== 'undefined' && window.innerWidth < 1024,
+  )
   const [trajOpen, setTrajOpen] = useState(false)
   /* 渲染级守卫:无 token 时不渲染组件树(否则 ModelSelector 等子组件会在
    * 重定向前就发请求,产生 401 噪声;StrictMode 下还会双发) */
@@ -45,19 +50,24 @@ export default function Chat() {
   if (!authed) return null
 
   return (
-    <div className="h-full flex bg-[var(--cockpit-900)]">
+    <div className="h-screen w-full flex overflow-hidden bg-[var(--cockpit-800)]">
       <ChatSidebar collapsed={collapsed} onToggle={() => setCollapsed(v => !v)} />
 
-      <div className="flex-1 flex flex-col min-w-0">
-        {empty ? <WelcomePanel /> : (
-          <main className="flex-1 min-h-0">
+      <div className="flex-1 min-w-0 h-full flex flex-col justify-between bg-[var(--cockpit-900)]">
+        {/* 🌟 chatList —— 消息区 / 空态 */}
+        <main className="flex-1 min-h-0 w-full flex flex-col items-center overflow-hidden">
+          {empty ? (
+            <WelcomePanel />
+          ) : (
             <MessageList />
-          </main>
-        )}
-        <div className="flex-shrink-0 px-4 pb-3">
+          )}
+        </main>
+
+        {/* 🌟 chatSender —— 输入区 + 读数条 */}
+        <div className="w-full flex-shrink-0">
           <SenderInput />
+          <StatBar onTrajectory={() => setTrajOpen(true)} />
         </div>
-        <StatBar onTrajectory={() => setTrajOpen(true)} />
       </div>
 
       <TrajectoryDrawer open={trajOpen} onClose={() => setTrajOpen(false)} />
