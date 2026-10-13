@@ -4,6 +4,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Button, Input, Form, App as AntApp } from 'antd'
+import Aurora from '@/components/bits/Aurora'
 import { useAuthStore } from '@/stores/auth'
 
 export default function Login() {
@@ -23,11 +24,7 @@ export default function Login() {
 
   return (
     <div className="h-full flex items-center justify-center relative overflow-hidden">
-      {/* 背景光晕(紫磷光) */}
-      <div
-        className="absolute -top-40 left-1/2 -translate-x-1/2 w-[720px] h-[420px] rounded-full opacity-25 blur-[120px] pointer-events-none"
-        style={{ background: 'radial-gradient(closest-side, #7056F8, transparent)' }}
-      />
+      <Aurora />
       <div className="relative w-[400px] rise-in">
         <div className="flex items-center gap-3 mb-8">
           <div
@@ -41,7 +38,7 @@ export default function Login() {
             <div className="text-xs text-[var(--text-3)]">智能业务数据交互平台</div>
           </div>
         </div>
-        <div className="bg-[var(--cockpit-800)] border border-[var(--border)] rounded-2xl p-8 shadow-2xl">
+        <div className="bg-[var(--cockpit-800)] border border-[var(--border)] rounded-2xl p-8 shadow-2xl backdrop-blur">
           <Form form={form} layout="vertical" onFinish={onFinish} initialValues={{ user_name: 'admin' }}>
             <Form.Item
               name="user_name"
@@ -69,8 +66,8 @@ export default function Login() {
             </Button>
           </Form>
         </div>
-        <div className="text-center text-xs text-[var(--text-3)] mt-6 mono">
-          natural language → data → insight
+        <div className="text-center text-xs text-[var(--text-3)] mt-6 mono tracking-widest">
+          NATURAL LANGUAGE → DATA → INSIGHT
         </div>
       </div>
     </div>

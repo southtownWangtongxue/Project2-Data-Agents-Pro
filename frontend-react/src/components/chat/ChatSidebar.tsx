@@ -5,6 +5,7 @@
  */
 import { useState } from 'react'
 import { Modal, Input, message as antdMsg } from 'antd'
+import ClickSpark from '@/components/bits/ClickSpark'
 import { useChatStore } from '@/stores/chat'
 import { api } from '@/api/client'
 
@@ -69,10 +70,12 @@ export default function ChatSidebar({ collapsed, onToggle }: { collapsed: boolea
             className="px-2 py-1 text-[11px] text-[var(--text-3)] bg-transparent border border-[var(--border)] rounded cursor-pointer hover:text-[var(--text-1)]">
             🎯 目标
           </button>
-          <button type="button" onClick={() => store.newSession()} title="新建会话"
-            className="px-2 py-1 text-[11px] text-brand-light bg-brand/10 border border-brand/25 rounded cursor-pointer hover:bg-brand/20">
-            + 新建
-          </button>
+          <ClickSpark>
+            <button type="button" onClick={() => store.newSession()} title="新建会话"
+              className="px-2 py-1 text-[11px] text-brand-light bg-brand/10 border border-brand/25 rounded cursor-pointer hover:bg-brand/20">
+              + 新建
+            </button>
+          </ClickSpark>
           <button type="button" onClick={onToggle} title="折叠侧栏"
             className="px-1.5 py-1 text-[11px] text-[var(--text-3)] bg-transparent border border-[var(--border)] rounded cursor-pointer">←</button>
         </div>
@@ -91,11 +94,17 @@ export default function ChatSidebar({ collapsed, onToggle }: { collapsed: boolea
           return (
             <div
               key={s.thread_id}
-              className={`group mx-2 mb-0.5 px-2.5 py-2 rounded-lg cursor-pointer transition-colors ${
-                active ? 'bg-brand/10 border border-brand/25' : 'border border-transparent hover:bg-[var(--cockpit-800)]'
+              className={`group relative mx-2 mb-0.5 pl-3 pr-2.5 py-2 rounded-lg cursor-pointer transition-colors ${
+                active ? 'bg-brand/10' : 'hover:bg-[var(--cockpit-800)]'
               }`}
               onClick={() => store.loadSession(s.thread_id)}
             >
+              {/* 激活轨:左侧紫条(驾驶舱语言) */}
+              <span
+                className={`absolute left-0 top-1/2 -translate-y-1/2 w-[2px] rounded-full transition-all ${
+                  active ? 'h-5 bg-brand shadow-[0_0_8px_rgba(112,86,248,0.8)]' : 'h-0'
+                }`}
+              />
               <div className="flex items-center gap-1.5">
                 <span className="text-[12px] text-[var(--text-1)] truncate flex-1">{s.title || '未命名会话'}</span>
                 <span className="hidden group-hover:flex gap-1 flex-shrink-0">
