@@ -11,6 +11,8 @@ export interface LlmProvider {
   name: string
   model: string
   api_base: string
+  api_key_env?: string
+  api_key?: string
   enabled: boolean
   is_default: boolean
   key_mode: string
@@ -19,7 +21,13 @@ export interface LlmProvider {
   /* 思考模式开关(全模态参数体系,admin 配置) */
   thinking_mode?: boolean
   capabilities?: { tools?: boolean; image_input?: boolean; thinking?: boolean }
-  params?: Record<string, unknown>
+  params?: {
+    top_p?: number
+    presence_penalty?: number
+    frequency_penalty?: number
+    reasoning_effort?: string
+    seed?: number | null
+  }
 }
 
 interface ConfigStore {

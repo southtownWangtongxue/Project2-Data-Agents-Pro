@@ -8,7 +8,7 @@ import json
 
 from fastapi import APIRouter, Depends, HTTPException
 from pathlib import Path
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.api.v1.auth import get_current_user
 from app.core.config_manager import get_config_manager
@@ -49,6 +49,25 @@ async def list_llm(_admin=Depends(require_admin)):
     return {"providers": mgr.llm_providers, "mode_defaults": mgr.mode_defaults}
 
 
+class LLMCapabilities(BaseModel):
+    """全模态能力声明(配置中心高级配置复选框组)。"""
+
+    tools: bool = True          # 工具调用
+    image_input: bool = False   # 图片输入(多模态)
+    thinking: bool = False      # 推理/思考内容输出
+
+
+class LLMParams(BaseModel):
+    """采样与推理参数(对齐 OpenAI SDK ChatCompletion.create)。"""
+
+    top_p: float = 1.0
+    presence_penalty: float = 0.0
+    frequency_penalty: float = 0.0
+    # 思考强度: minimal / low / medium / high(空=不指定,按提供方默认)
+    reasoning_effort: str = ""
+    seed: int | None = None
+
+
 class LLMProvider(BaseModel):
     id: str
     name: str
@@ -61,6 +80,11 @@ class LLMProvider(BaseModel):
     max_tokens: int = 4096
     is_default: bool = False
     enabled: bool = True
+    # 全模态与思考能力
+    capabilities: LLMCapabilities = Field(default_factory=LLMCapabilities)
+    # 思考模式(前端 ReasoningBlock 展示开关;关闭=仅隐藏,不丢弃已采集的思考)
+    thinking_mode: bool = False
+    params: LLMParams = Field(default_factory=LLMParams)
 
 
 @router.post("/llm")
