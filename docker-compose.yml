@@ -27,6 +27,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: data-agent-redis
+    command: redis-server --requirepass xiaowangadmin
     ports:
       - "6379:6379"
     volumes:

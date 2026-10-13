@@ -85,6 +85,8 @@ interface SSEEventData {
   chart_suitable?: boolean
   /* quality_feedback 事件专用字段 */
   feedback?: string
+  /* tool_result 事件结果字段（legacy 路径用 result，DeepAgent 路径用 content） */
+  result?: string
   /* title 标题事件专用字段 */
   node_index?: number
   /* node_started 事件专用字段 */
@@ -254,7 +256,9 @@ export function useSSE() {
       case 'tool_result': {
         const toolName = event.name || event.tool_name || ''
         const meta: Record<string, unknown> = {}
-        if (event.content) meta.result = (event.content as string).slice(0, 200)
+        // 兼容两种字段：DeepAgent 路径用 content，legacy 工作流用 result
+        const resultText = event.content || event.result
+        if (resultText) meta.result = String(resultText).slice(0, 200)
         if (event.status) meta.status = event.status  // 新协议：执行状态
         callbacks.onToolResult?.(toolName, meta)
         break

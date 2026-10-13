@@ -100,8 +100,9 @@ export const useChatStore = defineStore('chat', () => {
   /* 当前会话 thread_id（SSE 流返回后设置） */
   const currentThreadId = ref('')
 
-  /* 当前正在流式更新的 token 消息 ID */
-  let activeTokenMsgId: string | null = null
+  /* 正在流式追加的正文消息，按 stepId 隔离——
+   * 并行节点（如 analyst/reporter 同时执行）的 token 各写各的气泡，互不串写、互不截断 */
+  const activeTokenMsgByStep = new Map<number, string>()
 
   /* 当前正在流式累积的 reasoning 消息 ID（Phase 4：思考内容折叠卡片） */
   let activeReasoningMsgId: string | null = null
@@ -117,6 +118,16 @@ export const useChatStore = defineStore('chat', () => {
   let currentStepId = 0
   /* 当前 reasoning 卡片归属的步骤（跨步骤时开新卡片，同步骤多条 reasoning 追加同一张） */
   let activeReasoningStepId = 0
+
+  /* 关闭指定步骤（默认当前步骤）的流式槽位 */
+  function closeTokenSlot(stepKey = currentStepId || 0) {
+    activeTokenMsgByStep.delete(stepKey)
+  }
+
+  /* 关闭全部槽位（流结束/出错/清空时） */
+  function closeAllTokenSlots() {
+    activeTokenMsgByStep.clear()
+  }
 
   /* 最后一个助手文本消息 ID（用于流式光标动画） */
   const lastAssistantMsgId = ref('')
@@ -340,7 +351,7 @@ export const useChatStore = defineStore('chat', () => {
 
         /* Clarifier 追问：意图不够明确，展示追问卡片 */
         onClarification(content: string, options: string[], _clarifyId: string) {
-          activeTokenMsgId = null
+          closeTokenSlot()
           messages.value.push({
             id: generateId(),
             role: 'system',
@@ -352,7 +363,7 @@ export const useChatStore = defineStore('chat', () => {
 
         /* Planner 执行计划 */
         onPlan(intent: string, intentLabel: string, steps: string[], chartSuitable: boolean) {
-          activeTokenMsgId = null
+          closeTokenSlot()
           messages.value.push({
             id: generateId(),
             role: 'system',
@@ -381,7 +392,7 @@ export const useChatStore = defineStore('chat', () => {
 
         /* Agent 推理过程 → 更新流水线进度 + 设置活跃 Agent 上下文 */
         onThinking(agent: string, phase: string, content: string) {
-          activeTokenMsgId = null
+          closeTokenSlot()
           const label = pipelinePhaseMap[agent] || content || agent
           updateTask(agent, label)
           // 仅保留有实质性内容的思考卡片（如 quality_gate 的评估反馈）
@@ -445,16 +456,18 @@ export const useChatStore = defineStore('chat', () => {
             return
           }
           // analyst / misc_agent 等正文 token：Markdown 逐字流式渲染
-          if (activeTokenMsgId) {
-            const msg = messages.value.find(m => m.id === activeTokenMsgId)
-            if (msg) {
-              msg.content = (msg.content || '') + content
-            }
+          // 按 stepId 取各自槽位——并行节点的 token 不会串写同一个气泡
+          const stepKey = currentStepId || 0
+          const activeId = activeTokenMsgByStep.get(stepKey)
+          const activeMsg = activeId ? messages.value.find(m => m.id === activeId) : undefined
+          if (activeMsg) {
+            activeMsg.content = (activeMsg.content || '') + content
           } else {
-            activeTokenMsgId = generateId()
-            lastAssistantMsgId.value = activeTokenMsgId
+            const newId = generateId()
+            activeTokenMsgByStep.set(stepKey, newId)
+            lastAssistantMsgId.value = newId
             messages.value.push({
-              id: activeTokenMsgId,
+              id: newId,
               role: 'assistant',
               type: 'text',
               content: content,
@@ -466,7 +479,7 @@ export const useChatStore = defineStore('chat', () => {
         /* 工具调用 —— 紧凑型卡片 */
         onToolCall(toolName: string, meta: Record<string, unknown>) {
           activeReasoningMsgId = null
-          activeTokenMsgId = null
+          closeTokenSlot()
           // 工具执行窗口开始（性能拆分）
           if (toolWindowStart === null) toolWindowStart = Date.now()
           const cleanMeta: Record<string, unknown> = {}
@@ -539,7 +552,7 @@ export const useChatStore = defineStore('chat', () => {
 
         /* 自然语言文本（分析/回答） */
         onText(content: string) {
-          activeTokenMsgId = null
+          closeTokenSlot()
           messages.value.push({
             id: generateId(),
             role: 'assistant',
@@ -550,7 +563,7 @@ export const useChatStore = defineStore('chat', () => {
 
         /* 生成的 SQL 语句 —— 若本轮已有流式追加中的 SQL 卡片，则用清洗后的完整 SQL 覆盖 */
         onSQL(content: string) {
-          activeTokenMsgId = null
+          closeTokenSlot()
           const streamingSql = activeSqlMsgId ? messages.value.find(m => m.id === activeSqlMsgId) : undefined
           if (streamingSql) {
             streamingSql.sql = content
@@ -568,7 +581,7 @@ export const useChatStore = defineStore('chat', () => {
 
         /* 查询结果数据 */
         onResult(data: any[], columns: string[]) {
-          activeTokenMsgId = null
+          closeTokenSlot()
           messages.value.push({
             id: generateId(),
             role: 'assistant',
@@ -583,7 +596,7 @@ export const useChatStore = defineStore('chat', () => {
         onError(error: string, code?: string, recoverable?: boolean) {
           finalizePerf()
           activeReasoningMsgId = null
-          activeTokenMsgId = null
+          closeAllTokenSlots()
           activeSqlMsgId = null
           messages.value.push({
             id: generateId(),
@@ -600,7 +613,7 @@ export const useChatStore = defineStore('chat', () => {
 
         /* 数据分析洞察 */
         onAnalysis(content: string) {
-          activeTokenMsgId = null
+          closeTokenSlot()
           messages.value.push({
             id: generateId(),
             role: 'assistant',
@@ -612,7 +625,7 @@ export const useChatStore = defineStore('chat', () => {
 
         /* ECharts 图表配置 */
         onChart(config: Record<string, unknown>) {
-          activeTokenMsgId = null
+          closeTokenSlot()
           messages.value.push({
             id: generateId(),
             role: 'assistant',
@@ -624,7 +637,7 @@ export const useChatStore = defineStore('chat', () => {
 
         /* 高危 SQL 需要审批 */
         onApprovalRequired(threadId: string, question: string, sql: string, reason: string) {
-          activeTokenMsgId = null
+          closeTokenSlot()
           const approvalStore = useApprovalStore()
           approvalStore.addTask({ threadId, question, sql, reason })
         },
@@ -652,7 +665,7 @@ export const useChatStore = defineStore('chat', () => {
         onDone() {
           finalizePerf()
           activeReasoningMsgId = null
-          activeTokenMsgId = null
+          closeAllTokenSlots()
           activeSqlMsgId = null
           isLoading.value = false
           // 标记所有任务为已完成，2 秒后自动折叠
@@ -694,7 +707,7 @@ export const useChatStore = defineStore('chat', () => {
     messages.value = []
     isLoading.value = false
     activeReasoningMsgId = null
-    activeTokenMsgId = null
+    closeAllTokenSlots()
     activeSqlMsgId = null
     steps.value = new Map()
     currentStepId = 0
@@ -743,7 +756,7 @@ export const useChatStore = defineStore('chat', () => {
       })
     }
     sseDisconnect()
-    activeTokenMsgId = null
+    closeAllTokenSlots()
     isLoading.value = false
   }
 
