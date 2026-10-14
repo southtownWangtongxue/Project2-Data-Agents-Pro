@@ -1358,6 +1358,50 @@ async def chat_completions(body: ChatRequest, user: dict = Depends(get_current_u
              f"thread_id={body.thread_id or "(None — 新建会话)"}"
     )
 
+    # ── HARNESS_MODE 分发(Phase 1:默认 off,行为与此前完全一致)──
+    #   on:    data 模式走 Harness 主循环(Phase 2 切换默认后启用)
+    #   shadow:data 模式走 legacy,收尾后后台跑 Harness 双跑比对(见 shadow.py)
+    #   off:   完全 legacy 行为
+    _harness_mode = _os.getenv("HARNESS_MODE", "off").lower()
+    if _harness_mode in ("on", "shadow") and body.mode == "data" and not _loop_req.is_deepagent:
+        from app.harness.stream_harness import stream_chat_harness
+
+        if _harness_mode == "on":
+            return StreamingResponse(
+                _wrap_cancellable(
+                    stream_chat_harness(question, user_name, history_msgs, body.thread_id,
+                                        body.model, body.mode, body.web_search, _runtime_context)
+                ),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
+            )
+        # shadow:legacy 照常返回;收尾后挂后台双跑(失败/超时均不影响主响应)
+        import asyncio as _a
+        import time as _t
+
+        from app.harness.shadow import run_shadow_comparison
+
+        _req_started = _t.monotonic()
+
+        async def _shadow_task():
+            try:
+                await _a.wait_for(
+                    run_shadow_comparison(
+                        question, legacy_answer="",
+                        legacy_metrics={"duration_ms": int((_t.monotonic() - _req_started) * 1000)},
+                        user_name=user_name,
+                    ),
+                    timeout=float(_os.getenv("HARNESS_SHADOW_TIMEOUT", "120")),
+                )
+            except Exception as _se:  # noqa: BLE001
+                log.warning("[Shadow] 后台任务异常(已忽略): %s", _se)
+
+        _a.create_task(_shadow_task())
+
     # R20：分发由驱动器 Profile 决策接管（规则与旧逻辑一致：
     # USE_DEEP_AGENT 全局开启或 mode=task → deepagent，其余 → legacy-graph）
     if _loop_req.is_deepagent:
