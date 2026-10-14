@@ -11,6 +11,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from app.api.v1.auth import get_current_user
+from app.core.config_bootstrap import get_setup_status
 from app.core.config_manager import get_config_manager
 
 router = APIRouter(prefix="/config", tags=["config"])
@@ -39,6 +40,14 @@ async def reload_config_patch(user: dict = Depends(require_admin)):
     from app.core.config_layer import reload_patch
     applied = reload_patch()
     return {"ok": True, "applied": applied}
+
+
+# ── 首次配置状态 ──
+
+@router.get("/setup-status", summary="首次配置状态")
+async def setup_status(_admin=Depends(require_admin)):
+    mgr = get_config_manager()
+    return get_setup_status(providers=mgr.llm_providers)
 
 
 # ── LLM Providers ──
