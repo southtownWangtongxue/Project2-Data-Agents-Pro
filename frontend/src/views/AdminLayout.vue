@@ -4,9 +4,10 @@
  * 左侧边栏导航 + 右侧内容区
  * 设计风格对标通义千问：深色主题 + 流畅动效
  */
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import apiClient from '@/api/client'
 
 const route = useRoute()
 const router = useRouter()
@@ -14,6 +15,22 @@ const auth = useAuthStore()
 
 /* 侧边栏折叠状态 */
 const collapsed = ref(false)
+
+const setupRequired = ref(false)
+const setupHint = ref('')
+const mcpHint = ref('')
+
+onMounted(async () => {
+  if (!auth.isAdmin) return
+  try {
+    const data = await apiClient.get('/config/setup-status')
+    setupRequired.value = !!data.setup_required
+    setupHint.value = data.hints?.[0] || '请先配置可用的 LLM 模型'
+    mcpHint.value = data.mcp_optional_hint || ''
+  } catch {
+    setupRequired.value = false
+  }
+})
 
 /* 导航菜单配置 */
 interface MenuConfig {
@@ -161,6 +178,13 @@ function navigateTo(path: string) {
 
     <!-- 右侧内容区 -->
     <main class="content-area">
+      <div v-if="setupRequired" class="setup-banner">
+        <p class="setup-banner__hint">{{ setupHint }}</p>
+        <p v-if="mcpHint" class="setup-banner__muted">{{ mcpHint }}</p>
+        <button type="button" class="setup-banner__cta" @click="navigateTo('/admin/llm')">
+          前往模型配置
+        </button>
+      </div>
       <!-- 页面内容 + 过渡动画 -->
       <router-view v-slot="{ Component }">
         <transition name="page-fade" mode="out-in">
@@ -369,6 +393,41 @@ function navigateTo(path: string) {
   overflow-y: auto;
   background-color: var(--color-bg);
   position: relative;
+}
+
+.setup-banner {
+  margin: var(--space-4) var(--space-4) 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  border-radius: var(--radius-md);
+  background: rgba(245, 158, 11, 0.12);
+}
+
+.setup-banner__hint {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-text-primary);
+}
+
+.setup-banner__muted {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.setup-banner__cta {
+  margin-top: 10px;
+  padding: 4px 10px;
+  border: 1px solid rgba(99, 102, 241, 0.5);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: #818cf8;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.setup-banner__cta:hover {
+  background: rgba(99, 102, 241, 0.12);
 }
 
 /* === Page Transition Animation === */

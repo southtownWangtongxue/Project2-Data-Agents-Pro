@@ -3,8 +3,9 @@
  * 审批配置并入此处(对话内审批的权限范围由管理员在此配置)
  */
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
-import { useEffect } from 'react'
-import { getToken } from '@/api/client'
+import { useEffect, useState } from 'react'
+import { Alert } from 'antd'
+import { api, getToken } from '@/api/client'
 import { useThemeStore } from '@/stores/theme'
 
 const MENU = [
@@ -14,12 +15,25 @@ const MENU = [
   { to: '/admin/approval', label: '审批策略', icon: '⊘', desc: '高危操作审批档位(对话内审批)' },
 ]
 
+type SetupStatus = {
+  setup_required: boolean
+  hints: string[]
+  mcp_optional_hint?: string
+}
+
 export default function AdminLayout() {
   const navigate = useNavigate()
   const theme = useThemeStore()
+  const [setup, setSetup] = useState<SetupStatus | null>(null)
 
   useEffect(() => {
-    if (!getToken()) navigate('/login', { replace: true })
+    if (!getToken()) {
+      navigate('/login', { replace: true })
+      return
+    }
+    api<SetupStatus>('/config/setup-status')
+      .then(setSetup)
+      .catch(() => setSetup(null))
   }, [navigate])
 
   return (
@@ -62,6 +76,27 @@ export default function AdminLayout() {
       </aside>
       {/* 内容区 */}
       <main className="flex-1 min-w-0 overflow-y-auto p-6">
+        {setup?.setup_required && (
+          <Alert
+            type="warning"
+            showIcon
+            className="mb-4"
+            message={setup.hints?.[0] || '请先配置可用的 LLM 模型'}
+            description={
+              <span>
+                {setup.mcp_optional_hint}
+                {' · '}
+                <button
+                  type="button"
+                  className="text-brand-light bg-transparent border-none cursor-pointer underline"
+                  onClick={() => navigate('/admin/llm')}
+                >
+                  前往模型配置
+                </button>
+              </span>
+            }
+          />
+        )}
         <Outlet />
       </main>
     </div>

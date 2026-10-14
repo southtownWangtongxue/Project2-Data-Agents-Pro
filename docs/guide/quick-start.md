@@ -25,6 +25,14 @@ cd data-agent-pro
 cp .env.example .env
 ```
 
+### 配置中心 JSON（本地生成）
+
+`backend/configs/*.json` 为运行时配置，**不入库**。仓库只提供同名的 `*.example.json`。
+
+- 后端首次启动时，若缺少运行时文件，会自动从 example 拷贝生成。
+- 密钥请在管理台「模型配置」中填写，或写入 `.env` 中对应的环境变量名（如 `OPENROUTER_API_KEY`），**不要**把明文 key 提交到 git。
+- 启动日志若出现 `[Setup]` 警告，表示尚未配置可用 LLM；打开管理台按提示完成配置即可。
+
 编辑 `.env` 文件，至少需要配置以下变量：
 
 ```ini
