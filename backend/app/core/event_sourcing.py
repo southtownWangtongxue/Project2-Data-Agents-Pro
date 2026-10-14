@@ -8,7 +8,7 @@ Event Sourcing —— 会话事件溯源 + surface 投影（Phase 1）
 - 用户可见消息由 derive_messages()「投影（surface）」派生，而非单独存储
 - 事件类型化，为后续审计 / 重放 / Fork 提供统一底座
 
-与 dsh 的对应关系（见 docs/reference/deepseek-harness-integration-analysis.md）：
+与 dsh 的对应关系（见 docs/archive/reference/deepseek-harness-integration-analysis.md）：
   - append-only SessionEvent ≈ session_events 表
   - surface 投影（user/message、assistant/message、tool/result）≈ SURFACE_EVENT_TYPES
   - deriveMessages() ≈ derive_messages()

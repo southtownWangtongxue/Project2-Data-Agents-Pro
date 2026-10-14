@@ -10,7 +10,7 @@ Prompt Section —— 系统提示词分层组装（Phase 2）
 - complete 段落：整体替换整个提示词
 - {{var}} 变量插值：assemble 阶段插值
 
-与 dsh 的对应关系（见 docs/reference/deepseek-harness-integration-analysis.md）：
+与 dsh 的对应关系（见 docs/archive/reference/deepseek-harness-integration-analysis.md）：
   - PromptSection {name, order, text, complete} ≈ 同名 dataclass
   - system-prompt/assemble waterfall ≈ PromptAssembler.assemble()
   - variable(name, provider) + renderPrompt ≈ {{var}} 插值

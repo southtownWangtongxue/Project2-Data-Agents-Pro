@@ -11,7 +11,7 @@ Seam —— 能力接缝（Phase 3）
   - seam：可替换，组合时选后端（本阶段主要实现此类）
   - bundle：组合多个服务的复合能力
 
-与 dsh 的对应关系（见 docs/reference/deepseek-harness-integration-analysis.md）：
+与 dsh 的对应关系（见 docs/archive/reference/deepseek-harness-integration-analysis.md）：
   - Service Definition/Provider/Consumer 三角色 ≈ define()/register()/resolve()
   - 组合时选后端 ≈ select()
   - 可注入 replay 后端（测试）≈ register() 一个 fake provider 后 select()

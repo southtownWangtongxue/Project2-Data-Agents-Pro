@@ -4,61 +4,77 @@ export default defineConfig({
   title: 'DataAgent Pro',
   description: '智能业务数据交互平台文档',
   lang: 'zh-CN',
+  // 归档正文可能含过期相对资源，不参与站点构建；仅保留 archive/README 作索引
+  srcExclude: ['archive/reference/**', 'archive/plans/**', 'archive/root/**', 'archive/superpowers/**', 'superpowers/**'],
+  ignoreDeadLinks: [
+    /^https?:\/\/localhost/,
+    '/archive/index',
+  ],
   themeConfig: {
     nav: [
       { text: '首页', link: '/' },
-      { text: '开发指南', link: '/guide/quick-start' },
-      { text: 'API 文档', link: '/api/introduction' },
-      { text: '项目文档', link: '/开发计划' },
-      {
-        text: '参考',
-        items: [
-          { text: 'Harness 架构落地差距分析', link: '/reference/harness-landing-gap-analysis' },
-          { text: 'DeepSeek Harness 研读笔记', link: '/reference/deepseek-harness-notes' },
-          { text: 'DeepSeek Harness 集成分析', link: '/reference/deepseek-harness-integration-analysis' },
-          { text: 'DeepSeek Harness 实测体验', link: '/reference/deepseek-harness-hands-on' },
-          { text: 'Harness 界面与执行机制对比分析', link: '/reference/harness-ui-analysis' },
-          { text: '对话界面对齐官方样板间规范', link: '/reference/chat-ui-playground-alignment' },
-          { text: '运行时架构图', link: '/reference/runtime-architecture' },
-        ],
-      },
+      { text: '上手', link: '/guide/quick-start' },
+      { text: '理解系统', link: '/guide/architecture' },
+      { text: '使用与集成', link: '/api/introduction' },
+      { text: '二次开发', link: '/develop/frontend-dev' },
+      { text: '质量', link: '/qa/01_功能测试用例集' },
+      { text: '归档', link: '/archive/' },
     ],
     sidebar: {
       '/guide/': [
-        { text: '快速开始', link: '/guide/quick-start' },
-        { text: '架构设计', link: '/guide/architecture' },
-        { text: '工作流详解', link: '/guide/workflow' },
-        { text: 'Docker 部署', link: '/guide/deployment' },
+        {
+          text: '上手',
+          items: [
+            { text: '快速开始', link: '/guide/quick-start' },
+            { text: 'Docker 部署', link: '/guide/deployment' },
+          ],
+        },
+        {
+          text: '理解系统',
+          items: [
+            { text: '架构设计', link: '/guide/architecture' },
+            { text: '工作流详解', link: '/guide/workflow' },
+            { text: 'Harness 落地差距分析', link: '/reference/harness-landing-gap-analysis' },
+          ],
+        },
+      ],
+      '/reference/': [
+        { text: 'Harness 落地差距分析', link: '/reference/harness-landing-gap-analysis' },
+        { text: '对话界面对齐官方样板间', link: '/reference/chat-ui-playground-alignment' },
+        { text: '归档说明', link: '/archive/' },
       ],
       '/api/': [
-        { text: '鉴权说明', link: '/api/introduction' },
-        { text: '对话与审批接口', link: '/api/chat-api' },
+        {
+          text: '使用与集成',
+          items: [
+            { text: '鉴权说明', link: '/api/introduction' },
+            { text: '对话与审批接口', link: '/api/chat-api' },
+            { text: '安全与审批流', link: '/advanced/security' },
+            { text: 'RAG 知识库配置', link: '/advanced/rag-config' },
+            { text: '接入新数据库', link: '/advanced/database-access' },
+          ],
+        },
       ],
       '/advanced/': [
+        { text: '鉴权说明', link: '/api/introduction' },
+        { text: '对话与审批接口', link: '/api/chat-api' },
+        { text: '安全与审批流', link: '/advanced/security' },
         { text: 'RAG 知识库配置', link: '/advanced/rag-config' },
         { text: '接入新数据库', link: '/advanced/database-access' },
-        { text: '安全与审批流', link: '/advanced/security' },
       ],
       '/develop/': [
         { text: '前端二次开发', link: '/develop/frontend-dev' },
         { text: 'Agent 开发指南', link: '/develop/agent-dev' },
+        { text: '对话界面对齐官方样板间', link: '/reference/chat-ui-playground-alignment' },
       ],
-      '/reference/': [
-        { text: 'Harness 架构落地差距分析', link: '/reference/harness-landing-gap-analysis' },
-        { text: 'DeepSeek Harness 研读笔记', link: '/reference/deepseek-harness-notes' },
-        { text: 'DeepSeek Harness 集成分析', link: '/reference/deepseek-harness-integration-analysis' },
-        { text: 'DeepSeek Harness 实测体验', link: '/reference/deepseek-harness-hands-on' },
-        { text: 'Harness 界面与执行机制对比分析', link: '/reference/harness-ui-analysis' },
-        { text: '对话界面对齐官方样板间规范', link: '/reference/chat-ui-playground-alignment' },
-        { text: '运行时架构图', link: '/reference/runtime-architecture' },
+      '/qa/': [
+        { text: '功能测试用例集', link: '/qa/01_功能测试用例集' },
+        { text: '测试执行报告', link: '/qa/02_测试执行报告' },
+        { text: '对比分析与改进方案', link: '/qa/03_对比分析与改进方案' },
+        { text: '架构专项设计 R12-R23', link: '/qa/04_架构专项设计_R12-R23' },
       ],
-      '/': [
-        { text: '开发计划', link: '/开发计划' },
-        { text: 'AntDesignX Vue 改造开发计划', link: '/plans/2026-08-05-ant-design-x-vue-integration' },
-        { text: 'V2.0 需求规格说明书', link: '/项目需求规格说明书-V2' },
-        { text: 'V2.0 配置体系说明书', link: '/配置体系说明书' },
-        { text: '项目需求规格说明书 (V1)', link: '/项目需求规格说明书' },
-        { text: '项目审计与改进计划', link: '/项目审计与改进计划' },
+      '/archive/': [
+        { text: '归档说明', link: '/archive/' },
       ],
     },
     socialLinks: [

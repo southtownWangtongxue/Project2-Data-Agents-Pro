@@ -242,7 +242,7 @@ SSE 事件类型（18 类）：`thread_id` · `status` · `thinking` · `reasoni
 
 完整文档（需求规格、配置体系、开发计划）基于 VitePress 构建，位于 `docs/`：
 
-- 对话渲染层重构设计：`docs/plans/2026-10-12-chat-antdx-refactor-design.md`
+- 对话渲染层重构设计（归档）：`docs/archive/plans/2026-10-12-chat-antdx-refactor-design.md`
 - 对话界面对齐官方样板间规范：`docs/reference/chat-ui-playground-alignment.md`
 - 需求规格说明书、配置体系说明书：`docs/`
 

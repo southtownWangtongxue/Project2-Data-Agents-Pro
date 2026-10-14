@@ -164,7 +164,7 @@
 |---|---|
 | 【代码核实】 | 2026-10-10 逐文件核实，路径与行号见各表 |
 | 【commit】 | `fef4974`（perf(stream) 阶段一）、`cefdca7`（refactor(stream) 阶段二）、`e3a7230`（chore(stream) 阶段三） |
-| 基准文档 | `docs/reference/deepseek-harness-integration-analysis.md` v1.0（2026-08-17） |
+| 基准文档 | `docs/archive/reference/deepseek-harness-integration-analysis.md` v1.0（2026-08-17） |
 | 更名记录 | 2026-10-10 工作区改动：7 文档 Hermes→Harness（未提交，随后单独提交） |
 
 ## 声明
