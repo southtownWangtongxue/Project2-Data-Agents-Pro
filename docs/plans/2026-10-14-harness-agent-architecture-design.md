@@ -220,6 +220,16 @@ Bubble(ai)
   往返次数 / 耗时 / token
 - 门禁:比对报告中"结果可用率" ≥ legacy,无 P0 级差异
 
+> Phase 1 已完成:Harness 主循环(装配工厂 + SSE 桥接 + 流式生成器)、
+> HITL 等待-恢复、前端 todo 驱动步骤链、影子双跑比对均已落地并通过
+> 116 项后端 + 28 项前端测试;`HARNESS_MODE` 默认 off,线上行为不变
+> (chat.py 仅 +44 行开关接线)。shadow 比对落盘 `configs/shadow_comparison.jsonl`,
+> `shadow_report()` 可随时汇总。
+> Phase 2(切换默认)前置:用同一问题集在 on/shadow 两模式各跑一轮,
+> 以 shadow_report() 与人工抽检确认"结果可用率"不低于 legacy。
+> 实现期偏差:计划 Task 5 的 chat.py shadow 接线合并进了 Task 3 的开关提交
+> (同一处分流点,避免二次改动同一区域)。
+
 ### Phase 2 切换默认
 - agent 成为 data 模式默认,legacy 降级为 fallback(配置中心开关)
 - 门禁:chrome-devtools 全链路走查(对话/查询/审批 HITL/图表/历史会话)+
