@@ -1026,8 +1026,8 @@ git commit -m "docs(plan): Phase 0 工具层完成——设计文档状态更新
 
 ## Phase 0 完成定义(DoD)
 
-1. `backend/app/harness/` 下四个模块存在且被 31 个新测试覆盖;
+1. `backend/app/harness/` 下四个模块存在且被 37 个新测试覆盖;
 2. 安全闸三态(allow/ask/deny)与审批三决策(approve/edit/reject)有真实 interrupt 链路测试;
-3. `uv run pytest -q` 全绿(83 passed);`npm run build` 成功;
+3. `uv run pytest -q` 全绿(96 passed);`npm run build` 成功;
 4. 除 `approval_policy.py` 常量重命名外,主线代码零 diff;
 5. 工具尚未挂载——Phase 1(主循环接入 + 影子双跑)开始前,线上行为与本阶段开始前完全一致。

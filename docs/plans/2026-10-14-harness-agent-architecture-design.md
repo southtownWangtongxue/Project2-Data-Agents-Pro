@@ -82,9 +82,8 @@ get_table_schema(keywords: str = "") -> str
     # 只读。内部复用 schema_agent.filter_relevant_tables + get_table_schemas
 
 run_sql(sql: str, purpose: str) -> {rows, columns, row_count, duration_ms, sql}
-    # 唯一持库能力。权限中间件闸口(见 §3);执行含轻量自纠错(语法类错误,
-    # 复用 generate_and_execute_sql 的重试循环,最多 2 次);
-    # 语义类改写 SQL 由模型观察到错误后自主完成
+    # 唯一持库能力。权限中间件闸口(见 §3);只做执行+结构化返回,
+    # 不自带 LLM 纠错——纠错责任交还主线模型(见下方 Phase 0 注记)
 
 search_knowledge(query: str) -> str
     # 内部复用 rag_agent.answer_with_rag
@@ -251,7 +250,8 @@ Bubble(ai)
 | 宽松预算下最坏 20 步,延迟/token 显著上升 | 前端停止按钮随时中断;读数条暴露往返次数;按 mode 可收紧 |
 | 弱模型(如 glm-4.5-air)在 agent 循环中表现差 | 配置中心提示"agent 模式建议强模型";弱模型自动收紧 max_steps(实现期定策略) |
 | 影子双跑 = 2x LLM 成本 | 仅小流量/白名单期开启,Phase 2 关闭 |
-| 现有 52 个 pytest 绑在 legacy 图上 | Phase 0 不动图;Phase 1 起补 agent 链路测试 |
+| **零行 SELECT 呈现为 affected_rows=1**(Phase 0 终审登记,Important,不阻塞) | `execute_sql` 对空结果集(含匹配 0 行的 SELECT)统一返回 `[{"affected_rows": N}]`(sql_coder.py:103 既有行为),经 run_sql 包装后"查无数据"会呈现 row_count=1。Phase 0 薄封装范围有意不改主线。Phase 1 处理:优先在 execute_sql 区分空 SELECT 返回 data=[](需单独变更门禁),或由 run_sql 将"仅含 affected_rows 的单行"归一为 rows=[] |
+| 现有 52 个 pytest 绑在 legacy 图上 | Phase 0 不动图;Phase 1 起补 agent 链路测试(实际:Phase 0 后基线为 96 passed) |
 | edit 决策的前端交互(审批卡内 SQL 编辑器) | 实现期设计,先 approve/reject 全功能,edit 可随 Phase 2 上线 |
 
 ## 8. 验收标准(重构完成定义)

@@ -38,13 +38,15 @@ def apply_approval(args: dict, approval: dict) -> tuple[str, dict, str]:
     参数:
         args:     原工具调用参数(含 sql/purpose)
         approval: Command(resume=...) 传入的审批决策:
-                  {"approved": bool, "edited_sql": str?, "comment": str?}
+                  {"approved": bool, "edited_sql": str?, "comment": str?};
+                  非 dict 的畸形值归一为空 dict(按拒绝处理)
 
     返回:
         (action, new_args, deny_reason):
             action="execute" → 放行(new_args 为最终参数,edit 时 sql 已替换)
             action="deny"    → 拒绝(deny_reason 将返回给模型)
     """
+    approval = approval if isinstance(approval, dict) else {}
     if approval.get("approved"):
         return "execute", args, ""
 

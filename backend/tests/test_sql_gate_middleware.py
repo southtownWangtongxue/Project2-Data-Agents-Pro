@@ -96,6 +96,7 @@ async def test_dangerous_asks_then_approve(monkeypatch):
     assert payload["type"] == "approval_required"
     assert payload["sql"] == "DROP TABLE t"
     assert payload["purpose"] == "测试"
+    assert "需要审批" in payload["message"]
     assert "reason" in payload
 
     resumed = await graph.ainvoke(Command(resume={"approved": True}), config)
