@@ -51,8 +51,15 @@ class ConfigManager:
 
         目录扫描（R19/P5）：新增配置文件（如 patch.json、command_whitelist.json）
         无需修改本清单即可被加载；_comment 等元键由各消费方自行过滤。
+        首次启动：缺失的运行时文件从 *.example.json 拷贝生成。
         """
+        from app.core.config_bootstrap import ensure_runtime_configs
+
+        ensure_runtime_configs(CONFIGS_DIR)
         for path in sorted(CONFIGS_DIR.glob("*.json")):
+            # Path.glob("*.json") also matches "*.example.json"
+            if path.name.endswith(".example.json"):
+                continue
             self._cache[path.name] = self._load_json(path.name)
         log.info("[ConfigManager] 配置加载完成")
 
