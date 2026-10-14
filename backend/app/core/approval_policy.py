@@ -27,7 +27,7 @@ TIER_LABELS = {
 }
 
 # 各档位允许自动放行的风险等级（dangerous 语句细分：dml / ddl / admin）
-_AUTO_APPROVE_RISK = {
+AUTO_APPROVE_RISK = {
     "read_only": set(),                       # 无自动放行
     "workspace_write": {"dml"},               # 仅数据写入
     "full_access": {"dml", "ddl", "admin"},   # 全部
@@ -85,6 +85,6 @@ def decide_approval(category: str, risk_level: str = "admin") -> str:
         return "auto_approve"
 
     tier = get_tier()
-    if risk_level in _AUTO_APPROVE_RISK.get(tier, set()):
+    if risk_level in AUTO_APPROVE_RISK.get(tier, set()):
         return "auto_approve"
     return "interrupt"
