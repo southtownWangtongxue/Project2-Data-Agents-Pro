@@ -145,3 +145,7 @@ dist/
 # Tool / runtime artifacts (not project source)
 .workbuddy/
 backend/exports/
+
+# Runtime JSON configs (seeded from *.example.json on first start)
+backend/configs/*.json
+!backend/configs/*.example.json

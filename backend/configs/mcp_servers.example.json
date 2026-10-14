@@ -1,0 +1,11 @@
+{
+  "servers": [
+    {
+      "id": "filesystem",
+      "name": "文件系统",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+      "enabled": false
+    }
+  ]
+}
