@@ -908,6 +908,11 @@ git add backend/app/harness/sql_gate_middleware.py backend/tests/test_sql_gate_m
 git commit -m "feat(harness): SQL 安全闸中间件——run_sql 拦截 + HITL 审批(approve/edit/reject)"
 ```
 
+**实现期偏差追记(Task 3 审查后):**
+- 计划原代码在 `classification=None` 时 `classification.get("reason")` 会抛 AttributeError(计划自带的 deny 测试必然失败);实现增加 `cls = classification if isinstance(classification, dict) else {}` 防御别名,日志与 deny 分支统一走 `cls`。
+- 计划测试导入 `langchain.checkpoint.memory` / `langchain.graph` 在当前版本不可用,实际改用 `langgraph.checkpoint.memory` / `langgraph.graph`;删除未使用的 `pytest_asyncio` 导入。
+- 审查后加固:resume 值非 dict(如 `Command(resume=True)`)优雅降级为 deny;分类异常回给模型的只保留异常类型名(详情进服务端日志);ask 分支 reason 统一走 `cls`;测试数由计划文本的 11 修正为实际的 13(补畸形 resume 与载荷字段断言)。
+
 ---
 
 ### Task 4: R9 流水线集成验证
