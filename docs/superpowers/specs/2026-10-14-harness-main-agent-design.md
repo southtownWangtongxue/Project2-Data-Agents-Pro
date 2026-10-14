@@ -1,154 +1,130 @@
-# Harness Main Agent Architecture Design
+# Harness 主 Agent 架构设计
 
 **Date:** 2026-10-14  
 **Status:** Approved (conversation)  
-**Direction:** C — one main Agent; Schema / SQL / Execute / Analysis become Harness peripherals (tools / skills / MCP / optional subagents); security via policy envelope (rules, approval tiers, command whitelist), not a skippable peer node.
+**Supersedes (naming):** 「8 Agent 固定流水线」作为 Data 主路径的对外表述  
+**Related:** `docs/reference/harness-landing-gap-analysis.md`, DeepAgent harness / Skills / approval_policy / command_whitelist
 
-## Problem
+## 1. Problem
 
-The current **data** path is a fixed LangGraph DAG (`clarify_plan → schema → sql_coder → security → execute → quality_gate → analyst → reporter`). Nodes are LLM specialists with conditional routing. This is an **agentic workflow / pipeline**, not an open agent loop. Marketing as “multi-agent collaboration” is misleading; it also diverges from DeepSeek Harness / Cursor / WorkBuddy style: **one driver loop + peripheral capabilities + hard permission shell**.
+当前 Data 模式是 LangGraph 固定编排（clarify → schema → sql_coder → security → execute → …）。节点虽称 Agent，但下一步由条件边写死，体验与 Cursor / DeepSeek Harness / WorkBuddy 的「主循环 + 外围能力」不一致；安全靠流水线位置保证，而非 Harness 式策略壳。
 
-Existing building blocks already lean Harness-ward:
+## 2. Goals
 
-- `app/deepagent/harness.py` (DeepAgent factory, skills progressive disclosure)
-- `command_whitelist.json` + `tools_exec.run_command`
-- `approval_policy` tiers (`read_only` / `workspace_write` / `full_access`)
-- Chat-inline HITL (`interrupt` / resume)
-- Feature-flagged event sourcing / prompt sections / seams
+- **主 Agent 循环**：规划 / 调工具 / 观察 / 再规划，自主决定是否查 Schema、生成 SQL、分析、出图。
+- **能力外围化**：现有编排步骤变为 Tool / Skill / MCP / 可选 SubAgent，可配置启停。
+- **安全不可旁路**：执行类动作经 Policy 中间件（分类、审批档位、HITL、脱敏、命令白名单）；Security **不是**可跳过的并列 Skill。
+- **渐进迁移**：双轨（DeepAgent data 路径 + legacy graph），feature flag 切换；不一次删图。
 
-Gap: **data mode still bypasses the main agent loop** and keeps security as a graph peer node.
+## 3. Non-Goals (Phase 1)
 
-## Goals
+- 删除全部 LangGraph data 图代码。
+- 让模型直连 JDBC / 任意执行未包装 SQL。
+- 将 Security 做成普通可跳过 Skill。
+- 默认 `full_access` 无确认。
 
-1. **Single main Agent loop** for user turns (plan → call tools → observe → continue until done).
-2. **Capability surface**: Schema, SQL generate, RAG, analyze, chart, shell — as tools / skills / MCP / optional compiled subagents.
-3. **Non-bypassable policy envelope** on dangerous actions (especially SQL execute).
-4. **Dual-track migration**: DeepAgent data profile behind flag; legacy graph remains fallback until parity.
-5. **Honest naming** in docs/UI: “主 Agent + Harness 能力”, not “8 个 Agent 流水线”.
-
-## Non-Goals (Phase 1)
-
-- Delete the LangGraph data graph in one shot.
-- Make Security a normal optional Skill the model can skip.
-- Allow arbitrary DB drivers or raw SQL outside `data.execute`.
-- Full Cursor-parity (editor, LSP, etc.).
-
-## Target Architecture
+## 4. Target Architecture
 
 ```
 User message
     ↓
-Main Agent (DeepAgent / unified agent-loop)
-    · system rules + skill catalog (progressive disclosure)
-    · tool calls / optional subagent delegate
+Main Agent (DeepAgent loop)
+    ↓ tools / skills / mcp / subagents
+    ├─ schema.search / schema.get
+    ├─ sql.generate / sql.explain
+    ├─ data.execute   ← mandatory policy envelope
+    ├─ rag.search
+    ├─ analyze / chart
+    └─ shell.run      ← command_whitelist + tier
     ↓
-Capability tools (read-mostly free; write gated)
-    · schema.search / schema.get
-    · sql.generate / sql.explain
-    · rag.search
-    · analyze.stats / chart.render
-    · shell.run          → command_whitelist + tier
-    · data.execute       → ONLY SQL execution entry
-    ↓
-Policy envelope (middleware / wrapper — not a choosable peer step)
-    · SQL risk classify (regex + LLM as today)
-    · approval_policy tier decision
-    · HITL interrupt when required
-    · result masking before return to model / SSE
-    ↓
-SSE / trajectory (tool_call, tool_result, reasoning, tokens, approval_required)
+Policy envelope (rules + middleware, not optional tools)
+    · system rules
+    · approval_policy tiers
+    · SQL risk class + HITL interrupt
+    · command whitelist / path sandbox
 ```
 
-### Decision ownership
+### 4.1 Decision matrix
 
-| Capability | Form | Who decides “try” | Who decides “allow” |
-|------------|------|-------------------|---------------------|
-| Schema / SQL generate / RAG / analyze / chart | Tool or Skill | Main Agent | Soft limits only |
-| Execute SQL | Controlled tool `data.execute` | Main Agent may invoke | **Envelope always** |
-| Security classify / approve | Middleware inside `data.execute` | — | Policy + HITL |
-| Heavy SQL specialist | Optional SubAgent | Main Agent delegates | Still must use `data.execute` |
-| Shell | Tool | Main Agent | Whitelist + tier |
+| Capability | Form | Who decides to invoke | Who decides allow |
+|------------|------|----------------------|-------------------|
+| Schema / generate SQL / analyze / chart | Tool or Skill | Main Agent | Mostly free (read) |
+| Execute SQL | Controlled Tool `data.execute` | Main Agent may request | Middleware always |
+| Security | Envelope around execute | — | Always on |
+| Heavy SQL specialty | Optional SubAgent | Main Agent delegates | Same execute envelope |
+| Shell | Tool `shell.run` | Main Agent | Whitelist + tier |
 
-## Tool / Skill Inventory (Phase 1 contract)
+### 4.2 Tool inventory (Phase 1 contract)
 
-Stable names (implement behind these IDs; wrap existing modules):
-
-| Tool ID | Wraps (today) | Notes |
-|---------|---------------|-------|
-| `schema.search` / `schema.get` | `schema_agent` | Return filtered DDL / table cards |
-| `sql.generate` | `sql_coder` generate path | Dialect-aware; may self-repair on *dry* feedback only |
-| `data.execute` | security + execute + mask | **Mandatory gate**; never expose raw engine to model |
+| Tool ID | Maps from | Notes |
+|---------|-----------|--------|
+| `schema.search` / `schema.get` | `schema_agent` | Return filtered DDL / columns |
+| `sql.generate` | `sql_coder` (gen only) | Dialect-aware; no execute |
+| `sql.explain` | optional | Read-only explain if dialect supports |
+| `data.execute` | `security` + `execute_sql` | **Only** SQL execution entry |
 | `rag.search` | `rag_agent` | Optional |
-| `analyze.summarize` | `analyst` | On tabular payload from last execute |
+| `analyze.result` | `analyst` | Stats on last result set |
 | `chart.render` | `reporter` | ECharts JSON |
-| `shell.run` | `tools_exec.run_command` | Existing whitelist |
-| `load_skill` | skills progressive disclosure | Already present |
+| `shell.run` | existing deepagent exec | Whitelist first token |
 
-Clarification / intent: prefer **main Agent + rules** (ask user when ambiguous) over a hardwired `clarify_plan` node; keep a thin pre-check only if product requires structured clarification cards.
+Clarification / misc / title can remain lightweight helpers (prompt or thin tools), not graph nodes.
 
-## Policy Envelope
+### 4.3 Policy envelope on `data.execute`
 
-1. **Rules** (system / prompt sections): read free; writes only via `data.execute`; never invent execution bypass; respect approval tier.
-2. **`data.execute(sql, …)`**:
-   - Classify risk (reuse security agent logic).
-   - `decide_approval(tier, risk)` → auto | interrupt.
-   - On interrupt: emit `approval_required`, suspend (checkpointer), resume with approve/reject.
-   - On allow: run query, mask PII, return rows/summary to agent + SSE `result`.
-3. **Shell**: unchanged whitelist semantics; empty whitelist = deny.
-4. **Observability**: every gated call logs audit fields (user, sql hash, risk, decision).
+1. Parse / classify SQL (regex + existing LLM double-check as needed).  
+2. `approval_policy.decide_approval(tier, risk)` — reuse `app/core/approval_policy.py`.  
+3. If human required → HITL interrupt (reuse conversation approve / resume).  
+4. Execute via existing DB session layer.  
+5. Mask sensitive fields before returning to Agent / SSE.  
+6. Never expose a second execute path to the model.
 
-Security is **not** registered as a peer tool `security.check` that the model can omit before a hypothetical free execute.
+System rules (prompt + hard checks): model must not invent connection strings; must not claim write succeeded without `data.execute` result.
 
-## Runtime / Feature Flags
+### 4.4 Main Agent runtime
 
-| Flag | Default | Behavior |
-|------|---------|----------|
-| `USE_DEEP_AGENT` or profile `deepagent` for `mode=data` | false initially | Route data chat through main Agent + tools |
-| Legacy `get_data_workflow()` | remains | Fallback when flag off or kill-switch |
-| `AGENT_LOOP_ENABLED` | evolve | Unify construction then execution (extend existing R20 skeleton) |
+- Prefer existing `app/deepagent/harness.py` (`create_deep_agent`, Skills progressive disclosure, fixed tools).  
+- Data mode profile: DeepAgent with the tool set above (+ MCP from config when enabled).  
+- Trajectory: emit `tool_call` / `tool_result` (and existing SSE types) for UI step list — stop hardcoding graph node names as the only progress model.
 
-Shadow mode (optional): run tool-path construction and log drift vs graph path without serving it.
+## 5. Migration
 
-## Frontend Impact
+| Phase | Deliverable | Exit criteria |
+|-------|-------------|---------------|
+| M0 | Spec + tool interface stubs behind flag | Review approved |
+| M1 | Wrap schema / sql.generate / data.execute / analyze / chart as tools; policy on execute | Unit tests; shadow or opt-in flag |
+| M2 | Data chat path via DeepAgent when `USE_DEEP_AGENT` / data-profile on | Parity on golden NL→SQL cases; HITL still works |
+| M3 | UI trajectory from tools; docs rename | Frontend checklist not node-locked |
+| M4 | Deprecate default legacy graph; keep fallback flag | Error budget OK |
 
-- Task checklist / step chain driven by **tool_call / tool_result / node_started** (or mapped tool IDs), not hardcoded graph node order.
-- Approval UX unchanged (SSE `approval_required` → resume).
-- Config center already manages skills / MCP / approval — extend to show “data tools” enablement if needed.
+Flags (illustrative; names may align with existing settings):
 
-## Migration Milestones
+- Keep `USE_DEEP_AGENT` as master or introduce `DATA_AGENT_PROFILE=legacy|harness`.  
+- Legacy graph remains until M4.
 
-1. **M1 — Tool adapters**: Wrap schema / sql.generate / data.execute / analyze / chart; unit tests on envelope (deny bypass, HITL path).
-2. **M2 — Main Agent data profile**: DeepAgent (or agent-loop) with tool set + rules; feature-flagged; golden questions vs legacy.
-3. **M3 — Trajectory UX**: Frontend groups by tools; docs rename.
-4. **M4 — Deprecate graph default**: Flip default profile when metrics pass; keep graph as emergency fallback one release.
-5. **M5 — Optional**: MCP exposure of same tools; SQL subagent for hard queries.
+## 6. Compatibility
 
-## Success Criteria
+- Approval tiers, command whitelist, config center Skills/MCP UI stay.  
+- SSE protocol: only add, don’t remove (`stream_protocol`).  
+- Existing HITL approve API continues to resume the same thread.
 
-- Main Agent can answer a multi-step data question by choosing tools without a fixed node sequence.
-- No SQL reaches the DB except through `data.execute`.
-- Write SQL still requires HITL under `read_only`.
-- Flag off restores legacy graph behavior.
-- Docs/nav describe Harness main Agent, not “8-agent pipeline”.
-
-## Risks & Mitigations
+## 7. Risks & mitigations
 
 | Risk | Mitigation |
 |------|------------|
-| Model loops or skips schema | Tool guidance + max iterations; quality skill / critic optional |
-| Latency / token cost | Progressive skill disclosure; smaller tool schemas; cache schema packs |
-| Regressions on Text-to-SQL | Dual-track + golden set; shadow compare |
-| “Security as tool” footgun | Envelope ownership documented; code review gate on execute path |
+| Agent skips schema → bad SQL | Prompt rules + optional soft gate / quality tool; eval suite |
+| Agent bypasses security | Single execute tool; code review forbid raw DB in other tools |
+| Latency / token cost | Progressive skill disclosure; schema search not full dump |
+| Regressions | Golden queries; shadow compare legacy vs harness |
 
-## Related Code
+## 8. Success metrics
 
-- `backend/app/deepagent/harness.py`, `tools_exec.py`, `prompts.py`
-- `backend/app/graph/workflow.py` (legacy)
-- `backend/app/core/approval_policy.py`, `agent_loop.py`
-- `backend/app/core/hitl.py` / chat approve SSE
+- Default data path runs Main Agent + tools under flag.  
+- 100% write SQL still hit approval when tier requires.  
+- No plaintext second execute API for the model.  
+- Docs describe「主 Agent + Harness 能力」，not「8 Agent 流水线」as primary story.
 
-## Out of Scope Follow-ups
+## 9. Open follow-ups (out of Phase 1 scope)
 
-- Align CLAUDE.md marketing language (small doc PR).
-- Full MCP server packaging for external IDEs.
-- Removing Vue legacy frontend docs (already archived).
+- Full MCP packaging of every tool for external hosts.  
+- SubAgent for SQL-only specialist.  
+- Unify `AgentLoopRunner` to own streaming end-to-end (R20 completion).
