@@ -106,8 +106,8 @@ async def stream_chat_harness(
         return max_seconds - (_time.monotonic() - started)
 
     try:
-        # 注:hitl 等待登记在 stream_chat_harness 进入前由 legacy 同款路径完成;
-        # 本生成器负责在退出时清理,防止客户端断连留下悬挂 waiter。
+        # 注:hitl 等待者由下方 hitl.wait_for 内部 register_waiter 登记;
+        # finally 的 cancel 负责在流退出(含客户端断连)时清理,防悬挂 waiter。
         # ── 主循环:astream →(审批中断)→ Command(resume) → 重新 astream ──
         while True:
             remain = _remaining()

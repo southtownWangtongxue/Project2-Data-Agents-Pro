@@ -1,9 +1,13 @@
 """Harness SSE 事件桥接器(Phase 1)。
 
 把 deepagents astream 的 (mode, data) 事件流翻译为现有 SSE 事件 dict:
-- messages 模式 → token(正文)/reasoning(思考)/tool_call(工具调用增量)
-- updates 模式 → plan(todos 变更)/sql+result(run_sql 富事件)/
-  chart(make_chart 富事件)/tool_result(紧凑摘要)/approval_required(中断)
+- messages 模式 → token(正文)/reasoning(思考)
+- updates 模式 → plan(todos 变更)/tool_call(agent 节点完整 calls,唯一来源)/
+  sql+result(run_sql 富事件)/chart(make_chart 富事件)/
+  tool_result(紧凑摘要)/approval_required(中断)
+
+tool_call 只从 updates 的完整 tool_calls 发:messages 流式首 chunk 只带
+name/id、args 为空(实测),在 messages 侧发会导致卡片参数残缺。
 
 step_id 语义(todo 驱动):todos 中 status=in_progress 的条目即当前步骤,
 工具事件挂当前步骤;无 in_progress 时挂 0(平铺)。
@@ -34,7 +38,7 @@ class HarnessEventBridge:
         self.todos: list[dict] = []
         self.current_step_id: int = 0
         self.pending_approval: bool = False
-        # 已发过 tool_call 的调用 id(增量 chunk 与完整 calls 两条路径去重)
+        # 已发过 tool_call 的调用 id(updates 路径内去重:同一调用只发一次卡)
         self._emitted_call_ids: set[str] = set()
 
     # ── 对外入口 ────────────────────────────────────────────
