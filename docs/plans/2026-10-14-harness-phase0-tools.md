@@ -993,7 +993,8 @@ git commit -m "test(harness): 工具 × R9 流水线集成——名称/docstring
 **Step 1: 后端全量测试**
 
 Run: `cd backend && uv run pytest -q`
-Expected: 全部通过,且总数 = 原 52 + 新增 31(7 + 10 + 11 + 3)= 83 passed
+Expected: 全部通过,总数 = 59(基线)+ 37(新增:test_sql_gate 6 + test_data_tools 15 + test_sql_gate_middleware 13 + test_harness_tools_pipeline 3)= 96 passed
+(计划初稿写 83,系逐任务测试数笔误累计;实际数以本行为准)
 
 **Step 2: 确认主线零改动**
 
