@@ -28,9 +28,19 @@ export function buildBlocks(messages: Msg[], steps: Map<number, Step>): Block[] 
     stepMsgs.get(sid)!.push(m)
   }
 
-  /* 第二遍:按原消息顺序输出;步骤首条消息处输出聚合块,其余同 step 消息跳过 */
-  const out: Block[] = []
+  /* 全部已知步骤按 id 排序(含尚无消息的 pending 步骤——todo 骨架需要它们可见) */
+  const allStepIds = [...steps.keys()].sort((a, b) => a - b)
   const emitted = new Set<number>()
+  const out: Block[] = []
+  const emitStep = (sid: number) => {
+    if (emitted.has(sid)) return
+    const step = steps.get(sid)
+    if (!step) return
+    emitted.add(sid)
+    out.push({ kind: 'step', key: `step-${sid}`, role: 'ai', step, messages: stepMsgs.get(sid) || [] })
+  }
+
+  /* 第二遍:按原消息顺序输出;步骤首条消息处输出聚合块,其余同 step 消息跳过 */
   for (const m of messages) {
     const sid = m.stepId || 0
     const step = sid ? steps.get(sid) : undefined
@@ -38,9 +48,15 @@ export function buildBlocks(messages: Msg[], steps: Map<number, Step>): Block[] 
       out.push({ kind: 'msg', key: m.id, role: m.role === 'user' ? 'user' : 'ai', msg: m })
       continue
     }
+    /* 先补发更早且尚未出现的步骤(pending 空块),保持 todo 顺序 */
+    for (const id of allStepIds) {
+      if (id >= sid) break
+      emitStep(id)
+    }
     if (emitted.has(sid)) continue
-    emitted.add(sid)
-    out.push({ kind: 'step', key: `step-${sid}`, role: 'ai', step, messages: stepMsgs.get(sid) || [] })
+    emitStep(sid)
   }
+  /* 收尾:补发剩余没有任何消息的步骤(如全部 pending 的后续 todo) */
+  for (const id of allStepIds) emitStep(id)
   return out
 }

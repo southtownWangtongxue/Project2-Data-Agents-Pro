@@ -106,6 +106,8 @@ async def stream_chat_harness(
         return max_seconds - (_time.monotonic() - started)
 
     try:
+        # 注:hitl 等待登记在 stream_chat_harness 进入前由 legacy 同款路径完成;
+        # 本生成器负责在退出时清理,防止客户端断连留下悬挂 waiter。
         # ── 主循环:astream →(审批中断)→ Command(resume) → 重新 astream ──
         while True:
             remain = _remaining()
@@ -167,6 +169,9 @@ async def stream_chat_harness(
     except Exception as exc:  # noqa: BLE001 —— 异常转为可重试错误事件,不断流
         log.exception("[Harness SSE] 流式异常")
         yield _sse_event({"type": "error", "content": f"执行异常: {exc}", "recoverable": True})
+    finally:
+        # 清理 hitl 等待登记(legacy 同款):客户端断连/取消不留悬挂 waiter
+        hitl.cancel(session_thread_id)
 
     # ── 收尾:done 先行,标题后置(已修复语义,合并时勿回退)────────
     if es_enabled and turn_event_enabled():

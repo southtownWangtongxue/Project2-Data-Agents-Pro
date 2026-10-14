@@ -70,16 +70,9 @@ class HarnessEventBridge:
         if reasoning:
             out.append({"type": "reasoning", "content": reasoning, "step_id": self.current_step_id})
 
-        for tc in getattr(chunk, "tool_call_chunks", None) or []:
-            emitted = self._emit_tool_call(tc)
-            if emitted:
-                out.append(emitted)
-
-        # 完整 tool_calls(流末 chunk 携带;与增量 chunk 按 id 去重)
-        for tc in getattr(chunk, "tool_calls", None) or []:
-            emitted = self._emit_tool_call(tc)
-            if emitted:
-                out.append(emitted)
+        # 注意:messages 模式不發 tool_call——实测流式首 chunk 只带 name/id、
+        # args 为空,完整参数只存在于 updates.agent 的完整 tool_calls(见
+        # _on_updates);在此發会导致前端卡片参数残缺或同 id 双卡。
         return out
 
     def _emit_tool_call(self, tc: dict) -> dict | None:

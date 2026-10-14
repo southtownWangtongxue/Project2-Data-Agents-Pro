@@ -24,7 +24,13 @@ def capture_create(monkeypatch):
 def test_build_passes_data_tools(capture_create):
     agent_factory.build_harness_agent()
     names = [getattr(t, "__name__", "") for t in capture_create.captured["tools"]]
-    assert names == ["get_table_schema", "run_sql", "search_knowledge", "make_chart"]
+    assert names == ["get_table_schema", "run_sql", "search_knowledge", "make_chart", "web_search_tool"]
+
+
+def test_build_passes_checkpointer(capture_create):
+    """HITL Command(resume) 依赖 checkpointer;装配必须传入(非 None)。"""
+    agent_factory.build_harness_agent()
+    assert capture_create.captured.get("checkpointer") is not None
 
 
 def test_build_includes_sql_gate_middleware(capture_create):

@@ -55,6 +55,10 @@ async def _fake_title(question, text, provider=None):
 class _FakeHitl:
     wait_for = staticmethod(_fake_wait_for)
 
+    @staticmethod
+    def cancel(thread_id):
+        return None
+
 
 @pytest.fixture
 def patched(monkeypatch):

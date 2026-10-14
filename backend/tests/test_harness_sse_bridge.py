@@ -40,14 +40,31 @@ def test_todo_update_emits_plan_with_todos():
 
 
 def test_tool_call_attaches_to_current_step():
+    """工具调用来自 updates.agent 的完整 tool_calls,挂当前 in_progress 步骤。"""
     bridge = HarnessEventBridge()
     list(bridge.feed(_updates(agent={"todos": [{"id": "1", "title": "t", "status": "in_progress"}]})))
-    chunk = _msg(tool_calls=[{"name": "run_sql", "args": {"sql": "SELECT 1"}, "id": "c1"}])
-    events = list(bridge.feed(_messages(chunk)))
+    ai_msg = _msg(tool_calls=[{"name": "run_sql", "args": {"sql": "SELECT 1"}, "id": "c1"}])
+    events = list(bridge.feed(_updates(agent={"messages": [ai_msg]})))
     calls = [e for e in events if e["type"] == "tool_call"]
+    assert len(calls) == 1
     assert calls[0]["name"] == "run_sql"
     assert calls[0]["step_id"] == 1
     assert "SELECT 1" in calls[0]["args"]
+
+
+def test_tool_call_emitted_once_across_modes():
+    """同一调用 id 在 messages(增量)/updates(完整)两条路径只发一次卡。"""
+    bridge = HarnessEventBridge()
+    list(bridge.feed(_updates(agent={"todos": [{"id": "1", "title": "t", "status": "in_progress"}]})))
+    # messages 模式的流式 chunk(首 chunk args 为空)——不应产生 tool_call 事件
+    chunk = _msg(tool_calls=None)
+    chunk.tool_call_chunks = [{"name": "run_sql", "args": "", "id": "c1"}]
+    events = list(bridge.feed(_messages(chunk)))
+    assert [e for e in events if e["type"] == "tool_call"] == []
+    # updates.agent 的完整 calls——发一次
+    ai_msg = _msg(tool_calls=[{"name": "run_sql", "args": {"sql": "SELECT 1"}, "id": "c1"}])
+    events = list(bridge.feed(_updates(agent={"messages": [ai_msg]})))
+    assert len([e for e in events if e["type"] == "tool_call"]) == 1
 
 
 def test_run_sql_result_emits_rich_events():

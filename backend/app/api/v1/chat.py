@@ -157,6 +157,8 @@ def _sse_event(data: dict) -> str:
 _active_stream_tasks: dict[str, _asyncio.Task] = {}
 # thread_id → asyncio.Event 停止标志：cancel 时 set，生成器检测后正常结束 SSE
 _active_stream_events: dict[str, _asyncio.Event] = {}
+# 后台影子双跑任务强引用集(asyncio 官方模式:防任务被 GC 中途取消)
+_shadow_tasks: set[_asyncio.Task] = set()
 
 
 async def _wrap_cancellable(inner_stream):
@@ -1400,7 +1402,9 @@ async def chat_completions(body: ChatRequest, user: dict = Depends(get_current_u
             except Exception as _se:  # noqa: BLE001
                 log.warning("[Shadow] 后台任务异常(已忽略): %s", _se)
 
-        _a.create_task(_shadow_task())
+        _task = _a.create_task(_shadow_task())
+        _shadow_tasks.add(_task)
+        _task.add_done_callback(_shadow_tasks.discard)
 
     # R20：分发由驱动器 Profile 决策接管（规则与旧逻辑一致：
     # USE_DEEP_AGENT 全局开启或 mode=task → deepagent，其余 → legacy-graph）

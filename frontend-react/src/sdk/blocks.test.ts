@@ -57,3 +57,31 @@ describe('buildBlocks', () => {
     expect((blocks[0] as { messages: Msg[] }).messages.map(m => m.id)).toEqual(['a1', 'a2'])
   })
 })
+
+describe('buildBlocks: pending 步骤可见性(todo 骨架,Harness Phase 1)', () => {
+  const harnessStep = (id: number, label: string, status: Step['status']): Step =>
+    ({ id, agent: 'harness', label, status })
+
+  it('尚无消息的 pending 步骤也输出空内容步骤块', () => {
+    const steps = new Map([
+      [1, harnessStep(1, '查各表数据量', 'running')],
+      [2, harnessStep(2, '生成图表', 'pending')],
+    ])
+    const messages = [msg('a1', 1)]
+    const blocks = buildBlocks(messages, steps)
+    const stepBlocks = blocks.filter(b => b.kind === 'step')
+    expect(stepBlocks).toHaveLength(2)
+    const second = stepBlocks[1] as { step: Step; messages: Msg[] }
+    expect(second.step.status).toBe('pending')
+    expect(second.messages).toHaveLength(0)
+  })
+
+  it('pending 步骤按 id 顺序插在已有步骤之后', () => {
+    const steps = new Map([
+      [1, harnessStep(1, 'A', 'completed')],
+      [2, harnessStep(2, 'B', 'pending')],
+    ])
+    const blocks = buildBlocks([msg('a1', 1)], steps)
+    expect(blocks.map(b => b.kind === 'step' ? b.step.id : 'msg')).toEqual([1, 2])
+  })
+})

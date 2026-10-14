@@ -61,20 +61,37 @@ def _build_model():
     return build()
 
 
+def _build_checkpointer():
+    """HITL Command(resume) 必须有 checkpointer(与 legacy graph 对齐)。
+
+    优先全局 PlainRedisSaver(Redis 不可用时 workflow 已回退 InMemorySaver),
+    再兜底本地 InMemorySaver——缺它时审批恢复段会抛
+    "Cannot use Command(resume=...) without checkpointer"。
+    """
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from app.graph.workflow import get_checkpointer
+
+    return get_checkpointer() or InMemorySaver()
+
+
 def build_harness_agent() -> Any:
     """构建(首次)/返回(全局单例)Harness 主循环 Agent。"""
     global _agent
     if _agent is not None:
         return _agent
 
-    tools = apply_tool_pipeline(get_data_tools())
+    from app.deepagent.tools import web_search_tool
+
+    tools = apply_tool_pipeline([*get_data_tools(), web_search_tool])
     _agent = _create(
         model=_build_model(),
         tools=tools,
         middleware=[SqlGateMiddleware()],
         system_prompt=SYSTEM_PROMPT,
+        checkpointer=_build_checkpointer(),
     )
-    log.info("[Harness] 主循环装配完成: tools=%d middleware=SqlGate", len(tools))
+    log.info("[Harness] 主循环装配完成: tools=%d middleware=SqlGate checkpointer=on", len(tools))
     return _agent
 
 
