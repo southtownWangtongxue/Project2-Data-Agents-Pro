@@ -53,7 +53,9 @@ export default function StepChain({ step, messages }: Props) {
                 步骤 {step.id} · {step.agent}
               </span>
             ),
-            status: running ? 'loading' : 'success',
+            status: running ? 'loading'
+              : step.status === 'pending' ? 'abort'   /* todo 未开始:官方 abort 空心态 */
+              : 'success',
             blink: running,
             collapsible: true,
             content: (

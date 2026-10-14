@@ -257,6 +257,23 @@ export function applyEvent(prev: ChatState, ev: SSEEvent): ChatState {
     }
 
     case E.PLAN: {
+      // Harness todo 驱动:带 todos 字段时同步 steps Map(步骤号取 todo 序号,1 起)
+      if (ev.todos && ev.todos.length > 0) {
+        ev.todos.forEach((t, idx) => {
+          const id = idx + 1
+          const status = t.status === 'completed' ? 'completed'
+            : t.status === 'in_progress' ? 'running' : 'pending'
+          const existing = s.steps.get(id)
+          s.steps.set(id, {
+            id,
+            agent: existing?.agent ?? 'harness',
+            label: t.title,
+            status,
+          })
+        })
+        const inProgress = ev.todos.findIndex(t => t.status === 'in_progress')
+        s.currentStepId = inProgress >= 0 ? inProgress + 1 : 0
+      }
       s.messages.push({
         id: msgId(),
         role: 'system',
@@ -265,6 +282,7 @@ export function applyEvent(prev: ChatState, ev: SSEEvent): ChatState {
         planIntentLabel: ev.intent_label,
         planSteps: ev.steps,
         planChartSuitable: ev.chart_suitable,
+        stepId: ev.step_id,
       })
       return s
     }

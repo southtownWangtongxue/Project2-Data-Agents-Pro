@@ -175,3 +175,56 @@ function resolveApprovalIn(s: ChatState, msgId: string, state: 'approved' | 'rej
     ),
   }
 }
+
+describe('reducer: todo 驱动的步骤分组(Harness Phase 1)', () => {
+  const planWithTodos = (
+    todos: { id: string; title: string; status: 'pending' | 'in_progress' | 'completed' }[],
+    steps?: string[],
+  ) => ({
+    type: E.PLAN,
+    steps: steps ?? todos.map(t => t.title),
+    todos,
+  })
+
+  it('plan 事件带 todos 时同步 steps(含 pending/running/completed)', () => {
+    let s = initialChatState()
+    s = applyEvent(s, planWithTodos([
+      { id: '1', title: '查各表数据量', status: 'in_progress' },
+      { id: '2', title: '生成图表', status: 'pending' },
+    ]))
+    expect(s.steps.get(1)).toMatchObject({ id: 1, label: '查各表数据量', status: 'running' })
+    expect(s.steps.get(2)).toMatchObject({ id: 2, label: '生成图表', status: 'pending' })
+    expect(s.currentStepId).toBe(1)
+  })
+
+  it('todos 状态推进时更新既有步骤(不新建)', () => {
+    let s = initialChatState()
+    s = applyEvent(s, planWithTodos([
+      { id: '1', title: 'A', status: 'in_progress' },
+      { id: '2', title: 'B', status: 'pending' },
+    ]))
+    s = applyEvent(s, planWithTodos([
+      { id: '1', title: 'A', status: 'completed' },
+      { id: '2', title: 'B', status: 'in_progress' },
+    ]))
+    expect(s.steps.size).toBe(2)
+    expect(s.steps.get(1)?.status).toBe('completed')
+    expect(s.steps.get(2)?.status).toBe('running')
+    expect(s.currentStepId).toBe(2)
+  })
+
+  it('plan 事件不带 todos 时走 legacy 行为(仅 plan 消息,不建 steps)', () => {
+    let s = initialChatState()
+    s = applyEvent(s, { type: E.PLAN, steps: ['load_schema', 'generate_sql'], intent: 'query_data' })
+    expect(s.steps.size).toBe(0)
+    expect(s.messages.some(m => m.kind === 'plan')).toBe(true)
+  })
+
+  it('工具事件挂当前 in_progress 步骤', () => {
+    let s = initialChatState()
+    s = applyEvent(s, planWithTodos([{ id: '1', title: 'A', status: 'in_progress' }]))
+    s = applyEvent(s, { type: E.TOOL_CALL, name: 'run_sql', args: 'SELECT 1', step_id: 1 })
+    const tool = s.messages.find(m => m.kind === 'tool')
+    expect(tool?.stepId).toBe(1)
+  })
+})

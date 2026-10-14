@@ -59,6 +59,8 @@ export interface SSEEvent {
   feedback?: string
   /* status 事件附带:审批被拒/超时后打戳前端审批卡(协议只增) */
   approval_state?: string
+  /* plan 事件可选:Harness todo 驱动步骤链(缺省走 legacy steps 语义) */
+  todos?: { id: string; title: string; status: 'pending' | 'in_progress' | 'completed' }[]
 }
 
 /* 领域消息类型(store 中的消息,stepId 为分组键) */
@@ -121,5 +123,6 @@ export interface Step {
   id: number
   agent: string
   label: string
-  status: 'running' | 'completed'
+  /* pending:todo 未开始(Harness 三态);running/completed 兼容 legacy */
+  status: 'pending' | 'running' | 'completed'
 }
