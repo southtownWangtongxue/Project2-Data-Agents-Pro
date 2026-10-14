@@ -366,10 +366,12 @@ def get_data_tools() -> list:
   app/harness/sql_gate_middleware.py 的中间件层,直接裸调 run_sql 是危险的,
   Phase 1 起所有挂载路径必须包含 SqlGateMiddleware。
 - 所有工具返回字符串(JSON 或文本):适配 R9 流水线的截断与 LangChain 工具协议。
-- run_sql 行数上限 MAX_ROWS:超出只返回前 N 行,并告知 row_count,
-  防止大结果集撑爆上下文。
-- 工具不抛异常:执行失败以 JSON success=false 返回,由模型观察后自行修正;
-  异常兜底(超时/未知异常)由 R9 流水线统一处理。
+- run_sql 行数上限 MAX_ROWS:超出只返回前 N 行(truncated=true),并告知
+  row_count,防止大结果集撑爆上下文。
+- 失败语义(Task 2 审查后修正为真实契约,原计划此处描述比实现更美好):
+  业务失败(execute_sql 返回 success=false)以 JSON success=false 返回;
+  基础设施异常(DB 连接/LLM 调用)向上传播,由 R9 流水线兜底为错误字符串——
+  因此挂载本模块时必须启用 R9(TOOL_PIPELINE_ENABLED,默认开启)。
 """
 from __future__ import annotations
 
@@ -396,15 +398,17 @@ async def get_table_schema(keywords: str = "") -> str:
     生成 SQL 前必须先调用本工具了解表与字段,禁止凭记忆猜测表名。
 
     Args:
-        keywords: 可选,与问题相关的关键词(表名/字段名/业务词),用于筛选相关表;
-            为空时返回全库结构(表很多时可能被截断,建议提供关键词)。
+        keywords: 可选,与问题相关的关键词(表名/字段名/业务词)。为空时返回
+            全库结构;提供关键词则由 LLM 筛选相关表(约 10 张以内,可显著
+            降低 Token 消耗)。
 
     Returns:
         表结构文本(建表语句/字段注释);未获取到时返回提示文本。
     """
     engine = get_engine()
-    relevant = await filter_relevant_tables(engine, keywords or "")
-    schema_text = await get_table_schemas(engine, relevant if relevant else None)
+    # 空关键词不过滤,直接取全库结构(过滤器的空 intent 会退化为 LLM 盲选约 10 张)
+    relevant = await filter_relevant_tables(engine, keywords) if keywords.strip() else None
+    schema_text = await get_table_schemas(engine, relevant)
     if not schema_text:
         return "未获取到任何表结构,请检查数据库连接或更换关键词。"
     return schema_text
