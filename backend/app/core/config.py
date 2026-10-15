@@ -112,6 +112,13 @@ class Settings(BaseSettings):
     # 命令白名单由用户自行维护：configs/command_whitelist.json
     EXEC_TOOLS_ENABLED: bool = False
 
+    # ── Harness 主循环模式（智能体架构重构，默认 off 零影响）────
+    # off:    data 模式走 legacy LangGraph（历史行为）
+    # shadow: data 模式走 legacy，收尾后后台跑 Harness 双跑比对
+    # on:     data 模式走 Harness 主循环（数据工具 + 安全闸中间件）
+    # 支持 .env 配置与 configs/patch.json 热更新覆盖（见 config_layer）
+    HARNESS_MODE: str = "off"
+
     # ── 能力接缝（Phase 3：ServiceDefinition/Provider/Consumer）────
     # 开启后，search/llm_client/storage 等可替换点走 SeamRegistry 解析后端，
     # 关闭则走原硬编码实现。便于多后端可替换/可注入测试后端。

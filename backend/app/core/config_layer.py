@@ -38,6 +38,7 @@ KNOWN_FLAGS: list[str] = [
     "TURN_EVENT_ENABLED",
     "AGENT_LOOP_ENABLED",
     "AGENT_LOOP_SHADOW",
+    "HARNESS_MODE",
 ]
 
 # 生效来源标记

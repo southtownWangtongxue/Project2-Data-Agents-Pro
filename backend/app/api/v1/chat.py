@@ -21,6 +21,7 @@ from langgraph.types import Command
 from app.core import hitl
 from app.api.deps import get_current_user
 from app.graph.workflow import get_graph, get_graph_async, use_deep_agent, get_deep_agent
+from app.core.config import settings
 from app.core.config_manager import get_config_manager
 from app.agents.title_generator import generate_node_title
 from app.agents.question_suggester import generate_question_suggestions, get_cached_suggestions
@@ -150,6 +151,16 @@ def _sse_event(data: dict) -> str:
     if sid and data.get("type") not in _STEPLESS_TYPES and "step_id" not in data:
         data["step_id"] = sid
     return f"data: {json.dumps(data, ensure_ascii=False, cls=CustomEncoder)}\n\n"
+
+
+def _resolve_harness_mode() -> str:
+    """解析 Harness 主循环模式(off/shadow/on)。
+
+    读 settings(而非裸 os.getenv):.env 由 pydantic 加载进 settings,
+    项目无 load_dotenv,os.getenv 读不到;configs/patch.json 的白名单
+    热更新同样作用于 settings——两者都因此生效,且默认 off 零影响。
+    """
+    return str(getattr(settings, "HARNESS_MODE", "") or "off").strip().lower()
 
 
 # ── 流式任务注册表（阶段2 B3：支持停止生成）──────────────
@@ -1364,7 +1375,9 @@ async def chat_completions(body: ChatRequest, user: dict = Depends(get_current_u
     #   on:    data 模式走 Harness 主循环(Phase 2 切换默认后启用)
     #   shadow:data 模式走 legacy,收尾后后台跑 Harness 双跑比对(见 shadow.py)
     #   off:   完全 legacy 行为
-    _harness_mode = _os.getenv("HARNESS_MODE", "off").lower()
+    # 配置来源:settings(.env / configs/patch.json 热更新),非进程环境变量——
+    # 裸 os.getenv 读不到 pydantic 加载的 .env(项目无 load_dotenv)。
+    _harness_mode = _resolve_harness_mode()
     if _harness_mode in ("on", "shadow") and body.mode == "data" and not _loop_req.is_deepagent:
         from app.harness.stream_harness import stream_chat_harness
 
