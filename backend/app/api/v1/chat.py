@@ -1395,12 +1395,13 @@ async def chat_completions(body: ChatRequest, user: dict = Depends(get_current_u
                 },
             )
         # shadow:legacy 照常返回;**流结束后**挂后台双跑——必须等流结束才能
-        # 拿到 legacy 的真实回答文本(Phase 2 门禁要的比对指标,之前是空占位)。
+        # 拿到 legacy 的真实回答文本(Phase 2 门禁要的比对字段)。
+        # 用 tap_stream 包裹:流以异常/取消结束时同样触发,否则采集管线静默丢样本。
         import asyncio as _a
-        import json as _json
         import time as _t
 
         from app.harness.shadow import run_shadow_comparison
+        from app.harness.shadow_stream import tap_stream
 
         _req_started = _t.monotonic()
         _legacy_stream = _stream_chat(
@@ -1423,26 +1424,13 @@ async def chat_completions(body: ChatRequest, user: dict = Depends(get_current_u
             except Exception as _se:  # noqa: BLE001
                 log.warning("[Shadow] 后台任务异常(已忽略): %s", _se)
 
-        async def _legacy_then_shadow():
-            """透传 legacy 流;顺带收集正文 token,流结束后触发影子双跑。"""
-            parts: list[str] = []
-            async for chunk in _legacy_stream:
-                for line in chunk.splitlines():
-                    if not line.startswith("data: "):
-                        continue
-                    try:
-                        ev = _json.loads(line[6:])
-                    except ValueError:
-                        continue
-                    if ev.get("type") == "token":
-                        parts.append(str(ev.get("content") or ""))
-                yield chunk
-            _t2 = _a.create_task(_shadow_task("".join(parts)))
+        def _fire_shadow(legacy_answer: str) -> None:
+            _t2 = _a.create_task(_shadow_task(legacy_answer))
             _shadow_tasks.add(_t2)
             _t2.add_done_callback(_shadow_tasks.discard)
 
         return StreamingResponse(
-            _wrap_cancellable(_legacy_then_shadow()),
+            _wrap_cancellable(tap_stream(_legacy_stream, _fire_shadow)),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
