@@ -47,15 +47,18 @@ export default function StepChain({ step, messages }: Props) {
         items={[
           {
             key: String(step.id),
-            title: step.label || step.agent,
             description: (
               <span className="mono text-[11px] text-[var(--text-3)]">
                 步骤 {step.id} · {step.agent}
+                {step.synthesized ? ' · 工具序列重建' : ''}
               </span>
             ),
             status: running ? 'loading'
               : step.status === 'pending' ? 'abort'   /* todo 未开始:官方 abort 空心态 */
               : 'success',
+            /* 兜底链(模型未建 todo,按工具序列事后重建):标题前加 ↺ 前缀并在描述里
+               注明"工具序列重建",让用户看得出这是重建过程而非模型自己规划的步骤 */
+            title: (step.synthesized ? '↺ ' : '') + (step.label || step.agent),
             blink: running,
             collapsible: true,
             content: (

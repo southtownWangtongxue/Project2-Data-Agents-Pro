@@ -125,4 +125,7 @@ export interface Step {
   label: string
   /* pending:todo 未开始(Harness 三态);running/completed 兼容 legacy */
   status: 'pending' | 'running' | 'completed'
+  /* synthesized:true = 由工具序列事后重建的步骤(模型未建 todo 时的兜底)。
+     UI 可据此弱化样式,区分"事后重建的过程"与"模型自己规划的过程"。 */
+  synthesized?: boolean
 }

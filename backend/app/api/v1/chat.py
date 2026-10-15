@@ -1394,19 +1394,25 @@ async def chat_completions(body: ChatRequest, user: dict = Depends(get_current_u
                     "X-Accel-Buffering": "no",
                 },
             )
-        # shadow:legacy 照常返回;收尾后挂后台双跑(失败/超时均不影响主响应)
+        # shadow:legacy 照常返回;**流结束后**挂后台双跑——必须等流结束才能
+        # 拿到 legacy 的真实回答文本(Phase 2 门禁要的比对指标,之前是空占位)。
         import asyncio as _a
+        import json as _json
         import time as _t
 
         from app.harness.shadow import run_shadow_comparison
 
         _req_started = _t.monotonic()
+        _legacy_stream = _stream_chat(
+            question, user_name, history_msgs, body.thread_id,
+            body.model, body.mode, body.web_search,
+        )
 
-        async def _shadow_task():
+        async def _shadow_task(legacy_answer: str):
             try:
                 await _a.wait_for(
                     run_shadow_comparison(
-                        question, legacy_answer="",
+                        question, legacy_answer=legacy_answer,
                         legacy_metrics={"duration_ms": int((_t.monotonic() - _req_started) * 1000)},
                         user_name=user_name, model=body.model,
                         # 构造路径与真实请求一致(否则比对的是环境差异而非模型差异)
@@ -1417,9 +1423,33 @@ async def chat_completions(body: ChatRequest, user: dict = Depends(get_current_u
             except Exception as _se:  # noqa: BLE001
                 log.warning("[Shadow] 后台任务异常(已忽略): %s", _se)
 
-        _task = _a.create_task(_shadow_task())
-        _shadow_tasks.add(_task)
-        _task.add_done_callback(_shadow_tasks.discard)
+        async def _legacy_then_shadow():
+            """透传 legacy 流;顺带收集正文 token,流结束后触发影子双跑。"""
+            parts: list[str] = []
+            async for chunk in _legacy_stream:
+                for line in chunk.splitlines():
+                    if not line.startswith("data: "):
+                        continue
+                    try:
+                        ev = _json.loads(line[6:])
+                    except ValueError:
+                        continue
+                    if ev.get("type") == "token":
+                        parts.append(str(ev.get("content") or ""))
+                yield chunk
+            _t2 = _a.create_task(_shadow_task("".join(parts)))
+            _shadow_tasks.add(_t2)
+            _t2.add_done_callback(_shadow_tasks.discard)
+
+        return StreamingResponse(
+            _wrap_cancellable(_legacy_then_shadow()),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     # R20：分发由驱动器 Profile 决策接管（规则与旧逻辑一致：
     # USE_DEEP_AGENT 全局开启或 mode=task → deepagent，其余 → legacy-graph）
