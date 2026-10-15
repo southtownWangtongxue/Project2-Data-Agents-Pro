@@ -73,3 +73,11 @@ def test_provider_change_rebuilds_agent(capture_create, monkeypatch):
     rebuilt = agent_factory.build_harness_agent()
     assert capture_create.calls == 2
     assert rebuilt != f"agent-{capture_create.calls - 1}"
+
+
+def test_system_prompt_has_union_aggregation_guidance():
+    """多表统计必须用单条 UNION ALL 查询(实测 5 条 run_sql 往返浪费)。"""
+    from app.harness.agent_factory import SYSTEM_PROMPT
+
+    assert "UNION" in SYSTEM_PROMPT.upper()
+    assert "单条" in SYSTEM_PROMPT

@@ -113,3 +113,90 @@ def test_report_aggregates(patched):
     report = shadow.shadow_report()
     assert report["total"] == 2
     assert report["avg_llm_rounds"] == 2.5
+
+
+# ── 影子采样指标 + 构造路径对齐(Phase 2 比对数据依据)────────────
+
+class _RecordingAgent:
+    """记录入参与工具序列的假 Agent,用于验证影子指标与消息构造。"""
+
+    def __init__(self, tool_names=("run_sql",), answer="智能体回答"):
+        self.tool_names = list(tool_names)
+        self.answer = answer
+        self.input_data = None
+
+    async def astream(self, input_data, config, stream_mode=None):
+        self.input_data = input_data
+        chunk = type("M", (), {
+            "content": self.answer, "tool_calls": None, "tool_call_chunks": None,
+            "additional_kwargs": {}, "reasoning_content": "",
+        })()
+        yield ("updates", {"agent": {"messages": [chunk]}})
+        yield ("messages", (chunk, {"langgraph_node": "agent"}))
+        for i, name in enumerate(self.tool_names):
+            ai = type("M", (), {"tool_calls": [
+                {"name": name, "args": {}, "id": f"c_{name}_{i}"}
+            ]})()
+            yield ("updates", {"agent": {"messages": [ai]}})
+
+
+@pytest.mark.asyncio
+async def test_shadow_records_todo_and_sql_metrics(patched, monkeypatch):
+    """采样指标:write_todos 使用、工具调用数、SQL 条数、答案长度。
+
+    这些指标决定「步骤链方案选 (a/b) 兜底还是 (c) 强化 SOP」——需要数据支撑。
+    """
+    agent = _RecordingAgent(tool_names=["write_todos", "run_sql", "run_sql", "make_chart"])
+    monkeypatch.setattr(shadow, "build_harness_agent", lambda: agent)
+
+    rec = await shadow.run_shadow_comparison(
+        question="统计各表数据量", legacy_answer="legacy", legacy_metrics={},
+    )
+    h = rec["harness"]
+    assert h["used_todos"] is True
+    assert h["tool_calls"] == 4
+    assert h["sql_count"] == 2, "SQL 条数应单独统计(不能与其它工具混算)"
+    assert h["answer_len"] == len("智能体回答")
+
+
+@pytest.mark.asyncio
+async def test_shadow_without_todos_records_false(patched, monkeypatch):
+    """模型没建 todo 时 used_todos=False(用于统计 todo 使用率)。"""
+    monkeypatch.setattr(shadow, "build_harness_agent", lambda: _RecordingAgent(["run_sql"]))
+    rec = await shadow.run_shadow_comparison(
+        question="q", legacy_answer="a", legacy_metrics={},
+    )
+    assert rec["harness"]["used_todos"] is False
+
+
+@pytest.mark.asyncio
+async def test_shadow_message_construction_matches_real_path(patched, monkeypatch):
+    """构造路径必须与真实请求一致(同 runtime_context system 消息 + 用户问题)。
+
+    否则比对出的差异是环境差异而非模型差异——本轮"自我介绍"事件的前车之鉴。
+    """
+    agent = _RecordingAgent()
+    monkeypatch.setattr(shadow, "build_harness_agent", lambda: agent)
+    ctx = "[运行时上下文] 当前用户: admin | 模式: data"
+
+    await shadow.run_shadow_comparison(
+        question="统计各表数据量", legacy_answer="a", legacy_metrics={},
+        runtime_context=ctx,
+    )
+    msgs = agent.input_data["messages"]
+    assert msgs[0]["role"] == "system"
+    assert ctx in msgs[0]["content"]
+    assert msgs[-1]["role"] == "user"
+    assert msgs[-1]["content"] == "统计各表数据量"
+
+
+def test_shadow_report_includes_todo_rate_and_sql(patched):
+    """汇总报告要能回答「todo 使用率」与「平均 SQL 条数」。"""
+    shadow.COMPARISON_LOG.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in [
+        {"harness": {"llm_rounds": 2, "used_todos": True, "sql_count": 1, "answer_len": 100}},
+        {"harness": {"llm_rounds": 4, "used_todos": False, "sql_count": 3, "answer_len": 200}},
+    ]), encoding="utf-8")
+    rep = shadow.shadow_report()
+    assert rep["total"] == 2
+    assert rep["todo_rate"] == 0.5
+    assert rep["avg_sql_count"] == 2.0

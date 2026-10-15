@@ -1409,6 +1409,8 @@ async def chat_completions(body: ChatRequest, user: dict = Depends(get_current_u
                         question, legacy_answer="",
                         legacy_metrics={"duration_ms": int((_t.monotonic() - _req_started) * 1000)},
                         user_name=user_name, model=body.model,
+                        # 构造路径与真实请求一致(否则比对的是环境差异而非模型差异)
+                        runtime_context=_runtime_context, history=history_msgs,
                     ),
                     timeout=float(_os.getenv("HARNESS_SHADOW_TIMEOUT", "120")),
                 )
