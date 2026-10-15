@@ -28,12 +28,14 @@ from app.api.v1.chat import (
 )
 from app.agents.title_generator import generate_node_title
 from app.core import hitl
+from app.core.config_manager import get_config_manager
 from app.core.event_sourcing import (
     EventType,
     SessionEventStore,
     event_sourcing_enabled,
     turn_event_enabled,
 )
+from app.core.llm import set_provider
 from app.core.llm_retry import (
     MAX_RETRIES as LLM_MAX_RETRIES,
 )
@@ -54,6 +56,10 @@ async def stream_chat_harness(
     runtime_context: str = "",
 ):
     """Harness 主循环 SSE 生成器(接口与 _stream_chat/_stream_chat_deepagent 一致)。"""
+    # 按请求指定的模型锁定 provider(与 legacy _stream_chat 的 set_provider 同款):
+    # 缺失这一步会沿用启动时的 provider,管理台切模型后请求仍打到旧模型。
+    set_provider(get_config_manager().get_llm_config(model))
+
     agent = build_harness_agent()
     session_thread_id = existing_thread_id or f"{user_name}:{uuid.uuid4()}"
     run_id = f"{user_name}:{uuid.uuid4()}"

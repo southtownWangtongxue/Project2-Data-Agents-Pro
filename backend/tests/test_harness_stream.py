@@ -145,6 +145,39 @@ async def test_simple_flow_no_approval(patched):
     assert types[-2] == "done" and types[-1] == "title"
 
 
+@pytest.mark.asyncio
+async def test_resolves_request_model_provider(patched, monkeypatch):
+    """必须按请求指定的模型锁定 provider(与 legacy 的 set_provider 一致)。
+
+    否则 Harness 会沿用启动时的 provider:管理台切模型后请求仍打到旧模型,
+    且指纹缓存也不会失效。
+    """
+    seen = {}
+
+    def fake_set_provider(cfg):
+        seen["cfg"] = cfg
+
+    class _Mgr:
+        @staticmethod
+        def get_llm_config(model):
+            seen["model_arg"] = model
+            return {"id": "qwen-flash", "model": "qwen3.7-flash"}
+
+    monkeypatch.setattr(stream_harness, "set_provider", fake_set_provider)
+    monkeypatch.setattr(stream_harness, "get_config_manager", lambda: _Mgr())
+    _FAKE_AGENT[:] = [_FakeAgent({
+        "first": [("messages", (_text_msg("ok"), {"langgraph_node": "agent"})),
+                  ("updates", {"__end__": {}})],
+        "resume": [],
+    })]
+
+    await _collect(stream_harness.stream_chat_harness(
+        question="你好", user_name="admin", existing_thread_id="t1", model="qwen-flash",
+    ))
+    assert seen["model_arg"] == "qwen-flash"
+    assert seen["cfg"] == {"id": "qwen-flash", "model": "qwen3.7-flash"}
+
+
 class _FlakyAgent:
     """前 fail_times 次抛瞬时错误(403 FreeTierOnly),之后正常产出。"""
 
