@@ -65,6 +65,46 @@ async def test_shadow_failure_returns_none_and_no_log(patched, monkeypatch):
     assert not shadow.COMPARISON_LOG.exists()
 
 
+@pytest.mark.asyncio
+async def test_shadow_resolves_provider_from_request_model(patched, monkeypatch):
+    """传入请求模型时,先按该模型锁定 provider 再构建 Agent。
+
+    防止影子任务抢在 legacy 流 set_provider 之前构建,误用进程启动时的
+    默认 provider(无 key → 401 → 静默失败)。
+    """
+    seen = {}
+
+    def fake_set_provider(cfg):
+        seen["provider_cfg"] = cfg
+
+    monkeypatch.setattr(shadow, "set_provider", fake_set_provider)
+    monkeypatch.setattr(
+        shadow, "get_config_manager",
+        lambda: type("M", (), {"get_llm_config": staticmethod(lambda model: {"model": model})})(),
+    )
+    monkeypatch.setattr(shadow, "build_harness_agent", lambda: _FakeAgent())
+
+    await shadow.run_shadow_comparison(
+        question="q", legacy_answer="a", legacy_metrics={}, model="qwen3.7-max",
+    )
+    assert seen["provider_cfg"] == {"model": "qwen3.7-max"}
+
+
+@pytest.mark.asyncio
+async def test_shadow_without_model_skips_provider_lock(patched, monkeypatch):
+    """未传模型(如手动触发)时不动 provider 解析。"""
+    called = {"set": False}
+
+    def fake_set_provider(cfg):
+        called["set"] = True
+
+    monkeypatch.setattr(shadow, "set_provider", fake_set_provider)
+    monkeypatch.setattr(shadow, "build_harness_agent", lambda: _FakeAgent())
+
+    await shadow.run_shadow_comparison(question="q", legacy_answer="a", legacy_metrics={})
+    assert called["set"] is False
+
+
 def test_report_aggregates(patched):
     shadow.COMPARISON_LOG.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in [
         {"question": "q1", "legacy": {"answer": "a"}, "harness": {"answer": "b", "llm_rounds": 2}},

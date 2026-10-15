@@ -15,7 +15,8 @@ from __future__ import annotations
 import json
 import time
 
-from app.core.config_manager import CONFIGS_DIR
+from app.core.config_manager import CONFIGS_DIR, get_config_manager
+from app.core.llm import set_provider
 from app.harness.agent_factory import build_harness_agent
 from app.harness.sse_bridge import HarnessEventBridge
 from app.utils.log_utils import log
@@ -30,9 +31,18 @@ async def run_shadow_comparison(
     legacy_answer: str,
     legacy_metrics: dict,
     user_name: str = "shadow",
+    model: str | None = None,
 ) -> dict | None:
-    """跑一次 Harness 影子执行并写比对记录;任何失败返回 None(不抛)。"""
+    """跑一次 Harness 影子执行并写比对记录;任何失败返回 None(不抛)。
+
+    model 传入请求所选模型:影子任务由 chat.py 以 create_task 调度,可能抢在
+    legacy 流 set_provider 之前构建 Agent——此处按请求模型显式锁定 provider,
+    避免误用进程启动时的默认 provider(无 key → 401 → 静默失败)。
+    """
     try:
+        if model:
+            set_provider(get_config_manager().get_llm_config(model))
+
         agent = build_harness_agent()
         bridge = HarnessEventBridge()
         text_parts: list[str] = []

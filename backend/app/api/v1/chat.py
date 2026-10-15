@@ -1408,7 +1408,7 @@ async def chat_completions(body: ChatRequest, user: dict = Depends(get_current_u
                     run_shadow_comparison(
                         question, legacy_answer="",
                         legacy_metrics={"duration_ms": int((_t.monotonic() - _req_started) * 1000)},
-                        user_name=user_name,
+                        user_name=user_name, model=body.model,
                     ),
                     timeout=float(_os.getenv("HARNESS_SHADOW_TIMEOUT", "120")),
                 )
