@@ -5,6 +5,8 @@
 改为 finally 兜底:无论流如何结束都回调一次(同步回调,避免 GeneratorExit
 中 await 报错)。
 """
+import json
+
 import asyncio
 
 import pytest
@@ -136,3 +138,32 @@ async def test_tap_stream_tool_payloads_ignores_other_events():
     async for _ in tap_stream(inner(), lambda a, t: fired.update(tools=t)):
         pass
     assert fired["tools"] == ["查询成功 · 5 行"]
+
+@pytest.mark.asyncio
+async def test_tap_stream_collects_legacy_result_rows():
+    """legacy 侧的接地数据源:result.data(与 harness 同一把尺子)。
+
+    实测 legacy 的 tool_result 只有 tool_name/row_count 没有 content,
+    真正能对账的是 result 事件里的 data。
+    """
+    fired = {}
+
+    async def inner():
+        yield sse("result", data=[{"table_name": "chat_nodes", "record_count": 147}])
+        yield sse("tool_result", tool_name="execute_sql", row_count=1)
+        yield sse("token", content="共 147 条")
+        yield sse("done")
+
+    async for _ in tap_stream(inner(), lambda a, t: fired.update(tools=t)):
+        pass
+    assert any("chat_nodes" in t and "147" in t for t in fired["tools"]), fired["tools"]
+
+
+@pytest.mark.asyncio
+async def test_legacy_grounding_uses_result_rows():
+    """端到端:legacy 侧真实行数据能让派生数字对账(合计/均值不被误判幻觉)。"""
+    from app.core.answer_quality import check_grounding
+
+    rows = json.dumps([{"t": "a", "n": 100}, {"t": "b", "n": 50}, {"t": "c", "n": 0}])
+    rep = check_grounding("row_count 合计 150，均值 50", [rows])
+    assert rep["grounded"] is True, rep["ungrounded"]
