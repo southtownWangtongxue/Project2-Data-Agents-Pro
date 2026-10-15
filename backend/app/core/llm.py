@@ -59,13 +59,19 @@ def describe_route() -> str:
 
 
 def _resolve_key_and_base(provider: dict | None = None) -> tuple[str, str]:
-    """解析 API Key 和 Base URL：优先使用 provider 配置，否则回退 settings"""
+    """解析 API Key 和 Base URL。
+
+    优先使用 provider 配置(按其 key_mode/dotenv 解析);provider 缺失时才回退
+    全局 settings。**provider 存在但 key 解析不到时返回空 key**——不用其它厂商的
+    key 兜底,避免把错误 key 发往目标 API(401 Missing Authentication header)。
+    """
     key = settings.LLM_API_KEY
     base = settings.LLM_BASE_URL
     if provider:
         from app.core.config_manager import get_config_manager
         mgr = get_config_manager()
-        key = mgr.resolve_api_key(provider) or key
+        resolved = mgr.resolve_api_key(provider)
+        key = resolved or ""
         base = provider.get("api_base") or base
     return key, base
 

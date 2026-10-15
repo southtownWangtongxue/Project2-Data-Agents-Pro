@@ -167,12 +167,44 @@ class ConfigManager:
         )
 
     def resolve_api_key(self, provider: dict) -> str:
-        """解析 API Key：key_mode="direct" 直接用 api_key，否则从环境变量读取"""
+        """解析 API Key。
+
+        顺序:key_mode=direct 直配 → 进程环境变量(api_key_env) → .env 文件同名变量。
+        解析不到时返回空字符串——**绝不回退 settings.LLM_API_KEY**:那是另一个厂商的
+        key(如 .env 的 DashScope key),兜底会把错误 key 发往目标 API,表现为
+        401 Missing Authentication header,且极难定位。
+
+        .env 补偿路径的必要性:项目未调用 load_dotenv(),pydantic 只把 .env 灌进
+        Settings 实例,os.getenv 读不到(与 HARNESS_MODE 同源问题)。
+        """
         import os
+
         if provider.get("key_mode") == "direct" and provider.get("api_key"):
             return provider["api_key"]
+
         env_var = provider.get("api_key_env", "")
-        return os.getenv(env_var, provider.get("api_key", ""))
+        if not env_var:
+            return provider.get("api_key", "")
+
+        val = os.getenv(env_var, "")
+        if val:
+            return val
+
+        from app.core.config import PROJECT_PATH
+
+        env_file = PROJECT_PATH / ".env"
+        try:
+            if env_file.exists():
+                for line in env_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    name, _, value = line.partition("=")
+                    if name.strip() == env_var:
+                        return value.strip().strip('"').strip("'")
+        except OSError:
+            pass
+        return provider.get("api_key", "")
 
 
 # 全局单例
