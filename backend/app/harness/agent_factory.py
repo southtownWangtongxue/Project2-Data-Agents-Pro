@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.tool_pipeline import apply_tool_pipeline
+from app.core.llm import _resolve_key_and_base, get_current_provider
 from app.harness.sql_gate_middleware import SqlGateMiddleware
 from app.harness.tools import get_data_tools
 from app.utils.log_utils import log
@@ -45,6 +46,7 @@ SYSTEM_PROMPT = """你是 DataAgent Pro 的数据智能体,基于只读业务数
 """
 
 _agent: Any = None
+_agent_fingerprint: str | None = None
 
 
 def _create(**kwargs: Any) -> Any:
@@ -76,9 +78,14 @@ def _build_checkpointer():
 
 
 def build_harness_agent() -> Any:
-    """构建(首次)/返回(全局单例)Harness 主循环 Agent。"""
-    global _agent
-    if _agent is not None:
+    """构建(首次)/返回(全局单例)Harness 主循环 Agent。
+
+    单例按「构建时的 provider 指纹」缓存:管理台切换模型(或 patch 变更 provider)
+    后指纹变化,下次调用自动重建 Agent——否则换模型必须重启后端才生效。
+    """
+    global _agent, _agent_fingerprint
+    fingerprint = _provider_fingerprint()
+    if _agent is not None and fingerprint == _agent_fingerprint:
         return _agent
 
     from app.deepagent.tools import web_search_tool
@@ -91,11 +98,33 @@ def build_harness_agent() -> Any:
         system_prompt=SYSTEM_PROMPT,
         checkpointer=_build_checkpointer(),
     )
-    log.info("[Harness] 主循环装配完成: tools=%d middleware=SqlGate checkpointer=on", len(tools))
+    _agent_fingerprint = fingerprint
+    log.info(
+        "[Harness] 主循环装配完成: tools=%d middleware=SqlGate checkpointer=on fingerprint=%s",
+        len(tools), fingerprint,
+    )
     return _agent
+
+
+def _provider_fingerprint() -> str:
+    """当前 provider 的身份标识(id + model + api_base + key 前缀)。
+
+    用于检测管理台/配置变更;不含完整 key,避免泄露到日志。
+    """
+    provider = get_current_provider()
+    if not provider:
+        return "default"
+    key, base = _resolve_key_and_base(provider)
+    return "|".join([
+        str(provider.get("id")),
+        str(provider.get("model")),
+        base or "",
+        (key[:6] + "…") if key else "nokey",
+    ])
 
 
 def reset_agent() -> None:
     """清空单例(测试用)。"""
-    global _agent
+    global _agent, _agent_fingerprint
     _agent = None
+    _agent_fingerprint = None

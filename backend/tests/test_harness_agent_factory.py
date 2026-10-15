@@ -59,3 +59,17 @@ def test_singleton(capture_create):
     b = agent_factory.build_harness_agent()
     assert a is b
     assert capture_create.calls == 1
+
+
+def test_provider_change_rebuilds_agent(capture_create, monkeypatch):
+    """管理台切换模型后,下次调用应重建 Agent(无需重启后端)。"""
+    agent_factory.build_harness_agent()
+    assert capture_create.calls == 1
+
+    # 模拟 provider 变更(模型换了)
+    monkeypatch.setattr(
+        agent_factory, "_provider_fingerprint", lambda: "other|model-x|https://b|sk-a…"
+    )
+    rebuilt = agent_factory.build_harness_agent()
+    assert capture_create.calls == 2
+    assert rebuilt != f"agent-{capture_create.calls - 1}"
