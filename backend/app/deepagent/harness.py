@@ -107,6 +107,27 @@ async def create_skill_tools() -> tuple[list[Any], str]:
     return tools, instructions
 
 
+# 未配置 temperature 时的确定性默认值:与 legacy 节点惯例一致(0.0~0.3)。
+# 硬编码 1.0 会让工具调用行为高度随机——同一问题有时调工具、有时只做自我介绍,
+# 且管理台调温对 Harness 路径完全无效。
+DEFAULT_TEMPERATURE = 0.3
+
+
+def _resolve_temperature(provider: dict | None) -> float:
+    """取 provider 配置的 temperature,缺省用确定性默认值。
+
+    temperature=0.0 是合法配置(legacy orchestrator 用它做意图判定),不能被
+    当成缺省;只有键缺失/为 None/不可转数时才回退。
+    """
+    raw = (provider or {}).get("temperature")
+    if raw is None or raw == "":
+        return DEFAULT_TEMPERATURE
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_TEMPERATURE
+
+
 def _build_model():
     """
     构建 DeepAgent 实际使用的 ChatModel 实例。
@@ -126,7 +147,7 @@ def _build_model():
     return init_chat_model(
         model=model_name,
         model_provider="openai",
-        temperature=1.0,
+        temperature=_resolve_temperature(provider),
         api_key=key,
         base_url=base,
         use_responses_api=False,
@@ -161,6 +182,7 @@ def create_deep_agent(
     model = _build_model()
     subagents = subagents or []
     tools = tools or []
+    provider = get_current_provider()
 
     agent_kwargs: dict[str, Any] = {
         "model": model,
@@ -174,10 +196,8 @@ def create_deep_agent(
 
     _model_id = getattr(model, "model_name", None) or getattr(model, "model", None) or "unknown"
     log.info(
-        "[DeepAgent] 创建 Agent: model=%s, tools=%d, subagents=%d",
-        _model_id,
-        len(tools),
-        len(subagents),
+        f"[DeepAgent] 创建 Agent: model={_model_id}, tools={len(tools)}, "
+        f"subagents={len(subagents)}, temperature={_resolve_temperature(provider)}"
     )
 
     return _create(**agent_kwargs)
