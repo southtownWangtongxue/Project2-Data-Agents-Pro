@@ -143,3 +143,67 @@ async def test_simple_flow_no_approval(patched):
     types = [e["type"] for e in events]
     assert "approval_required" not in types
     assert types[-2] == "done" and types[-1] == "title"
+
+
+class _FlakyAgent:
+    """前 fail_times 次抛瞬时错误(403 FreeTierOnly),之后正常产出。"""
+
+    def __init__(self, fail_times=1, fail_msg=None):
+        self.fail_times = fail_times
+        self.calls = 0
+        self.fail_msg = fail_msg or (
+            "Error code: 403 - {'error': {'code': 'AllocationQuota.FreeTierOnly',"
+            " 'message': 'Free quota exhausted... disable the use free tier only mode'}}"
+        )
+
+    async def astream(self, input_data, config, stream_mode=None):
+        self.calls += 1
+        if self.calls <= self.fail_times:
+            raise Exception(self.fail_msg)
+        m = _text_msg("恢复成功")
+        yield ("messages", (m, {"langgraph_node": "agent"}))
+        yield ("updates", {"__end__": {}})
+
+
+@pytest.mark.asyncio
+async def test_transient_llm_error_retries_and_recovers(patched, monkeypatch):
+    """OpenRouter 免费档间歇性 403 → 自动重试并成功,用户无需重发。"""
+    agent = _FlakyAgent(fail_times=1)
+    _FAKE_AGENT[:] = [agent]
+    monkeypatch.setattr("app.core.llm_retry.next_retry_delay", lambda attempt: 0)
+
+    events = await _collect(stream_harness.stream_chat_harness(
+        question="你好", user_name="admin", existing_thread_id="t1",
+    ))
+    types = [e["type"] for e in events]
+    assert "error" not in types, f"不应向用户暴露瞬时错误: {[e for e in events if e['type']=='error']}"
+    tokens = "".join(e.get("content", "") for e in events if e["type"] == "token")
+    assert "恢复成功" in tokens
+    assert agent.calls >= 2
+
+
+@pytest.mark.asyncio
+async def test_permanent_llm_error_not_retried(patched):
+    """鉴权类永久错误不重试,直接以 error 事件收尾(不放大真实缺陷)。"""
+    agent = _FlakyAgent(fail_times=99, fail_msg="Error code: 401 - invalid api key")
+    _FAKE_AGENT[:] = [agent]
+
+    events = await _collect(stream_harness.stream_chat_harness(
+        question="你好", user_name="admin", existing_thread_id="t1",
+    ))
+    assert any(e["type"] == "error" for e in events)
+    assert agent.calls == 1, "永久错误不应重试"
+
+
+@pytest.mark.asyncio
+async def test_retry_exhausted_reports_error(patched, monkeypatch):
+    """瞬时错误连续超过重试上限 → 明确报错,不无限重试。"""
+    agent = _FlakyAgent(fail_times=99)
+    _FAKE_AGENT[:] = [agent]
+    monkeypatch.setattr("app.core.llm_retry.next_retry_delay", lambda attempt: 0)
+
+    events = await _collect(stream_harness.stream_chat_harness(
+        question="你好", user_name="admin", existing_thread_id="t1",
+    ))
+    assert any(e["type"] == "error" for e in events)
+    assert agent.calls <= 5, f"重试次数应受限,实际 {agent.calls}"

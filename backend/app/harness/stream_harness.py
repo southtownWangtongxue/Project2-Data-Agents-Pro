@@ -12,6 +12,7 @@ Phase 3 收敛时与另外两个生成器合并。
 """
 from __future__ import annotations
 
+import asyncio as _asyncio
 import os as _os
 import time as _time
 import uuid
@@ -33,6 +34,10 @@ from app.core.event_sourcing import (
     event_sourcing_enabled,
     turn_event_enabled,
 )
+from app.core.llm_retry import (
+    MAX_RETRIES as LLM_MAX_RETRIES,
+)
+from app.core.llm_retry import is_retryable_exception, next_retry_delay
 from app.harness.agent_factory import build_harness_agent
 from app.harness.sse_bridge import HarnessEventBridge
 from app.utils.log_utils import log
@@ -97,6 +102,9 @@ async def stream_chat_harness(
             "\n\n[提示] 可以使用 web_search_tool 搜索互联网获取实时信息。"
         )
 
+    # 瞬时 LLM 错误重放用:原始输入(重试时不带审批 Command)
+    _replay_input = input_data
+
     yield _sse_event({"type": "status", "content": "正在分析您的请求..."})
 
     started = _time.monotonic()
@@ -109,6 +117,9 @@ async def stream_chat_harness(
         # 注:hitl 等待者由下方 hitl.wait_for 内部 register_waiter 登记;
         # finally 的 cancel 负责在流退出(含客户端断连)时清理,防悬挂 waiter。
         # ── 主循环:astream →(审批中断)→ Command(resume) → 重新 astream ──
+        # 瞬时 LLM 错误(OpenRouter 免费档间歇性 403/429/5xx)整段重放:
+        # 实测同一请求 8 次失败 1 次,不重试则用户每次都要手动重发。
+        transient_attempt = 0
         while True:
             remain = _remaining()
             if remain <= 0:
@@ -116,59 +127,80 @@ async def stream_chat_harness(
                                   "content": f"任务执行超过 {int(max_seconds)}s 仍未完成，已主动结束。"})
                 break
 
-            aiter = agent.astream(
-                input_data, config, stream_mode=["updates", "messages"],
-            ).__aiter__()
             interrupted = False
-            while True:
-                remain = _remaining()
-                if remain <= 0:
-                    yield _sse_event({"type": "status",
-                                      "content": f"任务执行超过 {int(max_seconds)}s 仍未完成，已主动结束。"})
-                    break
-                try:
-                    import asyncio as _asyncio
-
-                    event = await _asyncio.wait_for(aiter.__anext__(), timeout=remain)
-                except StopAsyncIteration:
-                    break
-                except TimeoutError:
-                    yield _sse_event({"type": "status",
-                                      "content": f"任务执行超过 {int(max_seconds)}s 仍未完成，已主动结束。"})
-                    break
-
-                for sse in bridge.feed(event):
-                    if sse["type"] == "token":
-                        full_text += sse.get("content", "")
-                    if sse["type"] == "approval_required":
-                        # ── HITL 流内等待-恢复(legacy 同款)──
-                        yield _sse_event({
-                            "type": "approval_required",
-                            "thread_id": session_thread_id,
-                            "question": question,
-                            "sql": sse.get("sql", ""),
-                            "reason": sse.get("reason", ""),
-                        })
-                        decision = await hitl.wait_for(session_thread_id, timeout=300)
-                        if decision is None:
-                            decision = {"approved": False,
-                                        "comment": "审批超时（5 分钟），自动拒绝"}
-                            yield _sse_event({
-                                "type": "status",
-                                "content": "审批超时（5 分钟），已自动拒绝。",
-                                "approval_state": "rejected",
-                            })
-                        input_data = Command(resume=decision)
-                        interrupted = True
+            retry_from_start = False
+            try:
+                aiter = agent.astream(
+                    input_data, config, stream_mode=["updates", "messages"],
+                ).__aiter__()
+                while True:
+                    remain = _remaining()
+                    if remain <= 0:
+                        yield _sse_event({"type": "status",
+                                          "content": f"任务执行超过 {int(max_seconds)}s 仍未完成，已主动结束。"})
                         break
-                    yield _sse_event(sse)
-                if interrupted:
-                    break
+                    try:
+                        import asyncio as _asyncio
+
+                        event = await _asyncio.wait_for(aiter.__anext__(), timeout=remain)
+                    except StopAsyncIteration:
+                        break
+                    except TimeoutError:
+                        yield _sse_event({"type": "status",
+                                          "content": f"任务执行超过 {int(max_seconds)}s 仍未完成，已主动结束。"})
+                        break
+
+                    for sse in bridge.feed(event):
+                        if sse["type"] == "token":
+                            full_text += sse.get("content", "")
+                        if sse["type"] == "approval_required":
+                            # ── HITL 流内等待-恢复(legacy 同款)──
+                            yield _sse_event({
+                                "type": "approval_required",
+                                "thread_id": session_thread_id,
+                                "question": question,
+                                "sql": sse.get("sql", ""),
+                                "reason": sse.get("reason", ""),
+                            })
+                            decision = await hitl.wait_for(session_thread_id, timeout=300)
+                            if decision is None:
+                                decision = {"approved": False,
+                                            "comment": "审批超时（5 分钟），自动拒绝"}
+                                yield _sse_event({
+                                    "type": "status",
+                                    "content": "审批超时（5 分钟），已自动拒绝。",
+                                    "approval_state": "rejected",
+                                })
+                            input_data = Command(resume=decision)
+                            interrupted = True
+                            break
+                        yield _sse_event(sse)
+                    if interrupted:
+                        break
+            except Exception as exc:  # noqa: BLE001 —— 瞬时错误重试,其余转错误事件
+                if is_retryable_exception(exc) and transient_attempt < LLM_MAX_RETRIES:
+                    transient_attempt += 1
+                    delay = next_retry_delay(transient_attempt)
+                    log.warning(
+                        "[Harness SSE] LLM 瞬时错误(第 %d/%d 次),%.1fs 后重放: %s",
+                        transient_attempt, LLM_MAX_RETRIES, delay, str(exc)[:160],
+                    )
+                    yield _sse_event({
+                        "type": "status",
+                        "content": f"模型服务暂时繁忙，正在重试（{transient_attempt}/{LLM_MAX_RETRIES}）…",
+                    })
+                    await _asyncio.sleep(delay)
+                    # 整段重放:回到首个模型回合(approval 决策保持不变)
+                    input_data = _replay_input
+                    retry_from_start = True
+                    continue
+                log.exception("[Harness SSE] 流式异常")
+                yield _sse_event({"type": "error", "content": f"执行异常: {exc}", "recoverable": True})
+                break
+            if retry_from_start:
+                continue
             if not interrupted:
                 break
-    except Exception as exc:  # noqa: BLE001 —— 异常转为可重试错误事件,不断流
-        log.exception("[Harness SSE] 流式异常")
-        yield _sse_event({"type": "error", "content": f"执行异常: {exc}", "recoverable": True})
     finally:
         # 清理 hitl 等待登记(legacy 同款):客户端断连/取消不留悬挂 waiter
         hitl.cancel(session_thread_id)
