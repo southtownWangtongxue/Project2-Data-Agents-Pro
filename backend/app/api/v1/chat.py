@@ -1397,6 +1397,8 @@ async def chat_completions(body: ChatRequest, user: dict = Depends(get_current_u
         # shadow:legacy 照常返回;**流结束后**挂后台双跑——必须等流结束才能
         # 拿到 legacy 的真实回答文本(Phase 2 门禁要的比对字段)。
         # 用 tap_stream 包裹:流以异常/取消结束时同样触发,否则采集管线静默丢样本。
+        # TODO(下次采集时自然验证,勿专门补采):「客户端停止读取但连接未断开」
+        # 这一场景未覆盖——此时流仍在跑,只有真正断开才走 tap_stream 的 finally。
         import asyncio as _a
         import time as _t
 
@@ -1409,7 +1411,7 @@ async def chat_completions(body: ChatRequest, user: dict = Depends(get_current_u
             body.model, body.mode, body.web_search,
         )
 
-        async def _shadow_task(legacy_answer: str):
+        async def _shadow_task(legacy_answer, legacy_tools=None):
             try:
                 await _a.wait_for(
                     run_shadow_comparison(
@@ -1418,17 +1420,17 @@ async def chat_completions(body: ChatRequest, user: dict = Depends(get_current_u
                         user_name=user_name, model=body.model,
                         # 构造路径与真实请求一致(否则比对的是环境差异而非模型差异)
                         runtime_context=_runtime_context, history=history_msgs,
+                        legacy_tool_payloads=list(legacy_tools or []),
                     ),
                     timeout=float(_os.getenv("HARNESS_SHADOW_TIMEOUT", "120")),
                 )
             except Exception as _se:  # noqa: BLE001
                 log.warning("[Shadow] 后台任务异常(已忽略): %s", _se)
 
-        def _fire_shadow(legacy_answer: str) -> None:
-            _t2 = _a.create_task(_shadow_task(legacy_answer))
+        def _fire_shadow(legacy_answer, legacy_tools=None) -> None:
+            _t2 = _a.create_task(_shadow_task(legacy_answer, legacy_tools))
             _shadow_tasks.add(_t2)
             _t2.add_done_callback(_shadow_tasks.discard)
-
         return StreamingResponse(
             _wrap_cancellable(tap_stream(_legacy_stream, _fire_shadow)),
             media_type="text/event-stream",

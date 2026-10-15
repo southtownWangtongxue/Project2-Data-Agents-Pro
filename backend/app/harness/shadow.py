@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import time
 
+from app.core.answer_quality import check_dimensions, check_grounding
 from app.core.config_manager import CONFIGS_DIR, get_config_manager
 from app.core.llm import set_provider
 from app.harness.agent_factory import build_harness_agent
@@ -40,6 +41,7 @@ async def run_shadow_comparison(
     model: str | None = None,
     runtime_context: str = "",
     history: list[dict] | None = None,
+    legacy_tool_payloads: list[str] | None = None,
 ) -> dict | None:
     """跑一次 Harness 影子执行并写比对记录;任何失败返回 None(不抛)。
 
@@ -59,6 +61,7 @@ async def run_shadow_comparison(
         agent = build_harness_agent()
         bridge = HarnessEventBridge()
         text_parts: list[str] = []
+        tool_payloads: list[str] = []
         tool_calls = 0
         sql_count = 0
         used_todos = False
@@ -92,18 +95,32 @@ async def run_shadow_comparison(
                         sql_count += 1
                     elif sse.get("name") == TODO_TOOL:
                         used_todos = True
+                elif sse["type"] == "tool_result":
+                    tool_payloads.append(str(sse.get("content") or ""))
             # 粗略的模型往返计数:每个 updates.agent/model 节点事件记一轮
             mode, data = event
             if mode == "updates" and isinstance(data, dict):
                 llm_rounds += sum(1 for k in data if k in ("agent", "model"))
 
         answer = "".join(text_parts)
+        # 答案质量指标(两臂共用同一纯函数,避免两把尺子悄悄漂移):
+        # 接地是硬指标(幻觉一票否决),维度数是预筛(误判率有限,人工复核)
+        grounding = check_grounding(answer, tool_payloads)
+        dims = check_dimensions(answer, tool_payloads)
+        lg = check_grounding(legacy_answer or "", list(legacy_tool_payloads or []))
+        lg_dims = check_dimensions(legacy_answer or "", list(legacy_tool_payloads or []))
+
         record = {
             "ts": time.time(),
             "question": question[:200],
             "model": model or "",
             "legacy": {
                 "answer": (legacy_answer or "")[:2000],
+                "answer_len": len(legacy_answer or ""),
+                "grounded": lg["grounded"],
+                "ungrounded": lg["ungrounded"],
+                "dimensions": lg_dims["hit"],
+                "dim_count": lg_dims["count"],
                 **legacy_metrics,
             },
             "harness": {
@@ -118,6 +135,13 @@ async def run_shadow_comparison(
                 # 基线轮出现过「请求格式写错 → 模型收到空问题」的环境差异,
                 # 该标记让噪声样本可事后排除(不必依赖人工推断)。
                 "ctx_ok": bool(runtime_context) and llm_rounds >= 1,
+                # 答案质量(指标 1/2)
+                "grounded": grounding["grounded"],
+                "ungrounded": grounding["ungrounded"],
+                "grounded_details": grounding["details"][:20],
+                "grounding_reason": grounding["reason"],
+                "dimensions": dims["hit"],
+                "dim_count": dims["count"],
             },
         }
         _append(record)

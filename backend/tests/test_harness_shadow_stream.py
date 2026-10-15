@@ -77,7 +77,7 @@ async def test_fires_even_when_consumer_stops_early():
 
 
 @pytest.mark.asyncio
-async def test_passes_chunks_through_unchanged():
+async def test_tap_stream_passes_chunks_through_unchanged():
     """必须原样透传,不能改变 legacy 响应字节。"""
     chunks = [sse("token", content="a"), sse("done")]
 
@@ -85,19 +85,54 @@ async def test_passes_chunks_through_unchanged():
         for c in chunks:
             yield c
 
-    got = [c async for c in tap_stream(inner(), lambda a: None)]
+    got = []
+    async for c in tap_stream(inner(), lambda a, t: None):
+        got.append(c)
     assert got == chunks
-
 
 @pytest.mark.asyncio
 async def test_callback_exception_does_not_break_stream():
     """回调自身抛错不得影响已完成的 legacy 响应。"""
-    def boom(_ans):
+
+    def boom(_ans, _tools=None):
         raise RuntimeError("回调炸了")
 
     async def inner():
         yield sse("token", content="x")
         yield sse("done")
 
-    got = [c async for c in tap_stream(inner(), boom)]
+    got = []
+    async for c in tap_stream(inner(), boom):
+        got.append(c)
     assert len(got) == 2
+
+@pytest.mark.asyncio
+async def test_tap_stream_accepts_quality_hook():
+    """tap_stream 收集 legacy 侧 tool_result 载荷,供同一把尺子做接地检测。"""
+    fired = {}
+
+    async def inner():
+        yield sse("tool_result", content='{"row_count": 1107}')
+        yield sse("token", content="共 1107 条")
+        yield sse("done")
+
+    got = []
+    async for c in tap_stream(inner(), lambda a, t: fired.update(answer=a, tools=t)):
+        got.append(c)
+    assert len(got) == 3
+    assert fired["answer"] == "共 1107 条"
+    assert fired["tools"] == ['{"row_count": 1107}']
+
+
+@pytest.mark.asyncio
+async def test_tap_stream_tool_payloads_ignores_other_events():
+    fired = {}
+
+    async def inner():
+        yield sse("sql", sql="SELECT COUNT(*) FROM t")
+        yield sse("tool_result", content="查询成功 · 5 行")
+        yield sse("done")
+
+    async for _ in tap_stream(inner(), lambda a, t: fired.update(tools=t)):
+        pass
+    assert fired["tools"] == ["查询成功 · 5 行"]

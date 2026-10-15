@@ -225,3 +225,65 @@ async def test_shadow_record_flags_missing_context(patched, monkeypatch):
         question="q", legacy_answer="a", legacy_metrics={}, runtime_context="",
     )
     assert rec["harness"]["ctx_ok"] is False
+
+
+# ── 两臂同尺:结构化质量指标接入影子记录(Phase 2 门禁)─────────
+
+@pytest.mark.asyncio
+async def test_shadow_record_includes_quality_metrics(patched, monkeypatch):
+    """影子记录要带两臂可比的答案质量指标(接地 + 维度),口径共用一个纯函数。"""
+    monkeypatch.setattr(
+        shadow, "build_harness_agent",
+        lambda: _QualityAgent(
+            tool_names=["run_sql"],
+            tool_payloads=['{"row_count": 1107, "session_events": 883}'],
+            answer="session_events 有 883 条,占 1107 的 80%,是 sessions 的 8 倍,呈上升趋势。",
+        ),
+    )
+    rec = await shadow.run_shadow_comparison(
+        question="q", legacy_answer="a", legacy_metrics={},
+    )
+    h = rec["harness"]
+    assert h["grounded"] is True, h.get("ungrounded")
+    assert h["dim_count"] >= 2
+    assert h["grounded_details"], "派生路径要落盘供人工复核"
+
+
+@pytest.mark.asyncio
+async def test_shadow_flags_hallucinated_numbers(patched, monkeypatch):
+    monkeypatch.setattr(
+        shadow, "build_harness_agent",
+        lambda: _QualityAgent(
+            tool_names=["run_sql"],
+            tool_payloads=['{"row_count": 1107}'],
+            answer="共 9999 条记录。",
+        ),
+    )
+    rec = await shadow.run_shadow_comparison(question="q", legacy_answer="a", legacy_metrics={})
+    assert rec["harness"]["grounded"] is False
+    assert 9999 in rec["harness"]["ungrounded"]
+
+
+class _QualityAgent:
+    """带工具结果的假 Agent,用于验证答案质量指标(接地/维度)。"""
+
+    def __init__(self, tool_names=("run_sql",), tool_payloads=("{}",), answer="答案"):
+        self.tool_names = list(tool_names)
+        self.tool_payloads = list(tool_payloads)
+        self.answer = answer
+
+    async def astream(self, input_data, config, stream_mode=None):
+        chunk = type("M", (), {
+            "content": self.answer, "tool_calls": None, "tool_call_chunks": None,
+            "additional_kwargs": {}, "reasoning_content": "",
+        })()
+        yield ("updates", {"agent": {"messages": [chunk]}})
+        yield ("messages", (chunk, {"langgraph_node": "agent"}))
+        for i, name in enumerate(self.tool_names):
+            ai = type("M", (), {"tool_calls": [
+                {"name": name, "args": {}, "id": f"c_{name}_{i}"}
+            ]})()
+            yield ("updates", {"agent": {"messages": [ai]}})
+            payload = self.tool_payloads[i % len(self.tool_payloads)]
+            tm = type("M", (), {"content": payload, "name": name})()
+            yield ("updates", {"tools": {"messages": [tm]}})

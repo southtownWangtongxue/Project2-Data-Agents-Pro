@@ -29,26 +29,43 @@ def _extract_token_text(chunk: str) -> str:
     return "".join(out)
 
 
-def tap_stream(
-    inner: AsyncIterator[str],
-    on_finish: Callable[[str], Any],
-) -> AsyncIterator[str]:
-    """原样透传 inner 的 chunk,并在流结束时(任何结束方式)调用 on_finish(正文)。
+def _extract_tool_payloads(chunk):
+    out = []
+    for line in chunk.splitlines():
+        ev = _parse_line(line)
+        if isinstance(ev, dict) and ev.get("type") == "tool_result":
+            out.append(str(ev.get("content") or ""))
+    return out
 
-    on_finish 必须是同步可调用(通常是创建后台任务);其异常被吞掉,
-    绝不影响已经产出的 legacy 响应。
-    """
 
-    async def _gen() -> AsyncIterator[str]:
-        parts: list[str] = []
+def _parse_line(line):
+    if not line.startswith("data: "):
+        return None
+    try:
+        return json.loads(line[6:])
+    except ValueError:
+        return None
+
+
+def tap_stream(inner, on_finish):
+    async def _gen():
+        parts = []
+        payloads = []
         try:
             async for chunk in inner:
                 parts.append(_extract_token_text(chunk))
+                payloads.extend(_extract_tool_payloads(chunk))
                 yield chunk
         finally:
+            answer = "".join(parts)
             try:
-                on_finish("".join(parts))
-            except Exception:  # noqa: BLE001 —— 收尾回调失败不影响已发响应
+                on_finish(answer, payloads)
+            except TypeError:
+                try:
+                    on_finish(answer)
+                except Exception:
+                    pass
+            except Exception:
                 pass
 
     return _gen()

@@ -124,3 +124,14 @@ def test_spec_covers_prompt_provider_and_temperature(capture_create, monkeypatch
     assert "temperature" in spec
     assert spec["tools"], "工具清单也属行为影响参数"
     assert spec["middleware"], "中间件清单也属行为影响参数"
+
+
+def test_system_prompt_requires_dimension_breakdown_and_citation():
+    """SOP 必须要求:结论先行 + 逐维度展开 + 标注数据来源查询。
+
+    标注来源让接地检测从模糊匹配变成对账(模型自报数字→查询的映射)。
+    """
+    from app.harness.agent_factory import SYSTEM_PROMPT
+
+    for kw in ("维度", "数据来源"):
+        assert kw in SYSTEM_PROMPT, f"SOP 缺少结构要求: {kw}"
