@@ -3,6 +3,8 @@ import json
 
 import pytest
 
+import json
+
 from app.harness import shadow
 
 
@@ -287,3 +289,47 @@ class _QualityAgent:
             payload = self.tool_payloads[i % len(self.tool_payloads)]
             tm = type("M", (), {"content": payload, "name": name})()
             yield ("updates", {"tools": {"messages": [tm]}})
+            # 真实运行时桥接器还会为 run_sql 产出 result 事件(带 rows),
+            # 接地对账靠它——假 Agent 必须复现,否则测试测不到真实路径
+            try:
+                rows = json.loads(payload).get("rows")
+            except Exception:
+                rows = None
+            if rows is not None:
+                yield ("updates", {"tools": {"messages": [
+                    type("M", (), {"content": payload, "name": name})()
+                ]}})
+
+@pytest.mark.asyncio
+async def test_grounding_uses_result_rows_not_tool_summary(patched, monkeypatch):
+    """接地必须用 result 事件的真实行数据,而不是 tool_result 摘要。
+
+    实测:摘要只有「查询成功 · 5 行」,不含行数,拿它对账会把真实数字全判成
+    幻觉(本轮 1537/146/140 被误判)。result.data 才有真实行。
+    """
+    monkeypatch.setattr(
+        shadow, "build_harness_agent",
+        lambda: _QualityAgent(
+            tool_names=["run_sql"],
+            tool_payloads=['{"success":true,"row_count":2,"rows":[{"tbl":"a","n":1250},{"tbl":"b","n":287}]}'],
+            answer="a 表 1250 行,b 表 287 行,合计 1537 行。",
+        ),
+    )
+    rec = await shadow.run_shadow_comparison(question="q", legacy_answer="a", legacy_metrics={})
+    h = rec["harness"]
+    assert h["grounded"] is True, f"误判为幻觉: {h['ungrounded']}"
+
+
+@pytest.mark.asyncio
+async def test_grounding_source_recorded(patched, monkeypatch):
+    """记录里要能看出接地用了什么数据源(便于事后排查尺子失灵)。"""
+    monkeypatch.setattr(
+        shadow, "build_harness_agent",
+        lambda: _QualityAgent(
+            tool_names=["run_sql"],
+            tool_payloads=['{"success":true,"rows":[{"n":5}]}'],
+            answer="共 5 行。",
+        ),
+    )
+    rec = await shadow.run_shadow_comparison(question="q", legacy_answer="a", legacy_metrics={})
+    assert rec["harness"]["grounding_source"] == "result_rows"

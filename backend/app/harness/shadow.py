@@ -15,6 +15,7 @@ Harness 主循环,记录回答与过程指标,写入 JSONL 比对日志
 """
 from __future__ import annotations
 
+import json as _json
 import json
 import time
 
@@ -62,6 +63,7 @@ async def run_shadow_comparison(
         bridge = HarnessEventBridge()
         text_parts: list[str] = []
         tool_payloads: list[str] = []
+        grounding_rows = 0
         tool_calls = 0
         sql_count = 0
         used_todos = False
@@ -97,6 +99,11 @@ async def run_shadow_comparison(
                         used_todos = True
                 elif sse["type"] == "tool_result":
                     tool_payloads.append(str(sse.get("content") or ""))
+                elif sse["type"] == "result":
+                    # 接地对账必须用真实行数据(result.data),不是摘要——
+                    # 摘要只有「查询成功 · N 行」,拿它对账会把真实数字全判成幻觉
+                    tool_payloads.append(_json.dumps(sse.get("data") or [], ensure_ascii=False))
+                    grounding_rows += 1
             # 粗略的模型往返计数:每个 updates.agent/model 节点事件记一轮
             mode, data = event
             if mode == "updates" and isinstance(data, dict):
@@ -140,6 +147,7 @@ async def run_shadow_comparison(
                 "ungrounded": grounding["ungrounded"],
                 "grounded_details": grounding["details"][:20],
                 "grounding_reason": grounding["reason"],
+                "grounding_source": "result_rows" if grounding_rows else "none",
                 "dimensions": dims["hit"],
                 "dim_count": dims["count"],
             },

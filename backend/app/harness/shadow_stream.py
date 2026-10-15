@@ -33,7 +33,11 @@ def _extract_tool_payloads(chunk):
     out = []
     for line in chunk.splitlines():
         ev = _parse_line(line)
-        if isinstance(ev, dict) and ev.get("type") == "tool_result":
+        if not isinstance(ev, dict):
+            continue
+        if ev.get("type") == "result" and ev.get("data"):
+            out.append(json.dumps(ev["data"], ensure_ascii=False))
+        elif ev.get("type") == "tool_result":
             out.append(str(ev.get("content") or ""))
     return out
 
