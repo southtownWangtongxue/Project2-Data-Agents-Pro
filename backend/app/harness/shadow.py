@@ -14,13 +14,14 @@ from __future__ import annotations
 
 import json
 import time
-from pathlib import Path
 
+from app.core.config_manager import CONFIGS_DIR
 from app.harness.agent_factory import build_harness_agent
 from app.harness.sse_bridge import HarnessEventBridge
 from app.utils.log_utils import log
 
-COMPARISON_LOG = Path("configs/shadow_comparison.jsonl")
+# 绝对路径(与 ConfigManager 一致):相对路径会随后端进程 CWD 漂移
+COMPARISON_LOG = CONFIGS_DIR / "shadow_comparison.jsonl"
 SHADOW_LOG_MAX_LINES = 5000
 
 
