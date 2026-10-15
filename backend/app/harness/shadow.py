@@ -114,6 +114,10 @@ async def run_shadow_comparison(
                 "sql_count": sql_count,
                 "used_todos": used_todos,
                 "duration_ms": int((time.monotonic() - t0) * 1000),
+                # 构造路径自证:有 runtime_context + 至少一轮模型调用。
+                # 基线轮出现过「请求格式写错 → 模型收到空问题」的环境差异,
+                # 该标记让噪声样本可事后排除(不必依赖人工推断)。
+                "ctx_ok": bool(runtime_context) and llm_rounds >= 1,
             },
         }
         _append(record)

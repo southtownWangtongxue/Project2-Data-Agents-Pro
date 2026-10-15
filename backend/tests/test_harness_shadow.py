@@ -200,3 +200,28 @@ def test_shadow_report_includes_todo_rate_and_sql(patched):
     assert rep["total"] == 2
     assert rep["todo_rate"] == 0.5
     assert rep["avg_sql_count"] == 2.0
+
+
+@pytest.mark.asyncio
+async def test_shadow_record_marks_construction_path(patched, monkeypatch):
+    """记录里要能看出构造路径是否正常(有 runtime_context + 非空问题)。
+
+    基线轮出现过「测试请求格式写错 → 模型收到空问题」的环境差异,
+    记录须自带证据以便事后排除噪声样本。
+    """
+    monkeypatch.setattr(shadow, "build_harness_agent", lambda: _RecordingAgent())
+    rec = await shadow.run_shadow_comparison(
+        question="统计各表数据量", legacy_answer="a", legacy_metrics={},
+        runtime_context="[运行时上下文] 当前用户: admin | 模式: data",
+    )
+    assert rec["harness"]["ctx_ok"] is True
+    assert rec["harness"]["llm_rounds"] >= 1, "0 轮说明问题没送进模型(构造异常)"
+
+
+@pytest.mark.asyncio
+async def test_shadow_record_flags_missing_context(patched, monkeypatch):
+    monkeypatch.setattr(shadow, "build_harness_agent", lambda: _RecordingAgent())
+    rec = await shadow.run_shadow_comparison(
+        question="q", legacy_answer="a", legacy_metrics={}, runtime_context="",
+    )
+    assert rec["harness"]["ctx_ok"] is False

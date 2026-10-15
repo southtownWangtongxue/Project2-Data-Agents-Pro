@@ -81,3 +81,46 @@ def test_system_prompt_has_union_aggregation_guidance():
 
     assert "UNION" in SYSTEM_PROMPT.upper()
     assert "单条" in SYSTEM_PROMPT
+
+
+# ── Agent 缓存指纹:覆盖全部行为影响参数(Phase 2 实测教训)──────
+# 背景:指纹原先只看 provider,导致「改了 SOP 提示词但进程里还是旧的」——
+# baseline 采集白跑一轮(UNION 指引未生效却已采样)。指纹必须与构建同源:
+# 装配用到的每个行为影响参数都进 spec,加参数只需加到 spec 里。
+
+def test_sop_change_rebuilds_agent(capture_create, monkeypatch):
+    """SOP 提示词变更 → 指纹变化 → Agent 重建(无需重启后端)。"""
+    a1 = agent_factory.build_harness_agent()
+    monkeypatch.setattr(agent_factory, "SYSTEM_PROMPT", "新的提示词:" + "x" * 80)
+    a2 = agent_factory.build_harness_agent()
+    assert a2 != a1
+    assert capture_create.calls == 2
+
+
+def test_no_spec_change_keeps_singleton(capture_create):
+    """spec 未变时不得重建(否则单例缓存失去意义,每请求都重装配)。"""
+    a1 = agent_factory.build_harness_agent()
+    a2 = agent_factory.build_harness_agent()
+    a3 = agent_factory.build_harness_agent()
+    assert a1 is a2 is a3
+    assert capture_create.calls == 1
+
+
+def test_temperature_change_rebuilds_agent(capture_create, monkeypatch):
+    """温度也是行为影响参数:改了必须重建(不能只哈希提示词字符串)。"""
+    agent_factory.build_harness_agent()
+    # 温度解析在 app.deepagent.harness 内(legacy DeepAgent 路径的实现),
+    # spec 每次调用时从那里取,故 patch 源模块
+    monkeypatch.setattr("app.deepagent.harness._resolve_temperature", lambda p=None: 0.9)
+    agent_factory.build_harness_agent()
+    assert capture_create.calls == 2
+
+
+def test_spec_covers_prompt_provider_and_temperature(capture_create, monkeypatch):
+    """spec 必须同时含提示词、provider、温度三要素(防下一个人漏加参数)。"""
+    spec = agent_factory._agent_spec()
+    assert "system_prompt" in spec
+    assert "provider" in spec
+    assert "temperature" in spec
+    assert spec["tools"], "工具清单也属行为影响参数"
+    assert spec["middleware"], "中间件清单也属行为影响参数"

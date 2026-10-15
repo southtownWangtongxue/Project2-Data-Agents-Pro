@@ -12,6 +12,8 @@ Agent 为全局单例:构建期变量(模型/工具集)首次调用时确定;每
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
 from app.core.tool_pipeline import apply_tool_pipeline
@@ -80,14 +82,45 @@ def _build_checkpointer():
     return get_checkpointer() or InMemorySaver()
 
 
+def _agent_spec() -> dict[str, Any]:
+    """装配 Agent 的**全部行为影响参数**(单一来源)。
+
+    指纹与构建都从这里取:新增任何影响行为的参数只需加进本 spec,
+    指纹自动覆盖——避免「指纹漏了新参数」这类坑(与 _build_model 硬编码
+    temperature 是同一种错误模式)。
+
+    刻意不含线程/请求级变量(thread_id、history、runtime_context)——那些
+    每次请求都变,进指纹会导致每次都重建。
+    """
+    from app.deepagent.harness import _resolve_temperature
+    from app.deepagent.tools import web_search_tool
+
+    provider = get_current_provider()
+    return {
+        "system_prompt": SYSTEM_PROMPT,
+        "tools": [getattr(t, "__name__", str(t)) for t in [*get_data_tools(), web_search_tool]],
+        "middleware": [type(m).__name__ for m in (SqlGateMiddleware(),)],
+        "provider": _provider_fingerprint(),
+        "temperature": _resolve_temperature(provider),
+    }
+
+
+def _spec_fingerprint(spec: dict[str, Any]) -> str:
+    """spec 的稳定指纹(内容哈希,短十六进制,便于日志阅读)。"""
+    blob = json.dumps(spec, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
 def build_harness_agent() -> Any:
     """构建(首次)/返回(全局单例)Harness 主循环 Agent。
 
-    单例按「构建时的 provider 指纹」缓存:管理台切换模型(或 patch 变更 provider)
-    后指纹变化,下次调用自动重建 Agent——否则换模型必须重启后端才生效。
+    单例按「装配 spec 指纹」缓存:管理台切换模型、改温度、改 SOP 等任一
+    行为影响参数变化,下次请求自动重建——否则这些变更必须重启后端才生效
+    (Phase 2 实测:换了含 UNION 指引的 SOP 却仍跑旧提示词,baseline 白采一轮)。
     """
     global _agent, _agent_fingerprint
-    fingerprint = _provider_fingerprint()
+    spec = _agent_spec()
+    fingerprint = _spec_fingerprint(spec)
     if _agent is not None and fingerprint == _agent_fingerprint:
         return _agent
 
@@ -98,13 +131,13 @@ def build_harness_agent() -> Any:
         model=_build_model(),
         tools=tools,
         middleware=[SqlGateMiddleware()],
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=spec["system_prompt"],
         checkpointer=_build_checkpointer(),
     )
     _agent_fingerprint = fingerprint
     log.info(
-        "[Harness] 主循环装配完成: tools=%d middleware=SqlGate checkpointer=on fingerprint=%s",
-        len(tools), fingerprint,
+        f"[Harness] 主循环装配完成: tools={len(tools)} fingerprint={fingerprint} "
+        f"provider={spec['provider']} temperature={spec['temperature']}"
     )
     return _agent
 
