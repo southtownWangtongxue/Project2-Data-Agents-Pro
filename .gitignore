@@ -146,6 +146,11 @@ dist/
 .workbuddy/
 backend/exports/
 
+# 构建临时目录(dev server 占用 esbuild 时需把 TEMP 指到这里再 build;
+# 见 frontend-react 构建说明)——纯缓存,不入库
+.tmp-build/
+frontend-react/.tmp-build/
+
 # Runtime JSON configs (seeded from *.example.json on first start)
 backend/configs/*.json
 !backend/configs/*.example.json
