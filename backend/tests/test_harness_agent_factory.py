@@ -135,3 +135,52 @@ def test_system_prompt_requires_dimension_breakdown_and_citation():
 
     for kw in ("维度", "数据来源"):
         assert kw in SYSTEM_PROMPT, f"SOP 缺少结构要求: {kw}"
+
+# ── Phase 3:report/doc 模式的 SOP 片段 ────────────────────────
+
+def test_report_sop_fragment_covers_structure():
+    """report 片段必须规定报告结构与引用,否则退化为普通问答。"""
+    from app.harness.agent_factory import report_sop
+
+    sop = report_sop()
+    assert "摘要" in sop and "证据链" in sop and "建议" in sop
+    assert "search_knowledge" in sop
+
+
+def test_doc_sop_fragment_covers_document_scope():
+    """doc 片段必须限定在已上传文档范围内,不得凭空作答。"""
+    from app.harness.agent_factory import doc_sop
+
+    sop = doc_sop()
+    assert "文档" in sop
+    assert "search_knowledge" in sop
+
+
+def test_mode_sop_appends_to_base():
+    """模式片段是追加,不是替换——data 的能力边界/安全约束必须保留。"""
+    from app.harness.agent_factory import SYSTEM_PROMPT, report_sop
+
+    merged = SYSTEM_PROMPT + report_sop()
+    assert "只读优先" in merged          # data 硬约束仍在
+    assert "研究报告" in merged           # 模式片段已并入
+
+
+def test_spec_prompt_changes_with_mode():
+    """不同模式的 spec 提示词不同(指纹随之变化,Agent 自动重建)。"""
+    agent_factory.set_current_mode("data")
+    spec_data = agent_factory._agent_spec()
+    agent_factory.set_current_mode("report")
+    spec_report = agent_factory._agent_spec()
+    agent_factory.set_current_mode("data")
+
+    assert spec_data["system_prompt"] != spec_report["system_prompt"]
+    assert "研究报告" in spec_report["system_prompt"]
+    assert "研究报告" not in spec_data["system_prompt"]
+
+
+def test_build_uses_mode_specific_prompt(capture_create):
+    """装配时必须把模式化提示词传给 create_deep_agent。"""
+    agent_factory.set_current_mode("report")
+    agent_factory.build_harness_agent()
+    agent_factory.set_current_mode("data")
+    assert "研究报告" in capture_create.captured["system_prompt"]

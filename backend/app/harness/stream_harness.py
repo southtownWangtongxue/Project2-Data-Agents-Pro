@@ -41,7 +41,7 @@ from app.core.llm_retry import (
     MAX_RETRIES as LLM_MAX_RETRIES,
 )
 from app.core.llm_retry import is_retryable_exception, next_retry_delay
-from app.harness.agent_factory import build_harness_agent
+from app.harness.agent_factory import build_harness_agent, set_current_mode
 from app.harness.sse_bridge import HarnessEventBridge
 from app.utils.log_utils import log
 
@@ -60,6 +60,9 @@ async def stream_chat_harness(
     # 按请求指定的模型锁定 provider(与 legacy _stream_chat 的 set_provider 同款):
     # 缺失这一步会沿用启动时的 provider,管理台切模型后请求仍打到旧模型。
     set_provider(get_config_manager().get_llm_config(model))
+    # 按请求模式选 SOP 片段(data 基座 + report/doc 专属),模式变化会改变
+    # Agent 装配指纹 → 自动重建
+    set_current_mode(mode)
 
     agent = build_harness_agent()
     session_thread_id = existing_thread_id or f"{user_name}:{uuid.uuid4()}"

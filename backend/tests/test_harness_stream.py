@@ -146,6 +146,22 @@ async def test_simple_flow_no_approval(patched):
 
 
 @pytest.mark.asyncio
+async def test_sets_mode_for_sop_selection(patched, monkeypatch):
+    """stream_harness 必须把请求模式写进 mode 上下文(SOP 片段选择依据)。"""
+    seen = {}
+    monkeypatch.setattr(stream_harness, "set_current_mode", lambda m: seen.update(mode=m))
+    _FAKE_AGENT[:] = [_FakeAgent({
+        "first": [("messages", (_text_msg("ok"), {"langgraph_node": "agent"})),
+                  ("updates", {"__end__": {}})],
+        "resume": [],
+    })]
+    await _collect(stream_harness.stream_chat_harness(
+        question="写一份研究报告", user_name="admin", existing_thread_id="t1", mode="report",
+    ))
+    assert seen["mode"] == "report"
+
+
+@pytest.mark.asyncio
 async def test_resolves_request_model_provider(patched, monkeypatch):
     """必须按请求指定的模型锁定 provider(与 legacy 的 set_provider 一致)。
 

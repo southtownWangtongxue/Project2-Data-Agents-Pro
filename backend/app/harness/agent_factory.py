@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from contextvars import ContextVar
 from typing import Any
 
 from app.core.tool_pipeline import apply_tool_pipeline
@@ -51,6 +52,8 @@ SYSTEM_PROMPT = """你是 DataAgent Pro 的数据智能体,基于只读业务数
 """
 
 _agent: Any = None
+# 当前请求的对话模式:影响 SOP 片段选择与 Agent 指纹(模式变化 → 重建 Agent)
+_current_mode: ContextVar[str] = ContextVar("harness_mode", default="data")
 _agent_fingerprint: str | None = None
 
 
@@ -59,6 +62,40 @@ def _create(**kwargs: Any) -> Any:
     from app.deepagent.harness import create_deep_agent
 
     return create_deep_agent(**kwargs)
+
+
+def report_sop() -> str:
+    """report 模式的 SOP 片段(追加在 data SOP 之后)。
+
+    legacy report_workflow 是 report_planner → report_writer → finish 三段,
+    核心能力是 RAG 检索 + 结构化报告;Harness 侧由 search_knowledge 工具承担
+    检索,报告结构由本片段规定。
+    """
+    return """
+
+## 当前模式:研究报告(report)
+
+你在生成一份**结构化研究报告**,不是简短问答。流程:
+1. 先用 search_knowledge 检索与主题相关的知识库内容(可换关键词多次检索);
+2. 资料不足时明确说明缺口,不要用常识填补后冒充检索结论;
+3. 输出必须含三部分:**摘要**(3-5 句结论先行)/ **证据链**(分点列依据,
+   每条注明来自哪次检索)/ **建议**(可执行的后续动作);
+4. 报告使用简体中文,标题分层,长度按主题复杂度自适应,不凑字数。
+"""
+
+
+def doc_sop() -> str:
+    """doc 模式的 SOP 片段(文档智读:只在已上传文档范围内作答)。"""
+    return """
+
+## 当前模式:文档智读(doc)
+
+用户在问**已上传的文档**内容。流程:
+1. 用 search_knowledge 检索文档内容,答案必须落在检索到的片段内;
+2. 检索不到时明确回答「文档中未找到相关内容」,禁止凭常识编造文档内容;
+3. 引用文档原文时标注出处(文档名/章节),不要改写原意;
+4. 回答使用简体中文,简洁直接。
+"""
 
 
 def _build_model():
@@ -82,6 +119,30 @@ def _build_checkpointer():
     return get_checkpointer() or InMemorySaver()
 
 
+def get_current_mode() -> str:
+    """当前请求的对话模式(由 stream_harness 在装配前设置,默认 data)。"""
+    return _current_mode.get() or "data"
+
+
+def set_current_mode(mode: str | None) -> None:
+    """设置当前请求的对话模式(影响 SOP 片段与 Agent 指纹)。"""
+    _current_mode.set(mode or "data")
+
+
+def _system_prompt_for(mode: str) -> str:
+    """按模式拼装系统提示词:data 基座 + 模式专属片段。
+
+    模式片段是**追加**而非替换——data 基座里的能力边界与只读硬约束
+    对所有模式都成立。mode 未知时只用基座。
+    """
+    prompt = SYSTEM_PROMPT
+    if mode == "report":
+        prompt += report_sop()
+    elif mode == "doc":
+        prompt += doc_sop()
+    return prompt
+
+
 def _agent_spec() -> dict[str, Any]:
     """装配 Agent 的**全部行为影响参数**(单一来源)。
 
@@ -97,7 +158,7 @@ def _agent_spec() -> dict[str, Any]:
 
     provider = get_current_provider()
     return {
-        "system_prompt": SYSTEM_PROMPT,
+        "system_prompt": _system_prompt_for(get_current_mode()),
         "tools": [getattr(t, "__name__", str(t)) for t in [*get_data_tools(), web_search_tool]],
         "middleware": [type(m).__name__ for m in (SqlGateMiddleware(),)],
         "provider": _provider_fingerprint(),

@@ -1372,13 +1372,16 @@ async def chat_completions(body: ChatRequest, user: dict = Depends(get_current_u
     )
 
     # ── HARNESS_MODE 分发(Phase 1:默认 off,行为与此前完全一致)──
-    #   on:    data 模式走 Harness 主循环(Phase 2 切换默认后启用)
+    #   on:    data/report/doc 模式走 Harness 主循环(Phase 3 已扩展三模式)
     #   shadow:data 模式走 legacy,收尾后后台跑 Harness 双跑比对(见 shadow.py)
     #   off:   完全 legacy 行为
     # 配置来源:settings(.env / configs/patch.json 热更新),非进程环境变量——
     # 裸 os.getenv 读不到 pydantic 加载的 .env(项目无 load_dotenv)。
     _harness_mode = _resolve_harness_mode()
-    if _harness_mode in ("on", "shadow") and body.mode == "data" and not _loop_req.is_deepagent:
+    # Phase 3:report/doc 的 legacy 流程只有 3 节点且核心能力(RAG 检索)已被
+    # search_knowledge 工具覆盖,故一并纳入 Harness;SOP 片段按 mode 追加。
+    if _harness_mode in ("on", "shadow") and body.mode in ("data", "report", "doc") \
+            and not _loop_req.is_deepagent:
         from app.harness.stream_harness import stream_chat_harness
 
         if _harness_mode == "on":
