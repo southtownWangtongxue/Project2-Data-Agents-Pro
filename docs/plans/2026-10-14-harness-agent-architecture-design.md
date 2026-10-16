@@ -230,6 +230,21 @@ Bubble(ai)
 > 实现期偏差:计划 Task 5 的 chat.py shadow 接线合并进了 Task 3 的开关提交
 > (同一处分流点,避免二次改动同一区域)。
 
+> **Phase 2 已切换(2026-10-16):`HARNESS_MODE=on` 热生效,data 模式流量由
+> Harness 主循环接管,legacy 退为 fallback。** 切换前已完成:
+> ① 四指标门禁(接地 2/2、维度均值 3.5、指标 3/4 人工预筛通过、
+> legacy 接地按方案 B 降级并显式标注 `degraded_nested_derivation`);
+> ② 三个预算旋钮接入配置体系(`HARNESS_RECURSION_LIMIT`=40≈data 20 步 /
+> `HARNESS_MAX_SECONDS`=300 墙钟熔断 / `HARNESS_SHADOW_TIMEOUT`=120),
+> 支持 .env 与 patch.json 热更新,调预算不必改代码重启。
+> 切换后实测:同一问题在 qwen-flash / qwen3.8-27b 上均跑通
+> `get_table_schema → run_sql → make_chart` 全链路,SQL 稳定 1 条(UNION 生效),
+> 富事件(sql/result/chart/token/done/title)齐全。
+> **回滚方式**:`configs/patch.json` 把 `HARNESS_MODE` 改为 `off` + 调 reload
+> 端点,无需重启。
+> **Phase 3 待办**:report/doc 模式 agent 化;legacy 13 节点图打 tag 归档;
+> 移除已达使命的历史开关。
+
 ### Phase 2 切换默认
 - agent 成为 data 模式默认,legacy 降级为 fallback(配置中心开关)
 - 门禁:chrome-devtools 全链路走查(对话/查询/审批 HITL/图表/历史会话)+
