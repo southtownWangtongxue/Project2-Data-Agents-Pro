@@ -1,7 +1,7 @@
 # 项目交接文档
 
 > 生成时间:2026-10-16 · 面向接手后续任务的智能体/开发者
-> 当前分支:`data_agent_pro` · 后端测试 **194 passed** · 前端 **38 passed**
+> 当前分支:`data_agent_pro` · 后端测试 **211 passed** · 前端 **38 passed**
 
 ---
 
@@ -86,7 +86,11 @@ backend/app/harness/
 
 - **legacy 接地降级**:嵌套派生(如「占总量的 81.55%」= 1289/1604×100,1604 自身也是派生值)判不出来。报告输出 `legacy_grounding_reliability=degraded_nested_derivation` 显式提示。**别把这误读为 legacy 幻觉。**
 - **nemotron 补采**:OpenRouter 免费档每日 50 次已用满。不排期,明天配额重置后顺手发一批作为跨模型稳健性附录。
-- **零行 SELECT 呈现 `affected_rows=1`**:源自 `execute_sql` 既有行为,Phase 0 按"主线零 diff"有意未改,Phase 1 处理。
+- ~~**零行 SELECT 呈现 `affected_rows=1`**~~ ✅ 已修复(2026-10-16,`51e3886`):
+  `execute_sql` 改用 `CursorResult.returns_rows` 结构性区分「是否返回结果集」,
+  零行 SELECT 返回 `data=[]`、run_sql 如实报 `row_count=0`;DML 元信息行不变。
+  替身契约经真库探针校准(零行 SELECT `returns_rows=True`/`fetchall()=[]`,
+  DML `returns_rows=False`),端到端验证通过。
 
 ---
 
