@@ -33,7 +33,8 @@
 |---|---|---|
 | Phase 0 工具层 | ✅ 完成 | `app/harness/sql_gate.py`、`tools/data_tools.py`(4 工具)、`sql_gate_middleware.py` |
 | Phase 1 主循环接入 | ✅ 完成 | `agent_factory.py`、`sse_bridge.py`、`stream_harness.py`、`shadow.py`;`HARNESS_MODE` 开关(off/shadow/on) |
-| Phase 2 切换默认 | 🔄 **进行中** | 见 §4 决策盘点 |
+| Phase 2 切换默认 | ✅ 完成 | `HARNESS_MODE=on` 热生效,data 模式 Harness 接管;预算旋钮接入配置体系 |
+| Phase 3 扩展与收敛 | ✅ 完成 | report/doc 纳入 Harness(模式化 SOP);预算按模式区分;移除 `AGENT_LOOP_SHADOW` 死开关;legacy 归档 tag `legacy-graph-13node` |
 
 关键代码地图:
 
@@ -89,12 +90,30 @@ backend/app/harness/
 
 ---
 
-## 5. 下一步该做什么(按优先级)
+## 5.  Phase 2 门禁(已完成,记录备查)
 
-1. **判指标 3/4**:打开 `backend/configs/harness_review.md`,逐样本打标。这是 Phase 2 门禁的最后输入。
-2. **定切换策略**:全量切 / shadow 并行观察一段时间 / 按问题类型分流。需结合指标 3/4 结果。
-3. **Phase 3 收敛归档**:report/doc 也 agent 化;legacy 13 节点图打 tag 归档;历史开关清理。
-4. **顺手项**(不阻塞):`stream_harness.py` 里三个裸 `os.getenv` 旋钮(`HARNESS_RECURSION_LIMIT` / `HARNESS_MAX_SECONDS` / `HARNESS_SHADOW_TIMEOUT`)接入 settings,与 `HARNESS_MODE` 对齐。
+| 指标 | 类型 | 结果 |
+|---|---|---|
+| 数据接地 | 自动 | ✅ Harness 2/2(旧轮尺子失效样本已按 `grounding_source` 甄别) |
+| 分析维度 ≥2 | 自动 | ✅ 均值 3.5 |
+| 子问题覆盖 | 人工 | ✅ 预筛通过(对照文件 `backend/configs/harness_review.md`) |
+| 结论正确性 | 人工 | ✅ 预筛通过(臂内算术核对,含样本 11 事件分布加总核平) |
+| 结果可用率 ≥ legacy | 综合 | ⚠️ legacy 接地按方案 B 降级,由人工判定间接支撑 |
+
+## 5.1 剩余待验证(Phase 3 收尾,按优先级)
+
+## 5.1 剩余待验证(Phase 3 收尾,按优先级)
+
+1. **report 放大预算后的端到端产出**:`632c18c` 已把 report 递归与墙钟翻倍(原实测 report 在 300s 内跑完 18 次工具调用后被熔断、答案为空),但放大后的完整 report 尚未跑通——**DashScope 的 qwen3.8-27b 免费配额在测试中被烧光**(`AllocationQuota.FreeTierOnly`)。配额恢复后重跑一次 report,确认能产出正文即可闭环。
+2. **审批 HITL 真实触发**:`on` 模式下高危 SQL 走 `SqlGateMiddleware` interrupt,approve/edit/reject 三态只有单测覆盖(13 个,含真实 interrupt 链路),**从未在真实 LLM 下跑过**。需在测试库上构造可回滚的 DML 验证。
+3. **nemotron 跨模型稳健性附录**:OpenRouter 免费档每日 50 次,不排期,顺手时补采。
+
+## 5.2 模式预算速查
+
+| 模式 | 递归上限 | 墙钟 | 说明 |
+|---|---|---|---|
+| data / doc | `HARNESS_RECURSION_LIMIT`(40) | `HARNESS_MAX_SECONDS`(300) | ≈ data 20 步 |
+| report | 基础值 × 2(80) | 基础值 × 2(600) | ≈ report 40 步,设计批准宽松档 |
 
 ---
 
