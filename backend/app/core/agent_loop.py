@@ -16,7 +16,8 @@
 
 开关：
     AGENT_LOOP_ENABLED  总开关（false 时完全走旧构造逻辑）
-    AGENT_LOOP_SHADOW   影子模式（true 时执行构造+比对，但分发逻辑不变）
+    注:AGENT_LOOP_SHADOW 已于 044bab2 删除——默认关闭且无测试覆盖的死分支,
+        其职责已由 HARNESS_MODE(影子双跑)取代。详见 docs/NEXT_STEPS.md 工作线 A。
 """
 from __future__ import annotations
 
