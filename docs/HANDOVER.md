@@ -102,10 +102,12 @@ backend/app/harness/
 
 ## 5.1 剩余待验证(Phase 3 收尾,按优先级)
 
-## 5.1 剩余待验证(Phase 3 收尾,按优先级)
-
-1. **report 放大预算后的端到端产出**:`632c18c` 已把 report 递归与墙钟翻倍(原实测 report 在 300s 内跑完 18 次工具调用后被熔断、答案为空),但放大后的完整 report 尚未跑通——**DashScope 的 qwen3.8-27b 免费配额在测试中被烧光**(`AllocationQuota.FreeTierOnly`)。配额恢复后重跑一次 report,确认能产出正文即可闭环。
-2. **审批 HITL 真实触发**:`on` 模式下高危 SQL 走 `SqlGateMiddleware` interrupt,approve/edit/reject 三态只有单测覆盖(13 个,含真实 interrupt 链路),**从未在真实 LLM 下跑过**。需在测试库上构造可回滚的 DML 验证。
+1. ~~**report 放大预算后的端到端产出**~~ ✅ 已验证(2026-10-16,qwen3.7-flash):149.1s 跑通,
+   产出 4640 字完整报告(摘要/使用趋势/事件分布/建议四部分),6 条 SQL + 图表 + 正文齐全,
+   未再被墙钟熔断。修复见 `632c18c`。
+2. **审批 HITL 真实触发**:`on` 模式下高危 SQL 走 `SqlGateMiddleware` interrupt,
+   approve/edit/reject 三态只有单测覆盖(13 个,含真实 interrupt 链路),
+   **从未在真实 LLM 下跑过**。需在测试库上构造可回滚的 DML 验证。
 3. **nemotron 跨模型稳健性附录**:OpenRouter 免费档每日 50 次,不排期,顺手时补采。
 
 ## 5.2 模式预算速查
