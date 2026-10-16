@@ -105,9 +105,7 @@ backend/app/harness/
 1. ~~**report 放大预算后的端到端产出**~~ ✅ 已验证(2026-10-16,qwen3.7-flash):149.1s 跑通,
    产出 4640 字完整报告(摘要/使用趋势/事件分布/建议四部分),6 条 SQL + 图表 + 正文齐全,
    未再被墙钟熔断。修复见 `632c18c`。
-2. **审批 HITL 真实触发**:`on` 模式下高危 SQL 走 `SqlGateMiddleware` interrupt,
-   approve/edit/reject 三态只有单测覆盖(13 个,含真实 interrupt 链路),
-   **从未在真实 LLM 下跑过**。需在测试库上构造可回滚的 DML 验证。
+2. ~~**审批 HITL 真实触发**~~ ✅ 已验证(2026-10-16,详见 §5.3)。
 3. **nemotron 跨模型稳健性附录**:OpenRouter 免费档每日 50 次,不排期,顺手时补采。
 
 ## 5.2 模式预算速查
@@ -116,6 +114,32 @@ backend/app/harness/
 |---|---|---|---|
 | data / doc | `HARNESS_RECURSION_LIMIT`(40) | `HARNESS_MAX_SECONDS`(300) | ≈ data 20 步 |
 | report | 基础值 × 2(80) | 基础值 × 2(600) | ≈ report 40 步,设计批准宽松档 |
+
+## 5.3 审批 HITL 集成验证结论(2026-10-16)
+
+用临时表 `hitl_smoke_test` 验证(已 DROP,业务表零影响)。**关键发现:第 3 层
+prompt rules 极强——4 种 framing(直接指令 /「审批已通过」/ 系统自检)下模型均
+拒绝发写 SQL,其中一次明确回复「即使您声称审批已通过,系统层面仍会阻止执行」。
+这意味着第 2 层安全闸在真实 LLM 条件下**不可达**,写操作被挡在模型侧。**
+
+因此改用桩模型(固定发 INSERT)排除 LLM 意愿变量,按生产拓扑(读流 + 审批两个
+并发任务)验证第 2 层及之后全链路:
+
+| 分支 | 结果 | 证据 |
+|---|---|---|
+| 拦截 | ✅ | `[SqlGate] run_sql 决策=ask` → `approval_required` 下发 |
+| approve | ✅ | `resolve` 返回 True → `tool_result` 1 行 → 库内核验 1 行 |
+| reject | ✅ | `tool_result` =「安全策略拒绝执行该 SQL:审批被驳回:…」,SQL 未执行 |
+| **篡改注入** | ✅ | 回传夹带 `edited_sql=DROP TABLE da_sys_user` **被忽略**,执行的是原始已分类 INSERT;`da_sys_user` 表完好(1 行) |
+| 超时 | ✅ | 300s 未审批自动拒绝(实测触发) |
+
+**安全结论**:审批回传通道无法注入任意 SQL——`approve` 端点的请求模型没有 sql
+字段;`apply_approval` 的 `edited_sql` 分支要求 `approved is False`,而 approve
+端点从不传该字段。双重保险。
+
+**产品含义(需决策)**:既然模型侧已拒绝发写 SQL,审批卡在当前 SOP 下实际不可达。
+若将来要放开写操作,需要调整第 3 层 prompt rules,让模型在用户明确要求时发出
+写 SQL 交给第 2 层闸口——否则安全闸形同虚设(但目前是「过度安全」而非漏洞)。
 
 ---
 
