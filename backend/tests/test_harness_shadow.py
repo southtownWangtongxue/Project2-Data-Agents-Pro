@@ -333,3 +333,79 @@ async def test_grounding_source_recorded(patched, monkeypatch):
     )
     rec = await shadow.run_shadow_comparison(question="q", legacy_answer="a", legacy_metrics={})
     assert rec["harness"]["grounding_source"] == "result_rows"
+
+# ── legacy 接地可信度:报告必须显式标注,不能只写在 docstring ──
+
+def test_shadow_report_flags_legacy_grounding_reliability(patched):
+    """报告里 legacy 接地字段旁必须带 grounding_reliability 显式标记。
+
+    否则三个月后看报告里 legacy 全 False,第一反应会是"legacy 在幻觉",
+    而不是"尺子有嵌套派生局限"。
+    """
+    shadow.COMPARISON_LOG.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in [
+        {"harness": {"llm_rounds": 2, "used_todos": False, "sql_count": 1, "answer_len": 100,
+                     "grounded": True, "dim_count": 3},
+         "legacy": {"grounded": False, "dim_count": 5, "answer_len": 1200,
+                    "ungrounded": [81.55]}},
+    ]), encoding="utf-8")
+    rep = shadow.shadow_report()
+    assert rep["legacy_grounding_reliability"] == "degraded_nested_derivation"
+
+
+def test_shadow_report_omits_flag_when_legacy_fully_grounded(patched):
+    """legacy 全接地时不做降级标注(标记只在真有局限时出现)。"""
+    shadow.COMPARISON_LOG.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in [
+        {"harness": {"llm_rounds": 2, "grounded": True},
+         "legacy": {"grounded": True, "answer_len": 100, "ungrounded": []}},
+    ]), encoding="utf-8")
+    rep = shadow.shadow_report()
+    assert rep["legacy_grounding_reliability"] is None
+
+# ── 人工判定对照文件(指标 3/4 的判定辅助,不是纯并排)────────────
+
+def test_review_export_contains_question_answers_and_rows(patched):
+    """导出必须含三段:原始提问 / 两臂答案 / 本轮工具行数据。
+
+    指标 4 判定时不该让人去翻 jsonl 对数字;指标 3 需要原始提问全文对子问题。
+    """
+    shadow.COMPARISON_LOG.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in [
+        {"question": "统计各表数据量并说明构成",
+         "model": "qwen-flash",
+         "harness": {"answer": "H 答案", "grounded": True, "dim_count": 3, "answer_len": 4,
+                     "tool_rows": [{"table_name": "chat_nodes", "row_count": 147}],
+                     "ctx_ok": True},
+         "legacy": {"answer": "L 答案", "grounded": False, "dim_count": 5,
+                    "answer_len": 4, "ungrounded": [81.55]}},
+    ]), encoding="utf-8")
+
+    out = shadow.build_review_document()
+    assert "统计各表数据量并说明构成" in out          # 原始提问全文
+    assert "H 答案" in out and "L 答案" in out       # 两臂答案
+    assert "147" in out and "chat_nodes" in out     # 工具行数据
+    assert "degraded_nested_derivation" in out      # legacy 接地可信度显式标注
+
+
+def test_review_export_marks_incomplete_samples(patched):
+    """样本缺失(legacy 空答案)要留「已排除」占位,与采集批次一一对应。"""
+    shadow.COMPARISON_LOG.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in [
+        {"question": "q1", "model": "qwen-flash",
+         "harness": {"answer": "H", "grounded": True, "dim_count": 3, "answer_len": 1,
+                     "tool_rows": [], "ctx_ok": True},
+         "legacy": {"answer": "", "grounded": False, "dim_count": 0, "answer_len": 0,
+                    "ungrounded": []}},
+    ]), encoding="utf-8")
+
+    out = shadow.build_review_document()
+    assert "已排除" in out
+    assert "legacy 侧未采到答案" in out
+
+
+def test_review_export_every_jsonl_line_parsed(patched):
+    """导出不许因单条坏记录整体失败(格式稳定性)。"""
+    shadow.COMPARISON_LOG.write_text(
+        '{"question": "ok", "model": "m", "harness": {"answer": "a", "answer_len": 1, "dim_count": 1}, "legacy": {"answer": "b", "answer_len": 1, "dim_count": 1}}\n'
+        "not-json\n",
+        encoding="utf-8",
+    )
+    out = shadow.build_review_document()
+    assert "ok" in out

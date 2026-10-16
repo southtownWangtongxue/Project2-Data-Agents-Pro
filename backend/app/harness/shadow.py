@@ -63,6 +63,7 @@ async def run_shadow_comparison(
         bridge = HarnessEventBridge()
         text_parts: list[str] = []
         tool_payloads: list[str] = []
+        tool_rows: list[dict] = []
         grounding_rows = 0
         tool_calls = 0
         sql_count = 0
@@ -104,6 +105,7 @@ async def run_shadow_comparison(
                     # 摘要只有「查询成功 · N 行」,拿它对账会把真实数字全判成幻觉
                     tool_payloads.append(_json.dumps(sse.get("data") or [], ensure_ascii=False))
                     grounding_rows += 1
+                    tool_rows.extend(sse.get("data") or [])
             # 粗略的模型往返计数:每个 updates.agent/model 节点事件记一轮
             mode, data = event
             if mode == "updates" and isinstance(data, dict):
@@ -149,6 +151,7 @@ async def run_shadow_comparison(
                 "grounding_reason": grounding["reason"],
                 "grounding_source": "result_rows" if grounding_rows else "none",
                 "dimensions": dims["hit"],
+                "tool_rows": tool_rows[:50],
                 "dim_count": dims["count"],
             },
         }
@@ -182,22 +185,24 @@ def _rotate() -> None:
 def shadow_report() -> dict:
     """聚合比对日志,并标注 legacy 接地的数据可信度。
 
+    todo_rate 与 avg_sql_count 是 Phase 2 决策依据:
+    - todo_rate 低 → 步骤链需兜底或强化 SOP(看具体分布再定)
+    - avg_sql_count 偏高 → UNION 优化(已加 SOP 指引)效果如何
+
     legacy 接地的已知局限(Phase 2 方案 B,不阻塞核心决策):
     1. 嵌套派生不判定:如「占总量的 81.55%」= 1289/1604*100,而 1604 本身也是
        派生值,当前只支持一层派生,此类数字会被误判为未接地;
     2. legacy 侧偶发采不到正文(13 节点流超时/取消),此时维度与接地均为 0,
        属样本缺失而非质量差——已由 answer_len=0 标识,统计时应排除。
-    因此 legacy 接地只作参考,门禁判定以 Harness 接地 + 人工复核为准。
+    出现第 1 类未接地数字时,报告输出
+    legacy_grounding_reliability="degraded_nested_derivation" 显式降级标记,
+    避免读者把尺子局限误读为「legacy 在幻觉」。
+    门禁判定以 Harness 接地 + 人工复核为准。
     """
-
-    """聚合比对日志:总数 / 平均模型往返 / todo 使用率 / 平均 SQL 条数。
-
-    todo_rate 与 avg_sql_count 是 Phase 2 决策依据:
-    - todo_rate 低 → 步骤链需兜底或强化 SOP(看具体分布再定)
-    - avg_sql_count 偏高 → UNION 优化(已加 SOP 指引)效果如何
-    """
+    empty = {"total": 0, "avg_llm_rounds": 0, "todo_rate": 0,
+             "avg_sql_count": 0, "legacy_grounding_reliability": None}
     if not COMPARISON_LOG.exists():
-        return {"total": 0, "avg_llm_rounds": 0, "todo_rate": 0, "avg_sql_count": 0}
+        return empty
     records = []
     for line in COMPARISON_LOG.read_text(encoding="utf-8").splitlines():
         try:
@@ -205,16 +210,85 @@ def shadow_report() -> dict:
         except json.JSONDecodeError:
             continue
     if not records:
-        return {"total": 0, "avg_llm_rounds": 0, "todo_rate": 0, "avg_sql_count": 0}
+        return empty
     h = [r.get("harness", {}) for r in records]
-    rounds = [x.get("llm_rounds", 0) for x in h]
-    sqls = [x.get("sql_count", 0) for x in h]
-    todos = [bool(x.get("used_todos")) for x in h]
+    legacy_ungrounded = [
+        v for r in records for v in (r.get("legacy", {}).get("ungrounded") or [])
+    ]
     return {
         "total": len(records),
-        "avg_llm_rounds": round(sum(rounds) / len(rounds), 2),
-        "todo_rate": round(sum(todos) / len(todos), 2),
-        "avg_sql_count": round(sum(sqls) / len(sqls), 2),
-        "avg_tool_calls": round(
-            sum(x.get("tool_calls", 0) for x in h) / len(h), 2),
+        "avg_llm_rounds": round(sum(x.get("llm_rounds", 0) for x in h) / len(h), 2),
+        "todo_rate": round(sum(bool(x.get("used_todos")) for x in h) / len(h), 2),
+        "avg_sql_count": round(sum(x.get("sql_count", 0) for x in h) / len(h), 2),
+        "avg_tool_calls": round(sum(x.get("tool_calls", 0) for x in h) / len(h), 2),
+        "legacy_grounding_reliability": (
+            "degraded_nested_derivation" if legacy_ungrounded else None
+        ),
     }
+def build_review_document() -> str:
+    """生成人工判定对照文件(Markdown),指标 3/4 的判定辅助。
+
+    每个问题输出:原始提问全文 / 两臂答案 / 本轮工具行数据(run_sql result);
+    legacy 接地旁标注可信度;样本缺失(legacy 空答案)保留「已排除」占位,
+    使文件与采集批次一一对应,日后复查不迷路。
+    """
+    if not COMPARISON_LOG.exists():
+        return "# Harness 两臂对照(人工判定用)\n\n暂无采集数据。\n"
+
+    records = []
+    for line in COMPARISON_LOG.read_text(encoding="utf-8").splitlines():
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue  # 单条坏记录不阻塞整体导出
+
+    out = [
+        "# Harness 两臂对照(人工判定用)",
+        "",
+        f"- 样本数:{len(records)}(含已排除占位,与采集批次一一对应)",
+        "- 判定说明:指标 3(子问题覆盖)对照原始提问逐项核对;"
+        "指标 4(结论正确性)对照下方「工具行数据」核对答案中的数字。",
+        "- 判定标记:`[ ]` 未判 / `[x] 过` / `[x] 不过`",
+        "",
+    ]
+    for idx, r in enumerate(records, 1):
+        h = r.get("harness", {})
+        l = r.get("legacy", {})
+        legacy_ungrounded = l.get("ungrounded") or []
+        rows = h.get("tool_rows") or []
+        out += [
+            f"## {idx}. {r.get('question', '(未记录问题)')}",
+            "",
+            f"- 模型:`{r.get('model', '')}`",
+            f"- HARNESS:接地 `{h.get('grounded')}` / 维度 `{h.get('dim_count')}` "
+            f"({', '.join(h.get('dimensions') or [])})",
+        ]
+        if legacy_ungrounded:
+            out.append(
+                f"- LEGACY:接地 `{l.get('grounded')}` / 维度 `{l.get('dim_count')}` "
+                f"— 注意:`legacy_grounding_reliability=degraded_nested_derivation`"
+                f"(嵌套派生判不出来,未接地数字 {legacy_ungrounded} 不构成幻觉证据)"
+            )
+        else:
+            out.append(
+                f"- LEGACY:接地 `{l.get('grounded')}` / 维度 `{l.get('dim_count')}`"
+            )
+
+        if not l.get("answer_len"):
+            out += ["", "> ⚠️ **已排除**:legacy 侧未采到答案(流超时/取消),"
+                        "该样本不计入对比,保留占位以对齐采集批次。"]
+        out += ["", "### 工具行数据(run_sql result)", ""]
+        if rows:
+            out.append("```json")
+            out.append(json.dumps(rows, ensure_ascii=False, indent=2))
+            out.append("```")
+        else:
+            out.append("(本轮未采集到工具行数据)")
+
+        out += ["", "### 两臂答案", "", "**HARNESS:**", "", h.get("answer") or "(空)"]
+        if l.get("answer"):
+            out += ["", "**LEGACY:**", "", l["answer"]]
+        out += ["", "### 人工判定", "",
+                "- 指标 3 子问题覆盖:`[ ]`",
+                "- 指标 4 结论正确性:`[ ]`", ""]
+    return "\n".join(out)
