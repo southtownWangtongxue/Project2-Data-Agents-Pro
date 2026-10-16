@@ -225,6 +225,14 @@ def shadow_report() -> dict:
             "degraded_nested_derivation" if legacy_ungrounded else None
         ),
     }
+def _fmt_arm(name: str, arm: dict) -> str:
+    """格式化一臂的质量摘要;早期样本无质量字段时标注「未采集」。"""
+    if "grounded" not in arm:
+        return f"- {name}:(早期样本,未采集质量指标)"
+    dims = ", ".join(arm.get("dimensions") or [])
+    return (f"- {name}:接地 `{arm.get('grounded')}` / 维度 `{arm.get('dim_count')}`"
+            + (f" ({dims})" if dims else ""))
+
 def build_review_document() -> str:
     """生成人工判定对照文件(Markdown),指标 3/4 的判定辅助。
 
