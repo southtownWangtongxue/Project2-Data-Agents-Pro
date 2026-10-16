@@ -46,6 +46,26 @@ from app.harness.sse_bridge import HarnessEventBridge
 from app.utils.log_utils import log
 
 
+def _recursion_limit_for(mode: str) -> int:
+    """按模式给图递归上限(设计批准:data 20 步 / report 40 步,一次往返约 2 层)。
+
+    report 类任务需要多轮检索+多维查询,与 data 共用一套预算会被墙钟/递归
+    熔断在产出正文之前(实测 report 300s 内跑了 18 次工具调用后被切断、答案为空)。
+    """
+    base = int(settings.HARNESS_RECURSION_LIMIT)
+    if mode == "report":
+        return base * 2
+    return base
+
+
+def _max_seconds_for(mode: str) -> float:
+    """按模式给墙钟熔断(report 需要更长;doc 与 data 同档)。"""
+    base = float(settings.HARNESS_MAX_SECONDS)
+    if mode == "report":
+        return base * 2
+    return base
+
+
 async def stream_chat_harness(
     question: str,
     user_name: str,
@@ -69,7 +89,7 @@ async def stream_chat_harness(
     run_id = f"{user_name}:{uuid.uuid4()}"
     config = {
         "configurable": {"thread_id": run_id},
-        "recursion_limit": int(settings.HARNESS_RECURSION_LIMIT),
+        "recursion_limit": _recursion_limit_for(mode),
     }
 
     yield _sse_event({"type": "thread_id", "thread_id": session_thread_id})
@@ -118,7 +138,7 @@ async def stream_chat_harness(
     yield _sse_event({"type": "status", "content": "正在分析您的请求..."})
 
     started = _time.monotonic()
-    max_seconds = float(settings.HARNESS_MAX_SECONDS)
+    max_seconds = _max_seconds_for(mode)
 
     def _remaining() -> float:
         return max_seconds - (_time.monotonic() - started)

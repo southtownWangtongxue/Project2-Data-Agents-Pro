@@ -1316,7 +1316,6 @@ async def chat_completions(body: ChatRequest, user: dict = Depends(get_current_u
     # AGENT_LOOP_ENABLED=true（默认）：采用驱动器产物（压缩/变量/上下文），
     #   分发由 _loop_req.profile 决定；
     # AGENT_LOOP_ENABLED=false：回退旧构造（仅压缩），分发规则不变——回滚通道。
-    # AGENT_LOOP_SHADOW：影子比对（观察期工具，默认关闭）。
     _runtime_context = ""
     _loop_req = AgentLoopRunner.build_request(
         question=question,

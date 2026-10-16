@@ -146,6 +146,57 @@ async def test_simple_flow_no_approval(patched):
 
 
 @pytest.mark.asyncio
+async def test_report_mode_gets_larger_budget(patched):
+    """report 模式必须拿到更大预算(设计批准 data 20 步 / report 40 步)。
+
+    实测 report 在 300s 墙钟 + 40 递归下被熔断、答案为空——一套预算服务所有
+    模式会把报告类任务掐死在产出正文之前。
+    """
+    seen = {}
+    _FAKE_AGENT[:] = [_BudgetSpy(seen)]
+    await _collect(stream_harness.stream_chat_harness(
+        question="写一份使用情况研究报告", user_name="admin", existing_thread_id="t1", mode="report",
+    ))
+    report_limit = seen.get("recursion_limit")
+
+    seen.clear()
+    _FAKE_AGENT[:] = [_BudgetSpy(seen)]
+    await _collect(stream_harness.stream_chat_harness(
+        question="统计各表数据量", user_name="admin", existing_thread_id="t1", mode="data",
+    ))
+    data_limit = seen.get("recursion_limit")
+
+    assert report_limit > data_limit, (
+        f"report 预算应大于 data,实际 report={report_limit} data={data_limit}"
+    )
+
+
+class _BudgetSpy:
+    """记录 config 的假 Agent(用于验证预算按模式区分)。"""
+
+    def __init__(self, sink):
+        self.sink = sink
+
+    async def astream(self, input_data, config, stream_mode=None):
+        self.sink["recursion_limit"] = config.get("recursion_limit")
+        chunk = type("M", (), {"content": "ok", "tool_calls": None,
+                               "tool_call_chunks": None, "additional_kwargs": {},
+                               "reasoning_content": ""})()
+        yield ("messages", (chunk, {"langgraph_node": "agent"}))
+
+
+@pytest.mark.asyncio
+async def test_doc_mode_uses_data_budget(patched):
+    """doc 是轻量问答,预算与 data 同档(不必为它单独放宽)。"""
+    seen = {}
+    _FAKE_AGENT[:] = [_BudgetSpy(seen)]
+    await _collect(stream_harness.stream_chat_harness(
+        question="文档里讲审批吗", user_name="admin", existing_thread_id="t1", mode="doc",
+    ))
+    assert seen["recursion_limit"] == int(stream_harness.settings.HARNESS_RECURSION_LIMIT)
+
+
+@pytest.mark.asyncio
 async def test_sets_mode_for_sop_selection(patched, monkeypatch):
     """stream_harness 必须把请求模式写进 mode 上下文(SOP 片段选择依据)。"""
     seen = {}
