@@ -1,7 +1,7 @@
 # 项目交接文档
 
 > 生成时间:2026-10-16 · 面向接手后续任务的智能体/开发者
-> 当前分支:`data_agent_pro` · 后端测试 **211 passed** · 前端 **38 passed**
+> 当前分支:`data_agent_pro` · 后端测试 **218 passed** · 前端 **38 passed**
 
 ---
 
@@ -60,6 +60,12 @@ backend/app/harness/
 4. **尺子失灵三次**:接地检测先后用错数据源(工具摘要)、漏 N 数合计/均值、legacy 侧口径不一致。**教训:先修尺子再解读数据**——每一次"结论异常"最后都查出是检测器问题,不是被测对象问题。
 5. **采集管线空洞**:影子任务曾建在 `async for` 之后,流异常/取消时静默丢样本(同批 3 问只落 2 条)。已用 `tap_stream` finally 兜底。
 6. **测试替身掩盖真实缺陷**:Phase 1 终审抓到的 Critical(HITL 恢复段缺 checkpointer 必炸)就是假 Agent 给了虚假信心。**凡涉及真实图/中间件的测试,用最小真实 LangGraph 验证,别用 mock 糊弄。**
+7. **日志占位符风格混用(2026-10-16 修复,`8995f9e`)**:`log` 是 loguru(只做
+   `str.format`),但全库 120 处按 stdlib 习惯写 `log.warning("x %s", val)`——值被
+   静默丢弃只打字面 `%s`,[SqlGate] 审计决策/[Shadow] 失败原因全中招(nemotron
+   排查时只能靠 shim 重跑才拿到真实堆栈)。已在 `log_utils` 加双风格门面,两种写法
+   都正确;**新代码日志含参数时,printf 与 `{}` 风格皆可,但别再依赖 stdlib 语义的
+   其它特性**。
 
 ---
 
@@ -110,7 +116,11 @@ backend/app/harness/
    产出 4640 字完整报告(摘要/使用趋势/事件分布/建议四部分),6 条 SQL + 图表 + 正文齐全,
    未再被墙钟熔断。修复见 `632c18c`。
 2. ~~**审批 HITL 真实触发**~~ ✅ 已验证(2026-10-16,详见 §5.3)。
-3. **nemotron 跨模型稳健性附录**:OpenRouter 免费档每日 50 次,不排期,顺手时补采。
+3. **nemotron 跨模型稳健性附录**:⏸ 2026-10-16 已尝试,被上游阻塞——OpenRouter/Nvidia
+   侧该免费模型先是工具调用 DEGRADED(400 "DEGRADED function cannot be invoked"),
+   后又流式 120s 零 chunk,均为 provider 侧故障(配额本身已重置,usage=0)。
+   上游恢复后重跑 `backend/scripts/nemotron_batch.py` 即可(7 个去重问题,构造路径
+   与真实请求对齐,产出追加进 shadow_comparison.jsonl,不覆盖既有样本)。
 
 ## 5.2 模式预算速查
 
