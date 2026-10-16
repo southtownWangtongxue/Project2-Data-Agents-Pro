@@ -42,6 +42,19 @@ describe('对话内审批状态机', () => {
     expect(next.messages.find(m => m.id === card.id)!.approval?.state).toBe('rejected')
   })
 
+  it('编辑后执行:置为 edited 并记录最终执行的 SQL', () => {
+    const s = withPendingApproval()
+    const card = s.messages.find(m => m.kind === 'approval')!
+    const next = resolveApproval(s, card.id, 'edited', '加了 WHERE 限定范围',
+      'DELETE FROM orders WHERE id = 1')
+    const updated = next.messages.find(m => m.id === card.id)!.approval!
+    expect(updated.state).toBe('edited')
+    expect(updated.editedSql).toBe('DELETE FROM orders WHERE id = 1')
+    expect(updated.comment).toBe('加了 WHERE 限定范围')
+    // 原 SQL 保留(审批卡可见改了什么)
+    expect(updated.sql).toBe('DELETE FROM orders')
+  })
+
   it('后端 approval_state=rejected(拒绝/超时)自动打戳 pending 卡', () => {
     const s = withPendingApproval()
     const next = applyEvent(s, {

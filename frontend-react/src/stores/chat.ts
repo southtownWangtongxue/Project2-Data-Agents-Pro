@@ -71,7 +71,7 @@ interface ChatStore {
   setWebSearch: (v: boolean) => void
   setModel: (m: string) => void
   setFeedback: (msgId: string, value: 'like' | 'dislike' | 'default') => void
-  resolveApprovalMsg: (msgId: string, state: 'approved' | 'rejected', comment: string) => Promise<void>
+  resolveApprovalMsg: (msgId: string, state: 'approved' | 'rejected' | 'edited', comment: string, editedSql?: string) => Promise<void>
   exportData: (data: any[], columns: string[], format: 'csv' | 'excel') => Promise<void>
   loadSuggestions: (force?: boolean) => Promise<void>
   clearMessages: () => void
@@ -312,15 +312,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
       set({ model: m })
     },
 
-    resolveApprovalMsg: async (msgId, state, comment) => {
+    resolveApprovalMsg: async (msgId, state, comment, editedSql) => {
       const msg = get().chat.messages.find(m => m.id === msgId)
       if (!msg?.approval) return
       try {
         await api('/chat/approve', {
           method: 'POST',
-          body: { task_id: msg.approval.threadId, action: state === 'approved' ? 'approve' : 'reject', comment },
+          body: {
+            task_id: msg.approval.threadId,
+            action: state === 'approved' ? 'approve' : state === 'rejected' ? 'reject' : 'edit',
+            comment,
+            // edit 专用:approve/reject 通道不带该字段(后端 schema 层禁止夹带)
+            ...(state === 'edited' && editedSql ? { edited_sql: editedSql } : {}),
+          },
         })
-        set(s => ({ chat: resolveApproval(s.chat, msgId, state, comment) }))
+        set(s => ({ chat: resolveApproval(s.chat, msgId, state, comment, editedSql) }))
       } catch (e) {
         // 审批失败(如非管理员/权限不足)必须让用户知道,不能静默
         console.error('[chat] 审批提交失败:', e)

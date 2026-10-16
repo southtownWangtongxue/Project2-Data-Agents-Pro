@@ -110,8 +110,10 @@ export interface Msg {
     question: string
     sql: string
     reason: string
-    state: 'pending' | 'approved' | 'rejected'
+    state: 'pending' | 'approved' | 'rejected' | 'edited'
     comment?: string
+    /** edit 决策:审批人修改后实际执行的 SQL(原 sql 保留供对照) */
+    editedSql?: string
   }
   /* 折叠态(thinking/tool 卡片) */
   collapsed?: boolean

@@ -349,13 +349,27 @@ export function applyEvent(prev: ChatState, ev: SSEEvent): ChatState {
   }
 }
 
-/** 审批状态推进(ApprovalCard 通过/拒绝后) */
-export function resolveApproval(s: ChatState, msgIdToResolve: string, state: 'approved' | 'rejected', comment: string): ChatState {
+/** 审批状态推进(ApprovalCard 通过/拒绝/编辑后执行) */
+export function resolveApproval(
+  s: ChatState,
+  msgIdToResolve: string,
+  state: 'approved' | 'rejected' | 'edited',
+  comment: string,
+  editedSql?: string,
+): ChatState {
   return {
     ...s,
     messages: s.messages.map(m =>
       m.id === msgIdToResolve && m.approval
-        ? { ...m, approval: { ...m.approval, state, comment } }
+        ? {
+            ...m,
+            approval: {
+              ...m.approval,
+              state,
+              comment,
+              ...(editedSql ? { editedSql } : {}),
+            },
+          }
         : m,
     ),
   }
