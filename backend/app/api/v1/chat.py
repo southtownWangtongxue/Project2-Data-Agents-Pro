@@ -1422,7 +1422,7 @@ async def chat_completions(body: ChatRequest, user: dict = Depends(get_current_u
                         runtime_context=_runtime_context, history=history_msgs,
                         legacy_tool_payloads=list(legacy_tools or []),
                     ),
-                    timeout=float(_os.getenv("HARNESS_SHADOW_TIMEOUT", "120")),
+                    timeout=float(settings.HARNESS_SHADOW_TIMEOUT),
                 )
             except Exception as _se:  # noqa: BLE001
                 log.warning("[Shadow] 后台任务异常(已忽略): %s", _se)

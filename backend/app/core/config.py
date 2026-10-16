@@ -118,6 +118,15 @@ class Settings(BaseSettings):
     # on:     data 模式走 Harness 主循环（数据工具 + 安全闸中间件）
     # 支持 .env 配置与 configs/patch.json 热更新覆盖（见 config_layer）
     HARNESS_MODE: str = "off"
+    # ── Harness 预算与熔断（设计文档批准：data 20 步 → 40 递归）────
+    # HARNESS_RECURSION_LIMIT：LangGraph 递归上限，一次模型↔工具往返约 2 层，
+    #   40 ≈ data 模式 20 步（report 模式需在调用处上调）
+    # HARNESS_MAX_SECONDS：单请求墙钟熔断，超时强制收尾
+    # HARNESS_SHADOW_TIMEOUT：影子双跑后台任务超时（不影响主流程）
+    # 三项均支持 .env 与 patch.json 热更新——切换 Phase 2 后按需调预算不必改代码
+    HARNESS_RECURSION_LIMIT: int = 40
+    HARNESS_MAX_SECONDS: float = 300
+    HARNESS_SHADOW_TIMEOUT: float = 120
 
     # ── 能力接缝（Phase 3：ServiceDefinition/Provider/Consumer）────
     # 开启后，search/llm_client/storage 等可替换点走 SeamRegistry 解析后端，

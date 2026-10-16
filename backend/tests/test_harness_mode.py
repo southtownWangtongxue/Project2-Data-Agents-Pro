@@ -37,3 +37,29 @@ def test_resolve_harness_mode_normalizes_case_and_space(monkeypatch):
 def test_resolve_harness_mode_falls_back_off_when_empty(monkeypatch):
     monkeypatch.setattr(chat.settings, "HARNESS_MODE", "")
     assert chat._resolve_harness_mode() == "off"
+
+
+# ── Harness 安全旋钮接入 settings(Phase 2 切换前置)────────────
+
+def test_harness_limits_readable_from_settings():
+    """三个预算旋钮必须能经 .env / patch.json 配置(裸 os.getenv 读不到 .env)。"""
+    from app.core.config import settings
+
+    assert hasattr(settings, "HARNESS_RECURSION_LIMIT")
+    assert hasattr(settings, "HARNESS_MAX_SECONDS")
+    assert hasattr(settings, "HARNESS_SHADOW_TIMEOUT")
+
+
+def test_harness_limits_defaults_match_approved_budget():
+    """默认值与设计文档批准档一致(data 20 步 → 40 递归;墙钟 300s;影子 120s)。"""
+    from app.core.config import settings
+
+    assert settings.HARNESS_RECURSION_LIMIT == 40
+    assert settings.HARNESS_MAX_SECONDS == 300
+    assert settings.HARNESS_SHADOW_TIMEOUT == 120
+
+
+def test_harness_mode_flag_in_patch_whitelist():
+    from app.core.config_layer import KNOWN_FLAGS
+
+    assert "HARNESS_MODE" in KNOWN_FLAGS

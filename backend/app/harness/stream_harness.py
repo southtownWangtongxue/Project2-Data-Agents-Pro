@@ -36,6 +36,7 @@ from app.core.event_sourcing import (
     turn_event_enabled,
 )
 from app.core.llm import set_provider
+from app.core.config import settings
 from app.core.llm_retry import (
     MAX_RETRIES as LLM_MAX_RETRIES,
 )
@@ -65,7 +66,7 @@ async def stream_chat_harness(
     run_id = f"{user_name}:{uuid.uuid4()}"
     config = {
         "configurable": {"thread_id": run_id},
-        "recursion_limit": int(_os.getenv("HARNESS_RECURSION_LIMIT", "40")),
+        "recursion_limit": int(settings.HARNESS_RECURSION_LIMIT),
     }
 
     yield _sse_event({"type": "thread_id", "thread_id": session_thread_id})
@@ -114,7 +115,7 @@ async def stream_chat_harness(
     yield _sse_event({"type": "status", "content": "正在分析您的请求..."})
 
     started = _time.monotonic()
-    max_seconds = float(_os.getenv("HARNESS_MAX_SECONDS", "300"))
+    max_seconds = float(settings.HARNESS_MAX_SECONDS)
 
     def _remaining() -> float:
         return max_seconds - (_time.monotonic() - started)
