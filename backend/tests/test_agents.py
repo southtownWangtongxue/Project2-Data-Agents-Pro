@@ -4,6 +4,8 @@ Agent 单元测试
 import pytest
 from app.agents.security import mask_sensitive_data, classify_sql
 from app.agents.rag_agent import retrieve_knowledge
+from app.agents.sql_coder import execute_sql
+from tests.fakes import FakeCursorResult, FakeEngine
 
 
 class TestSecurityAgent:
@@ -125,3 +127,37 @@ class TestRAGAgent:
         assert isinstance(result, str)
         # 不应包含异常信息
         assert "Traceback" not in result
+
+
+class TestExecuteSql:
+    """execute_sql 结果形态测试(替身契约见 tests/fakes.py,经真库校准)"""
+
+    @pytest.mark.asyncio
+    async def test_zero_row_select_returns_empty_data(self):
+        """零行 SELECT 必须返回 data=[],不得伪装成 affected_rows 单行
+
+        旧行为缺陷:零行 SELECT 落入 affected_rows 分支,下游 run_sql
+        呈现 row_count=1,模型会误以为查到了一行数据(交接文档 §4.3 遗留)。
+        """
+        engine = FakeEngine(FakeCursorResult(returns_rows=True, rows=[], columns=["v"]))
+        result = await execute_sql(engine, "SELECT v FROM t WHERE 1=0")
+        assert result["success"] is True
+        assert result["data"] == []
+
+    @pytest.mark.asyncio
+    async def test_nonempty_select_returns_row_dicts(self):
+        """非空 SELECT 返回「每行一个 dict」形态(既有契约,回归保护)"""
+        engine = FakeEngine(
+            FakeCursorResult(returns_rows=True, rows=[(1,), (2,)], columns=["v"])
+        )
+        result = await execute_sql(engine, "SELECT v FROM t")
+        assert result["success"] is True
+        assert result["data"] == [{"v": 1}, {"v": 2}]
+
+    @pytest.mark.asyncio
+    async def test_dml_returns_affected_rows_row(self):
+        """DML 无结果集,返回 affected_rows 元信息行(既有契约,回归保护)"""
+        engine = FakeEngine(FakeCursorResult(returns_rows=False, rowcount=3))
+        result = await execute_sql(engine, "UPDATE t SET a=1")
+        assert result["success"] is True
+        assert result["data"] == [{"affected_rows": 3}]

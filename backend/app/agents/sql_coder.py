@@ -87,22 +87,25 @@ async def execute_sql(engine: AsyncEngine, sql: str) -> dict:
     返回:
         {"success": bool, "data": list[dict], "error": str | None}
         其中 data 为查询结果行列表，每行为一个字典；
+        查询语句无匹配行时 data=[]（空结果集，不是 affected_rows 占位行）；
         非查询语句时 data 包含 affected_rows 信息。
     """
     try:
         async with engine.connect() as conn:
             result = await conn.execute(text(sql))
 
-            # 尝试获取返回行（适用于 SELECT 语句）
-            try:
+            # returns_rows 是「该语句是否返回结果集」的结构性判定
+            # （2026-10-16 真库实测：零行 SELECT returns_rows=True 且
+            # fetchall()=[]；DML returns_rows=False 且 fetchall() 抛
+            # ResourceClosedError）——旧实现以 fetchall 是否抛异常区分，
+            # 零行 SELECT 不抛异常，被伪装成 affected_rows 单行，
+            # 下游 run_sql 因此呈现 row_count=1（交接文档 §4.3 遗留）。
+            if result.returns_rows:
                 rows = result.fetchall()
-                if rows:
-                    columns = list(result.keys())
-                    data = [dict(zip(columns, row)) for row in rows]
-                else:
-                    data = [{"affected_rows": result.rowcount}]
-            except Exception:
-                # 非查询语句（INSERT/UPDATE/DELETE），结果集中无行
+                columns = list(result.keys())
+                data = [dict(zip(columns, row)) for row in rows]
+            else:
+                # 非查询语句（INSERT/UPDATE/DELETE），无结果集，只有影响行数
                 data = [{"affected_rows": result.rowcount}]
 
             await conn.commit()

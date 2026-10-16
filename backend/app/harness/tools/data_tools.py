@@ -67,9 +67,10 @@ async def run_sql(sql: str, purpose: str) -> str:
         JSON 字符串,字段:success / sql / row_count / returned_rows / truncated /
         columns / rows / duration_ms / error。失败时 success=false 且 error
         说明原因,请根据 error 修正 SQL 后重试,或换一种问法。
-        注意:row_count 为结果集行数,非 SELECT 语句恒为 1,实际影响行数见
-        rows[0].affected_rows;truncated=true 表示结果超过 MAX_ROWS 已被截断,
-        请用 WHERE/LIMIT 缩小范围后重查。
+        注意:row_count 为结果集行数——查询无匹配行时 rows=[] 且 row_count=0,
+        如实告知用户「查无数据」,不要虚构数字;非 SELECT 语句恒为 1,实际影响
+        行数见 rows[0].affected_rows;truncated=true 表示结果超过 MAX_ROWS 已被
+        截断,请用 WHERE/LIMIT 缩小范围后重查。
     """
     t0 = time.monotonic()
     engine = get_engine()

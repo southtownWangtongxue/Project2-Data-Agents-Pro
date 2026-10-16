@@ -4,6 +4,7 @@ import json
 import pytest
 
 from app.harness.tools import data_tools
+from tests.fakes import FakeCursorResult, FakeEngine
 
 
 # ── get_table_schema ────────────────────────────────────────
@@ -110,6 +111,26 @@ async def test_run_sql_failure_returns_structured_error(monkeypatch):
     assert payload["row_count"] == 0
     assert payload["truncated"] is False
     assert payload["duration_ms"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_run_sql_zero_row_select_reports_zero_rows(monkeypatch):
+    """零行 SELECT 端到端症状:run_sql 必须报 row_count=0/rows=[]。
+
+    在引擎层替换(真实 execute_sql 逻辑全程参与),复现交接文档 §4.3 遗留:
+    零行 SELECT 被伪装成 affected_rows 单行,模型看到 row_count=1
+    会误以为查到了数据。修复后应明确呈现「无数据」。
+    """
+    engine = FakeEngine(FakeCursorResult(returns_rows=True, rows=[], columns=["v"]))
+    monkeypatch.setattr(data_tools, "get_engine", lambda: engine)
+
+    payload = json.loads(await data_tools.run_sql("SELECT v FROM t WHERE 1=0", "测试"))
+    assert payload["success"] is True
+    assert payload["row_count"] == 0
+    assert payload["returned_rows"] == 0
+    assert payload["rows"] == []
+    assert payload["columns"] == []
+    assert payload["truncated"] is False
 
 
 # ── 委托异常传播契约(模块 docstring 声明的真实失败语义)──────
