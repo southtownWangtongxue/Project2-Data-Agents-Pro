@@ -139,19 +139,24 @@ def _derive(answer_vals: list[float], data_vals: list[float]) -> list[dict]:
         if hit:
             derived.append(hit)
             continue
-        # 合计:两数之和
-        for i in range(len(uniq)):
-            for j in range(i + 1, len(uniq)):
-                if _close(uniq[i] + uniq[j], val):
-                    hit = {
-                        "value": val, "kind": "derived", "op": "sum",
-                        "part": uniq[i], "part2": uniq[j],
-                    }
+        # 合计:N 个数之和(实测 5 张表行数求和,仅两数相加不够)
+        if len(uniq) >= 2:
+            acc = uniq[0]
+            for nxt in uniq[1:]:
+                if _close(acc + nxt, val):
+                    hit = {"value": val, "kind": "derived", "op": "sum",
+                           "part": acc, "part2": nxt}
                     break
-            if hit:
-                break
+                acc += nxt
         if hit:
             derived.append(hit)
+            continue
+        # 均值:总和 / 个数
+        if len(uniq) >= 2:
+            total = sum(uniq)
+            if _close(total / len(uniq), val, 0.02):
+                derived.append({"value": val, "kind": "derived", "op": "mean",
+                                "part": total, "whole": float(len(uniq))})
     return derived
 
 

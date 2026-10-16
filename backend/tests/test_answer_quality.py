@@ -10,6 +10,8 @@
 
 定位:预筛 + 人工复核,不作为全自动门禁(准确率有限);宁可漏判不可误判。
 """
+import json
+
 import pytest
 
 from app.core.answer_quality import (
@@ -115,3 +117,23 @@ def test_count_of_hit_dimensions():
     ])
     rep = check_dimensions("events 是 sessions 的 8 倍;从 3 涨到 9,呈上升趋势", rows)
     assert rep["count"] >= 2
+
+# ── 派生量:合计需支持 N 个数、均值需支持(legacy 实测缺口)──────
+
+def test_sum_over_many_values():
+    """合计是 N 个数之和(实测 5 张表行数求和),不是仅两数相加。"""
+    rows = json.dumps([{"t": "a", "n": 0}, {"t": "b", "n": 154},
+                       {"t": "c", "n": 160}, {"t": "d", "n": 1},
+                       {"t": "e", "n": 1289}])
+    rep = check_grounding("row_count 合计 1604，均值 320.8", [rows])
+    assert rep["grounded"] is True, rep["ungrounded"]
+    ops = [d.get("op") for d in rep["details"]]
+    assert "sum" in ops and "mean" in ops, ops
+
+
+def test_mean_is_derived_with_path():
+    rows = json.dumps([{"n": 10}, {"n": 20}, {"n": 30}])
+    rep = check_grounding("平均 20", [rows])
+    assert rep["grounded"] is True
+    mean = [d for d in rep["details"] if d.get("op") == "mean"]
+    assert mean and "part" in mean[0], mean
