@@ -155,6 +155,37 @@ prompt rules 极强——4 种 framing(直接指令 /「审批已通过」/ 系�
 若将来要放开写操作,需要调整第 3 层 prompt rules,让模型在用户明确要求时发出
 写 SQL 交给第 2 层闸口——否则安全闸形同虚设(但目前是「过度安全」而非漏洞)。
 
+## 5.4 审批 edit 决策的端到端验证(2026-10-16)
+
+三态里最后补齐的 `edit`(审批人修改 SQL 后放行)已完成端到端验证。
+判据设计得很严格——**能区分「执行了改后 SQL」与「执行了原 SQL」**:
+
+| 步骤 | 结果 |
+|---|---|
+| 桩模型发 `DELETE ... WHERE id = 1`(危险) | 审批卡下发,原 SQL 正确展示 |
+| 表内预置 id=1 与 id=2 | 初始 `[1, 2]` |
+| 审批人 edit 成 `... WHERE id = 2` → 真实 FastAPI 端点 | `200 {'status': 'notified'}` |
+| 恢复执行后的库内状态 | **`[1]`** —— id=2 被删、id=1 保留 |
+| 事件序列 | `thread_id → status → tool_call → approval_required → sql → result → tool_result → token → done → title` |
+
+结论:**执行的是改后 SQL,替换语义正确**;真实端点(鉴权 + schema 校验 +
+`_build_decision`)与流内恢复协同正常。
+
+### ⚠️ 重要架构约束:审批要求**同进程**(本次排查的副产品)
+
+`app/core/hitl.py` 的 `_waiters` 是**进程内内存字典**(非 Redis)。因此:
+
+- ✅ 当前部署(`uvicorn --reload`,单 worker)下正常;
+- ❌ **一旦多 worker / 多副本,审批请求若落到另一个进程,`hitl.resolve()`
+  会返回 False 并静默落到 `approve.py` 的 legacy 兜底分支**——用 Harness 的
+  `thread_id` 去恢复 legacy 图,结果无效(实测返回 legacy State 的
+  `intent`/`stage` 字段,流已在 300s 超时后收尾)。
+
+这是 legacy 时代就存在的机制(非 Harness 引入),但横向扩容前必须处理:
+改 Redis pub/sub,或用粘性会话把审批请求路由回原进程。**扩容前请勿开启
+HITL 写操作**(当前因第 3 层 prompt rules 拒绝写 SQL,该路径实际不可达,
+所以这个约束目前不会造成生产事故)。
+
 ---
 
 ## 6. 开发约定(踩坑总结出的)
