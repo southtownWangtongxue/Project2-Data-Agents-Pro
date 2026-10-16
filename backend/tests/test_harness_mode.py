@@ -63,3 +63,20 @@ def test_harness_mode_flag_in_patch_whitelist():
     from app.core.config_layer import KNOWN_FLAGS
 
     assert "HARNESS_MODE" in KNOWN_FLAGS
+
+
+def test_agent_loop_shadow_flag_removed():
+    """AGENT_LOOP_SHADOW 已完成观察期使命(无测试覆盖、默认关闭)。
+
+    删除后 settings 上不再有该字段——避免留一个没人验证过的死分支。
+    """
+    from app.core.config import settings
+
+    assert not hasattr(settings, "AGENT_LOOP_SHADOW")
+
+
+def test_agent_loop_enabled_flag_kept():
+    """AGENT_LOOP_ENABLED 是压缩驱动器总开关兼回滚通道,必须保留。"""
+    from app.core.config import settings
+
+    assert settings.AGENT_LOOP_ENABLED is True

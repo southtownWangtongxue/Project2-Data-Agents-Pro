@@ -104,7 +104,6 @@ class Settings(BaseSettings):
     # SHADOW：影子比对（观察期工具，默认关闭；开启后额外与旧路径压缩结果
     #         比对并记日志，不影响执行）
     AGENT_LOOP_ENABLED: bool = True
-    AGENT_LOOP_SHADOW: bool = False
 
     # ── R23：执行层扩展（架构专项 P5，默认关闭零攻击面）────
     # 开启后 DeepAgent 获得受控 write_file（exports/ 白名单目录）与

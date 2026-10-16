@@ -151,8 +151,6 @@ def agent_loop_enabled() -> bool:
     return settings.AGENT_LOOP_ENABLED
 
 
-def agent_loop_shadow() -> bool:
-    return settings.AGENT_LOOP_SHADOW
 
 
 def _current_approval_tier() -> str:

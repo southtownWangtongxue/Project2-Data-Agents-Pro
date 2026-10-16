@@ -39,7 +39,7 @@ from app.core.event_sourcing import (
     MAX_RESULT_ROWS,
 )
 from app.core.compaction import compact_history
-from app.core.agent_loop import AgentLoopRunner, agent_loop_enabled, agent_loop_shadow
+from app.core.agent_loop import AgentLoopRunner, agent_loop_enabled
 from app.core.stream_protocol import SSEEventType, make_event
 
 logger = logging.getLogger(__name__)
@@ -1336,14 +1336,6 @@ async def chat_completions(body: ChatRequest, user: dict = Depends(get_current_u
                 f"[chat_completions] 上下文已压缩: {_loop_req.compaction_stats['original']} 条 → "
                 f"摘要+{_loop_req.compaction_stats['kept']} 条 "
                 f"(digest {_loop_req.compaction_stats['digest_chars']} 字符)"
-            )
-        if agent_loop_shadow():
-            # 影子比对（观察期工具）：与旧路径压缩结果比对，差异仅记日志
-            _legacy_len = len(compact_history(_raw_history)[0])
-            _shadow = AgentLoopRunner.shadow_compare(_loop_req, _legacy_len)
-            log.info(
-                f"[AgentLoop][shadow] profile={_loop_req.profile} history={len(history_msgs)} "
-                f"比对={'OK' if _shadow['ok'] else _shadow['diffs']}"
             )
     else:
         history_msgs, _compaction = compact_history(history_msgs)
