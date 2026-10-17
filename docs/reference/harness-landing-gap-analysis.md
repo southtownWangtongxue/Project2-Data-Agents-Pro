@@ -122,7 +122,20 @@
 - **附带变化**：Harness 路径（`stream_harness.py`）也已接入事件溯源
   （import `EventType/SessionEventStore/event_sourcing_enabled/turn_event_enabled`），
   故 `HARNESS_MODE=on` 下的三模式会话同样入事件日志。
-- **建议**：该项可关闭；如需彻底确认，按模式各跑一轮真实会话核对事件类型覆盖。
+- **L2 实测结论（2026-10-17）**：按模式各跑一轮真实会话读 trajectory——
+
+  | 模式 | 修复前事件类数 | 修复后 |
+  |---|---|---|
+  | data | 4（仅骨架） | **7**（+sql/result/tool_chain） |
+  | report | 3 | **6**（+sql/result/tool_chain） |
+  | doc | 3 | **4**（+tool_chain） |
+  | task | 4 | 4（**无需修复**，见下） |
+
+  task 模式经核实其 SSE 只 yield `status/thread_id/token` 三种，本就不产出
+  sql/result/chart 事件——「事件日志只有 4 类」是设计差异而非缺口。
+  修复本身：`stream_harness` 增加 `_ES_MAP` 映射 8 类富事件 + finally 兜底
+  入库（见 `25ab498`）。
+- **建议**：该项可关闭。
 
 ### 3.3 子代理无 MessageSource 因果归因 🟡
 

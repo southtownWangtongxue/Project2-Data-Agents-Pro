@@ -118,7 +118,8 @@ backend/app/harness/
 2. ~~**审批 HITL 真实触发**~~ ✅ 已验证(2026-10-16,详见 §5.3);edit 态亦已端到端闭环(§5.4)。
 3. ~~**B-L1 事件溯源灰度**~~ ✅ 已验证(2026-10-17):`EVENT_SOURCING_ENABLED` 默认已 `True`,恢复/轨迹/fork/导出四项端到端全过(`copied_events=4`),详见 §5.5。
 4. **Harness SSE 心跳**:✅ 已补(`4cd5a84`)——切换后 `stream_harness` 才是生产主路径,而 report/doc 单轮可达 149s 静默期,原无心跳有代理断连风险。见 §5.5。
-5. **nemotron 跨模型稳健性附录**:⏸ 2026-10-16 已尝试,被上游阻塞——OpenRouter/Nvidia
+5. ~~**L2 多模式事件双写**~~ ✅ 已完成(2026-10-17,`25ab498`):Harness 三模式的数据类富事件(sql/result/chart/tool_chain)入库,data 4→7 类、report 3→6 类、doc 3→4 类;task 模式经核实**本就不产出**数据类事件(SSE 仅 status/thread_id/token),非缺口。
+6. **nemotron 跨模型稳健性附录**:⏸ 2026-10-16 已尝试,被上游阻塞——OpenRouter/Nvidia
    侧该免费模型先是工具调用 DEGRADED(400 "DEGRADED function cannot be invoked"),
    后又流式 120s 零 chunk,均为 provider 侧故障(配额本身已重置,usage=0)。
    上游恢复后重跑 `backend/scripts/nemotron_batch.py` 即可(7 个去重问题,构造路径
