@@ -41,6 +41,10 @@ from app.core.llm_retry import (
     MAX_RETRIES as LLM_MAX_RETRIES,
 )
 from app.core.llm_retry import is_retryable_exception, next_retry_delay
+
+# SSE 心跳间隔(秒):长静默期发注释行维持连接,防代理空闲断开。
+# 必要性:report/doc 单轮实测可达 149s,期间若无事件输出,代理会按空闲断连。
+_HEARTBEAT_SECONDS = 15
 from app.harness.agent_factory import build_harness_agent, set_current_mode
 from app.harness.sse_bridge import HarnessEventBridge
 from app.utils.log_utils import log
@@ -159,6 +163,9 @@ async def stream_chat_harness(
 
             interrupted = False
             retry_from_start = False
+            # SSE 注释行心跳(与 legacy _stream_chat 同款):report/doc 单轮实测
+            # 可达 149s,长静默期若无事件输出,代理会按空闲断开连接。
+            heartbeat = _HEARTBEAT_SECONDS
             try:
                 aiter = agent.astream(
                     input_data, config, stream_mode=["updates", "messages"],
@@ -170,15 +177,14 @@ async def stream_chat_harness(
                                           "content": f"任务执行超过 {int(max_seconds)}s 仍未完成，已主动结束。"})
                         break
                     try:
-                        import asyncio as _asyncio
-
-                        event = await _asyncio.wait_for(aiter.__anext__(), timeout=remain)
+                        event = await _asyncio.wait_for(aiter.__anext__(), timeout=heartbeat)
+                        heartbeat = _HEARTBEAT_SECONDS  # 有事件即重置计时
                     except StopAsyncIteration:
                         break
                     except TimeoutError:
-                        yield _sse_event({"type": "status",
-                                          "content": f"任务执行超过 {int(max_seconds)}s 仍未完成，已主动结束。"})
-                        break
+                        # 只是静默,不是卡死:发心跳维持连接,继续等
+                        yield ": ping\n\n"
+                        continue
 
                     for sse in bridge.feed(event):
                         if sse["type"] == "token":
