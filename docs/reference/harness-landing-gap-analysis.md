@@ -90,17 +90,39 @@
 
 ## 3. 差距项（本轮不实施，仅列分析与建议）
 
-### 3.1 三个 feature flag 默认 False，新架构处于休眠态 🔴 最高优先
+### 3.1 三个 feature flag 默认 False，新架构处于休眠态 🔴 **L1 已落地（2026-10-17 复核）**
 
-- **现状**：`EVENT_SOURCING_ENABLED` / `PROMPT_SECTION_ENABLED` / `SEAM_ENABLED` 均默认 `False`（`backend/app/core/config.py` L62/L67/L72）。生产运行仍走「关系表 + Redis 反推 + 单一字符串提示词 + 直连后端」的旧行为，事件溯源/分层提示词/接缝的**代码已就绪但未被启用**。
-- **影响**：文档宣称的 Harness 能力（可重放、可 Fork、可审计）在默认配置下不可用；fork/trajectory 依赖事件日志，不开 flag 时事件为空。
-- **建议**：制定灰度计划——先在测试环境开启 `EVENT_SOURCING_ENABLED`（收益最大、回退成本最低，Redis 回退路径保留），回归会话恢复/fork/trajectory 后再开 `PROMPT_SECTION_ENABLED`（可 A/B 对比提示词效果），`SEAM_ENABLED` 最后（涉及存储引擎解析）。
+- ~~**现状**：`EVENT_SOURCING_ENABLED` / `PROMPT_SECTION_ENABLED` / `SEAM_ENABLED` 均默认 `False`~~
+  **复核结论（2026-10-17）**：`EVENT_SOURCING_ENABLED` **代码默认已为 `True`**
+  （`config.py` L62，`dump_effective()` 显示 `source=default`，即非 patch 覆盖）。
+  故 L1 的「灰度开启」实际早已完成，无需再改配置。
+  `PROMPT_SECTION_ENABLED` / `SEAM_ENABLED` 仍为 `False`（L3 / L5 范围）。
+- ~~**影响**~~ → 原影响（fork/trajectory 事件为空）**已消除**，见下。
+- **L1 端到端验证结论（2026-10-17，真实链路）**：
 
-### 3.2 DeepAgent 路径事件溯源不完整 🟠
+  | 验证项 | 结果 |
+  |---|---|
+  | 会话恢复 `GET /sessions/{id}` | ✅ 200，消息数 2，首条 role=user（投影优先） |
+  | 轨迹 `GET .../trajectory` | ✅ 200，**4 条事件**：`user_message / turn_start / turn_end / analysis` |
+  | fork `POST .../fork` | ✅ 200，**`copied_events: 4`**（L1 判据：fork 有数据） |
+  | fork 分支轨迹 | ✅ **4 条事件**——fork 出的分支非空壳 |
+  | 导出 `GET .../export` | ✅ 200，JSONL 4 行，事件字段含 `id/thread_id/run_id/node_index/event_type` |
 
-- **现状**：`_stream_chat_deepagent` 仅双写 USER_MESSAGE / TOOL_CHAIN / ANALYSIS 三类（`chat.py` L829-983）；SQL/RESULT/CHART/PLAN/CLARIFICATION/ERROR 在 DeepAgent 模式下不入事件日志。
-- **影响**：DeepAgent 会话的 `derive_messages` 投影、fork、trajectory 内容不完整（开 flag 后该模式的历史恢复退化）。
-- **建议**：补齐 DeepAgent 主循环的事件双写（`__end__` 时按最终态聚合 SQL/RESULT/CHART/ERROR），或明确 DeepAgent 模式下历史恢复仍走 Redis 并在文档标注。
+  采集方式：真实前端提问 → 真实 HTTP/API 核验（非单测）。
+- **剩余待办（L3 / L5）**：`PROMPT_SECTION_ENABLED`（可 A/B 对比提示词效果）、
+  `SEAM_ENABLED`（涉及存储引擎解析，最后做）。
+
+### 3.2 DeepAgent 路径事件溯源不完整 🟠 **已补齐（2026-10-17 复核）**
+
+- **复核结论**：`chat.py` 中 `_track(EventType.X)` 的调用覆盖 9 类——
+  `USER_MESSAGE`(2)/`CLARIFICATION`(1)/`PLAN`(1)/`SQL`(1)/`RESULT`(1)/
+  `TOOL_CHAIN`(5)/`ANALYSIS`(5)/`CHART`(1)/`ERROR`(1)。
+  与本报告初稿所述「仅双写三类」已不符，DeepAgent/deepagent 分支的事件双写
+  已在后续迭代补齐。
+- **附带变化**：Harness 路径（`stream_harness.py`）也已接入事件溯源
+  （import `EventType/SessionEventStore/event_sourcing_enabled/turn_event_enabled`），
+  故 `HARNESS_MODE=on` 下的三模式会话同样入事件日志。
+- **建议**：该项可关闭；如需彻底确认，按模式各跑一轮真实会话核对事件类型覆盖。
 
 ### 3.3 子代理无 MessageSource 因果归因 🟡
 
@@ -126,7 +148,14 @@
 
 ### 3.7 其他核实中发现的工程缝隙 🟢
 
-1. **心跳覆盖不完整**：15s `": ping\n\n"` 仅在传统主循环（`chat.py` L395-398），`_stream_chat_deepagent` 长任务无心跳，存在代理空闲断连风险。
+1. **心跳覆盖不完整**：✅ **已修复（2026-10-17，`4cd5a84`）**。
+   原状态：15s `": ping\n\n"` 仅在传统主循环（`_stream_chat`），`_stream_chat_deepagent` 无心跳。
+   **新情况**：`HARNESS_MODE=on` 后 **data/report/doc 全部走 `stream_harness`，
+   而它原本也没有心跳**——风险从「一条分支路径」升级为「当前生产主路径」
+   （report/doc 单轮实测可达 149s）。已给 `stream_harness` 主事件循环补心跳：
+   把 `wait_for` 超时拆成两级，heartbeat(15s) 到点只发 `: ping` 并继续等，
+   原有墙钟熔断逻辑不变。端到端验证：真实请求下 15.0s 静默期准时收到心跳。
+   `_stream_chat_deepagent`（`mode=task`）仍无心跳，属低流量路径，待后续处理。
 2. **多模式事件溯源覆盖**：`mode_router.py` 已注册 data/task/report/doc 四模式，但 task/report/doc 工作流的节点事件是否入 `session_events` 未系统核查，建议随 §3.2 一并补齐。
 
 ---
@@ -135,14 +164,17 @@
 
 | 阶段 | 内容 | 对应差距 | 风险 | 交付判据 |
 |---|---|---|---|---|
-| **L1** | 灰度开启事件溯源：测试环境开 `EVENT_SOURCING_ENABLED` → 回归会话恢复/fork/trajectory/导出 → 生产开启 | §3.1 | 中（会话恢复核心路径，Redis 回退兜底） | 默认配置下 fork/trajectory 有数据 |
-| **L2** | DeepAgent + 多模式事件双写补齐 | §3.2、§3.7.2 | 中 | DeepAgent/task/report/doc 会话投影完整 |
+| **L1** | ✅ 灰度开启事件溯源 + 端到端回归 | §3.1 | 中（会话恢复核心路径，Redis 回退兜底） | **已达成（2026-10-17）**：flag 默认已 `True`；恢复/轨迹/fork/导出四项端到端全过，fork `copied_events=4` |
+| **L2** | DeepAgent + 多模式事件双写补齐 | §3.2、§3.7.2 | 中 | DeepAgent/task/report/doc 会话投影完整（§3.2 复核显示已补齐，待按模式实测确认） |
 | **L3** | 分层提示词灰度：开 `PROMPT_SECTION_ENABLED`，A/B 对比回答质量 | §3.1 | 低（legacy 兜底保留） | 提示词分层默认生效 |
 | **L4** | 子代理因果归因（事件 payload 增 source 字段） | §3.3 | 低 | 轨迹接口可区分子代理产出 |
 | **L5** | 能力接缝灰度 + LLM seam 论证 | §3.1 | 中（存储引擎解析） | `SEAM_ENABLED` 默认生效或明确弃用 |
 | **L6** | 渲染投影层（slot 体系）试验 | §3.4 | 低（/chat-x 实验） | 双前端取舍决策落地 |
 
-> 建议节奏：L1 → L2 → L3 串行（均依赖事件日志数据质量）；L4/L5 可并行；L6 独立。每阶段以 `pytest backend/tests/` + 前端 build + 手动 SSE 时序观察回归。
+> 建议节奏：L1 → L2 → L3 串行（均依赖事件日志数据质量）；L4/L5 可并行；L6 独立。
+> **验证方式已变更（2026-10-17 用户决策）**：~~每阶段以 `pytest backend/tests/` + 前端 build
+> + 手动 SSE 时序观察回归~~ → 纯逻辑测试套件已归档至 `docs/archive/tests/`，
+> 门禁改为 **MCP 端到端**（chrome-devtools 走真实页面 + 真实 HTTP/SSE/DB）+ build。
 
 ---
 

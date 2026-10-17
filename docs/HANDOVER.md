@@ -115,8 +115,10 @@ backend/app/harness/
 1. ~~**report 放大预算后的端到端产出**~~ ✅ 已验证(2026-10-16,qwen3.7-flash):149.1s 跑通,
    产出 4640 字完整报告(摘要/使用趋势/事件分布/建议四部分),6 条 SQL + 图表 + 正文齐全,
    未再被墙钟熔断。修复见 `632c18c`。
-2. ~~**审批 HITL 真实触发**~~ ✅ 已验证(2026-10-16,详见 §5.3)。
-3. **nemotron 跨模型稳健性附录**:⏸ 2026-10-16 已尝试,被上游阻塞——OpenRouter/Nvidia
+2. ~~**审批 HITL 真实触发**~~ ✅ 已验证(2026-10-16,详见 §5.3);edit 态亦已端到端闭环(§5.4)。
+3. ~~**B-L1 事件溯源灰度**~~ ✅ 已验证(2026-10-17):`EVENT_SOURCING_ENABLED` 默认已 `True`,恢复/轨迹/fork/导出四项端到端全过(`copied_events=4`),详见 §5.5。
+4. **Harness SSE 心跳**:✅ 已补(`4cd5a84`)——切换后 `stream_harness` 才是生产主路径,而 report/doc 单轮可达 149s 静默期,原无心跳有代理断连风险。见 §5.5。
+5. **nemotron 跨模型稳健性附录**:⏸ 2026-10-16 已尝试,被上游阻塞——OpenRouter/Nvidia
    侧该免费模型先是工具调用 DEGRADED(400 "DEGRADED function cannot be invoked"),
    后又流式 120s 零 chunk,均为 provider 侧故障(配额本身已重置,usage=0)。
    上游恢复后重跑 `backend/scripts/nemotron_batch.py` 即可(7 个去重问题,构造路径
@@ -190,8 +192,10 @@ HITL 写操作**(当前因第 3 层 prompt rules 拒绝写 SQL,该路径实际�
 
 ## 6. 开发约定(踩坑总结出的)
 
-- **TDD 是硬约束**:每个任务先写失败测试 → 确认失败原因符合预期 → 实现 → 全绿 → 提交。本项目所有功能都走这个流程,且多次靠测试抓住计划里的错误代码。
-- **改代码必须实际运行验证**,不靠推断。本项目反复出现"同一份代码,单测过、真实链路炸"。
+- ~~**TDD 是硬约束**~~ **已变更(2026-10-17 用户决策)**:纯逻辑测试套件(`pytest` / `vitest`)已归档至 `docs/archive/tests/`,不再作为日常门禁。
+- **新验证方式:MCP 端到端**——每次交付用 chrome-devtools MCP 走真实页面(真实 HTTP/SSE + 真实 DB),配合 `tsc -b` / `npm run build`。
+  **依据**:项目多次出现「单测全绿但真实链路炸」(温度硬编码、事件字段名不匹配、provider key 解析、checkpointer 缺失),单测给的是虚假信心。
+- **改代码必须实际运行验证**,不靠推断。这条在验证方式变更后更加重要——没有单测兜底,端到端是唯一门禁。
 - **注释/docstring 必须匹配真实契约**:Task 2 审查发现 docstring 描述了比实现更美好的契约(而这些 docstring 正是 LLM 唯一可见的工具规格)。改行为必须同步改文档。
 - **不重启服务**:后端/前端进程由用户掌控。改代码靠 `uvicorn --reload`;改配置靠 `configs/patch.json` + `POST /api/v1/config/patch/reload`。
 - **提交粒度**:一个任务一个 commit,message 说明"为什么"而非"做了什么"。
@@ -215,3 +219,33 @@ curl http://localhost:8001/api/v1/config/effective -H "Authorization: Bearer <to
 # 影子比对汇总 / 人工判定对照文件
 cd backend && uv run python -c "from app.harness.shadow import shadow_report, build_review_document; print(shadow_report()); open('configs/harness_review.md','w',encoding='utf-8').write(build_review_document())"
 ```
+
+## 5.5 B-L1 事件溯源灰度与主路径心跳(2026-10-17)
+
+### L1 交付判据达成
+
+`EVENT_SOURCING_ENABLED` **代码默认已是 `True`**(`config.py` L62,
+`dump_effective()` 显示 `source=default` 即非 patch 覆盖)——gap-analysis §3.1
+记的「默认 False」已过时,L1 的「灰度开启」实际早已完成。
+
+真实链路四项验证(前端提问 → 真实 API 核验):
+
+| 验证项 | 结果 |
+|---|---|
+| 会话恢复 `GET /chat/sessions/{id}` | ✅ 200,消息数 2,首条 role=user(投影优先) |
+| 轨迹 `GET .../trajectory` | ✅ 200,**4 条事件**:`user_message/turn_start/turn_end/analysis` |
+| fork `POST .../fork` | ✅ 200,**`copied_events: 4`**(L1 判据) |
+| fork 分支轨迹 | ✅ **4 条**——分支非空壳 |
+| 导出 `GET .../export` | ✅ 200,JSONL 4 行 |
+
+### 顺手修掉的生产主路径风险:SSE 心跳
+
+`HARNESS_MODE=on` 后 data/report/doc **全部**走 `stream_harness`,而它原本
+**没有心跳**(legacy `_stream_chat` 有)。report/doc 单轮实测可达 149s,
+长静默期若无事件输出,代理会按空闲断开连接——gap-analysis §3.7.1 早已记录
+该缺口,但那时主路径是 legacy(有心跳);切换后风险升级为**当前生产路径**。
+
+`4cd5a84` 给主事件循环补心跳:`wait_for` 超时拆两级——heartbeat(15s)到点
+只发 `: ping` 并继续等,原墙钟熔断不变。端到端验证:15.0s 静默期准时收到心跳。
+
+> 仍未覆盖:`_stream_chat_deepagent`(`mode=task`)无心跳,属低流量路径。
