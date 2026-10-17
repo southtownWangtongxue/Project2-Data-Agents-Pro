@@ -143,11 +143,15 @@
 - **影响**：多子代理协作时无法追溯「谁产出、谁消费」（集成分析 §4.1 已识别）。
 - **建议**：中优先级。可在事件溯源层为子代理产出事件增加 `source` 字段（coordinator/subagent_report/subagent_settled），复用现有 `session_events.payload`，无需新表。
 
-### 3.4 Phase 5 渲染投影层未实施 🟡
+### 3.4 Phase 5 渲染投影层 ❌ **本项已作废（2026-10-17 复核）**
 
 - **现状**：主视图 `Chat.vue` 为「事件回调直改 Pinia 状态 + renderMessages 步骤分组排序」的自研方案；`components/x/` 下存在一套 ant-design-x 风格并行实现（XConversations/XBubbleList/XMessageRenderer 等）但**仅被实验路由 `/chat-x` 引用**，无 ConversationNodeDefinition/slot 投影层。
 - **影响**：渲染层仍消费到达顺序（步骤分组已缓解），投影层与渲染层未分离。
-- **建议**：低优先级。`/chat-x` 实验页可作为 Phase 5 的试验田；在投入前应先决策「双前端并存」的取舍（保留实验线或合并回主线），避免两套实现长期漂移。
+- **复核结论（2026-10-17）**：**整项作废**。其立论前提「`components/x/` 下存在一套
+  ant-design-x 风格并行实现、仅被 `/chat-x` 实验页引用」已不成立——前端已全量
+  React 重写（`frontend-react/`），Vue 代码与 `components/x` 已清空
+  （0 个 `.vue` 文件）。无「双前端并存」可取舍，渲染层即 React 主线自身。
+- **建议**：从路线图移除；若将来真需要投影层，应在 React 侧重新立项。
 
 ### 3.5 数据驱动意图（inbox / pre-step waterfall）❌ 按设计保留
 
@@ -179,10 +183,10 @@
 |---|---|---|---|---|
 | **L1** | ✅ 灰度开启事件溯源 + 端到端回归 | §3.1 | 中（会话恢复核心路径，Redis 回退兜底） | **已达成（2026-10-17）**：flag 默认已 `True`；恢复/轨迹/fork/导出四项端到端全过，fork `copied_events=4` |
 | **L2** | DeepAgent + 多模式事件双写补齐 | §3.2、§3.7.2 | 中 | DeepAgent/task/report/doc 会话投影完整（§3.2 复核显示已补齐，待按模式实测确认） |
-| **L3** | 分层提示词灰度：开 `PROMPT_SECTION_ENABLED`，A/B 对比回答质量 | §3.1 | 低（legacy 兜底保留） | 提示词分层默认生效 |
+| **L3** | ⚠️ 分层提示词：**需先把 `PromptAssembler` 接入 `agent_factory`**（当前 `deepagent/prompts.py` 无任何 import 方，开 flag 对 Harness 零效果），再谈 A/B | §3.1 | 低 | 提示词分层默认生效（前提：已接入 Harness） |
 | **L4** | 子代理因果归因（事件 payload 增 source 字段） | §3.3 | 低 | 轨迹接口可区分子代理产出 |
 | **L5** | 能力接缝灰度 + LLM seam 论证 | §3.1 | 中（存储引擎解析） | `SEAM_ENABLED` 默认生效或明确弃用 |
-| **L6** | 渲染投影层（slot 体系）试验 | §3.4 | 低（/chat-x 实验） | 双前端取舍决策落地 |
+| ~~**L6**~~ | ~~渲染投影层（slot 体系）试验~~ **已作废**：前端已全量 React 重写，Vue 与 `components/x` 清空，无「双前端并存」可取舍 | §3.4 | — | 从路线图移除 |
 
 > 建议节奏：L1 → L2 → L3 串行（均依赖事件日志数据质量）；L4/L5 可并行；L6 独立。
 > **验证方式已变更（2026-10-17 用户决策）**：~~每阶段以 `pytest backend/tests/` + 前端 build

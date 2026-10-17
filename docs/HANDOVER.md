@@ -250,3 +250,20 @@ cd backend && uv run python -c "from app.harness.shadow import shadow_report, bu
 只发 `: ping` 并继续等,原墙钟熔断不变。端到端验证:15.0s 静默期准时收到心跳。
 
 > 仍未覆盖:`_stream_chat_deepagent`(`mode=task`)无心跳,属低流量路径。
+
+## 5.6 L2–L6 查漏结论（2026-10-17）
+
+`NEXT_STEPS.md` 工作线 B 剩余阶段的逐项核实结论：
+
+| 阶段 | 核实结论 | 行动建议 |
+|---|---|---|
+| **L1** 事件溯源灰度 | ✅ 已完成（§5.5） | 关闭 |
+| **L2** 多模式事件双写 | ✅ 已完成（`25ab498`）：data 4→7、report 3→6、doc 3→4 类；task 经核实 SSE 只 yield status/thread_id/token，**本就不产出数据类事件，非缺口** | 关闭 |
+| **L3** 分层提示词 | ⚠️ **代码无消费方**：`deepagent/prompts.py` 的 `PROMPT_SECTION_ENABLED` 门控已无人 import（DeepAgent 独立路径被 Harness 取代），Harness 用自己的 `SYSTEM_PROMPT` 字符串。开 flag 对当前主路径**零效果** | **先接入再谈灰度**：若要启用，需把 `PromptAssembler` 接进 `agent_factory._system_prompt_for()`。这是独立改造项，非「开个 flag」那么便宜 |
+| **L4** 子代理归因 | ❌ 未实施，且 Harness **无子代理**（Phase 3 才规划 SubAgentMiddleware） | 与 Phase 3 绑定，不在 L 序列内单独做 |
+| **L5** 能力接缝 | ⚠️ flag 仍 False；search/storage seam 已注册；风险在存储引擎解析（`db/session.py` mysql/postgresql provider） | 可做但需评估存储引擎切换的真实需求；收益低于 L1/L2 |
+| **L6** 渲染投影层 | ❌ **前提已不存在**：Vue 前端与 `components/x` 并行实现均已清空（0 个 .vue 文件），前端已全量 React 重写 | **整项作废**，从路线图移除 |
+
+**总体判断**：`NEXT_STEPS.md` 工作线 B 中，**L1/L2 已交付，L6 因前端重写自然消亡，
+L4 与 Phase 3 绑定，剩下真正可做的只有 L3（需先接入）与 L5（需评估真实需求）**。
+建议把它们从「预设路线」改为「按需提案」，避免为完成路线而做无收益改造。
