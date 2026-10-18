@@ -4,7 +4,7 @@
 MySQL 存储会话元数据 + 节点标题 + 事件溯源日志，Redis 保留 LangGraph checkpoints 用于工作流状态恢复。
 """
 from datetime import datetime
-from sqlalchemy import String, Integer, DateTime, Text, func, Index
+from sqlalchemy import String, Integer, Boolean, DateTime, Text, func, Index
 from sqlalchemy.orm import Mapped, mapped_column
 from app.models import Base
 
@@ -12,6 +12,9 @@ from app.models import Base
 class ChatSession(Base):
     """会话元数据表"""
     __tablename__ = "chat_sessions"
+    __table_args__ = (
+        Index("idx_chat_sessions_archived", "archived"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     thread_id: Mapped[str] = mapped_column(
@@ -27,6 +30,10 @@ class ChatSession(Base):
     )
     goal: Mapped[str] = mapped_column(
         Text, nullable=True, comment="会话长期目标（阶段4 B6，注入 system prompt）"
+    )
+    archived: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="0", default=False,
+        comment="是否归档：1=归档（侧栏归档分组，可恢复），0=活跃"
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), comment="创建时间"

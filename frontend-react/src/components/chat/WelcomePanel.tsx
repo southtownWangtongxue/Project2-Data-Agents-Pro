@@ -7,7 +7,7 @@
  */
 import { Prompts, Welcome } from '@ant-design/x'
 import { Button } from 'antd'
-import { BarChart3, BookOpen, Database, FileText, RefreshCw, Sparkles, Target } from 'lucide-react'
+import Icon, { type IconName } from '@/components/bits/Icon'
 import Aurora from '@/components/bits/Aurora'
 import TypeText from '@/components/bits/TypeText'
 import { useChatStore } from '@/stores/chat'
@@ -16,10 +16,10 @@ const TITLE = '你好,我是 DataAgent'
 const SUBTITLE = '自然语言 → SQL → 图表 → 洞察,一句话完成业务数据探索'
 
 const GUIDE = [
-  { key: 'g1', icon: <Database size={14} />, label: '数据探查', description: '统计各表的数据量与数据库整体概况' },
-  { key: 'g2', icon: <BarChart3 size={14} />, label: '指标分析', description: '分析各区域销售额的同比与环比变化' },
-  { key: 'g3', icon: <FileText size={14} />, label: '研究报告', description: '生成一份季度经营分析报告并给出结论' },
-  { key: 'g4', icon: <Target size={14} />, label: '口径检索', description: '查询知识库中「活跃客户」的指标定义' },
+  { key: 'g1', icon: 'database' as IconName, label: '数据探查', description: '统计各表的数据量与数据库整体概况' },
+  { key: 'g2', icon: 'chart' as IconName, label: '指标分析', description: '分析各区域销售额的同比与环比变化' },
+  { key: 'g3', icon: 'fileChart' as IconName, label: '研究报告', description: '生成一份季度经营分析报告并给出结论' },
+  { key: 'g4', icon: 'target' as IconName, label: '口径检索', description: '查询知识库中「活跃客户」的指标定义' },
 ]
 
 export default function WelcomePanel() {
@@ -43,7 +43,7 @@ export default function WelcomePanel() {
           icon={
             <span className="inline-flex w-12 h-12 rounded-2xl items-center justify-center text-white"
               style={{ background: 'linear-gradient(135deg,#7056F8,#8B6FFF)' }}>
-              <Sparkles size={22} />
+              <Icon name="sparkles" size={22} />
             </span>
           }
           title={
@@ -59,10 +59,10 @@ export default function WelcomePanel() {
           }
           extra={
             <span className="flex items-center gap-2">
-              <Button size="small" icon={<RefreshCw size={14} />} onClick={() => store.loadSuggestions(true)}>
+              <Button size="small" icon={<Icon name="refresh" size={16} />} onClick={() => store.loadSuggestions(true)}>
                 换一批问题
               </Button>
-              <Button size="small" icon={<BookOpen size={14} />} onClick={openDocs}>
+              <Button size="small" icon={<Icon name="bookMarked" size={16} />} onClick={openDocs}>
                 查看文档
               </Button>
             </span>
@@ -82,7 +82,7 @@ export default function WelcomePanel() {
             items={[{
               key: 'guide',
               label: '按场景开始',
-              children: GUIDE.map(g => ({ key: g.key, description: g.description, icon: g.icon })),
+              children: GUIDE.map(g => ({ key: g.key, description: g.description, icon: <Icon name={g.icon} size={16} /> })),
             }]}
             onItemClick={info => store.sendMessage(String(info.data.description || ''))}
           />

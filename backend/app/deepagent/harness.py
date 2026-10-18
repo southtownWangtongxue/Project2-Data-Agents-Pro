@@ -144,6 +144,9 @@ def _build_model():
     # provider 时 get_llm_config(None) 返回 None）时回退到全局 settings，
     # 避免 task 模式（DeepAgent 分支）在此处崩 AttributeError 中断 SSE 流。
     key, base = _resolve_key_and_base(provider)
+    # 思考模式开关（前端 Sender 开关 → chat_completions contextvar）：关闭且模型
+    # 可控制时注入 enable_thinking=False；不可控制的模型不注入（避免网关 400）。
+    from app.core.llm import thinking_model_kwargs
     return init_chat_model(
         model=model_name,
         model_provider="openai",
@@ -151,6 +154,9 @@ def _build_model():
         api_key=key,
         base_url=base,
         use_responses_api=False,
+        # usage 统计：让末块带 usage_metadata（读数条 Token 用量弹窗数据源）
+        stream_usage=True,
+        **thinking_model_kwargs(provider),
     )
 
 

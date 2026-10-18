@@ -2,47 +2,35 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ========== 碳黑驾驶舱 + 紫磷光 设计令牌(暗色为默认) ========== */
-:root,
-:root[data-theme='dark'] {
-  --cockpit-900: #0d0d0f;
-  --cockpit-800: #18181b;
-  --cockpit-700: #1f1f23;
-  --cockpit-600: #27272a;
-  --brand: #7056f8;
-  --brand-light: #8b6fff;
-  --success: #10b981;
-  --warning: #f59e0b;
-  --danger: #ef4444;
-  --text-1: #fafafa;
-  --text-2: #a1a1aa;
-  --text-3: #71717a;
-  --border: rgba(255, 255, 255, 0.08);
-  --border-light: rgba(255, 255, 255, 0.16);
-  --panel: rgba(20, 20, 22, 0.6);
+/* ========== 设计令牌(深色定版,层级参考 dsh:近黑画布 + 弱描边) ==========
+   2026-10-18:取消亮色主题(只保留深色);边框改为半透明白(降低分隔线存在感);
+   层级靠背景明度差而非描边,呼应 dsh「无边框面板」的观感。 */
+:root {
+  --cockpit-900: #0a0a0b;   /* 画布:近黑 */
+  --cockpit-800: #141416;   /* 面板/卡片 */
+  --cockpit-700: #1c1c1f;   /* 悬浮/输入框 */
+  --cockpit-600: #26262a;   /* 深一级填充 */
+  --brand: #6d5ef6;         /* 品牌紫(mdsh 蓝紫调收敛) */
+  --brand-light: #8b7bff;
+  --brand-glow: rgba(109, 94, 246, 0.35);
+  --link: #7aa2ff;
+  --success: #3fb950;
+  --warning: #d29922;
+  --danger: #f85149;
+  --text-1: #ececf1;        /* 主文字 */
+  --text-2: #a2a2ad;        /* 次文字 */
+  --text-3: #71717c;        /* 弱文字 */
+  --border: rgba(255, 255, 255, 0.07);   /* 弱描边(取代实色分隔线) */
+  --border-light: rgba(255, 255, 255, 0.14);
+  --panel: #101012;         /* 侧栏面板 */
   --code-bg: #0d0d0f;
-  --shadow-card: 0 8px 24px rgba(0, 0, 0, 0.45);
-  --aurora-grid: rgba(255, 255, 255, 0.025);
-  --font-mono: 'DIN Next', 'JetBrains Mono', SFMono-Regular, Consolas, monospace;
+  --shadow-card: 0 12px 32px rgba(0, 0, 0, 0.55);
+  --aurora-grid: rgba(255, 255, 255, 0.03);
+  /* 字体统一(2026-10-18):中文全部 MiSans;等宽读数 JetBrains Mono + 中文兜底 MiSans
+     —— 否则 mono 类里的中文会落到系统字体,与正文风格断裂("字体没统一") */
+  --font-sans: 'MiSans VF', 'MiSans', 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'MiSans VF', 'MiSans', 'PingFang SC', 'Microsoft YaHei', SFMono-Regular, Consolas, monospace;
   color-scheme: dark;
-}
-
-/* ========== 亮色模式:同一套语义映射到浅色三层 ========== */
-:root[data-theme='light'] {
-  --cockpit-900: #fafafb;
-  --cockpit-800: #ffffff;
-  --cockpit-700: #f4f4f6;
-  --cockpit-600: #e4e4e7;
-  --text-1: #18181b;
-  --text-2: #52525b;
-  --text-3: #8b8b93;
-  --border: rgba(0, 0, 0, 0.1);
-  --border-light: rgba(0, 0, 0, 0.18);
-  --panel: rgba(255, 255, 255, 0.72);
-  --code-bg: #f7f7f9;
-  --shadow-card: 0 8px 24px rgba(15, 15, 20, 0.08);
-  --aurora-grid: rgba(0, 0, 0, 0.04);
-  color-scheme: light;
 }
 
 * {
@@ -56,9 +44,14 @@ body,
   margin: 0;
   background: var(--cockpit-900);
   color: var(--text-1);
-  font-family: 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+  font-family: var(--font-sans);
   font-size: 14px;
-  line-height: 1.6;
+  line-height: 1.65;
+  /* 字体渲染:MiSans 在 100% 缩放下保持次像素清晰,关掉过度平滑更锐利 */
+  -webkit-font-smoothing: subpixel-antialiased;
+  -moz-osx-font-smoothing: auto;
+  font-feature-settings: 'kern' 1, 'liga' 1, 'calt' 1;
+  text-rendering: optimizeLegibility;
 }
 
 /* 滚动条 —— 驾驶舱细条 */
@@ -78,6 +71,36 @@ body,
 .mono {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
+}
+
+/* ========== 读数条三弹窗(2026-10-18 dsh 定版)========== */
+/* 触发器:中文标签走主字体(MiSans),数字靠 tabular-nums 对齐;
+   无分隔线、无边框,hover 只做轻背景高亮(与账户菜单/模型选择器一致) */
+.stat-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  line-height: 1;
+  padding: 6px 12px;
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  border-radius: 8px;
+  transition: color 0.15s ease, background 0.15s ease;
+  white-space: nowrap;
+}
+/* 触发器内的次要读数(如 · 35 tok/s):降一档但仍可读 */
+.stat-trigger-dim {
+  color: var(--text-3);
+  opacity: 0.9;
+}
+.stat-trigger:hover {
+  color: var(--text-1);
+  background: rgba(255, 255, 255, 0.06);
 }
 
 /* 步骤状态脉冲(紫磷光) */
@@ -126,6 +149,21 @@ body,
   gap: 12px;
 }
 
+/* 输入区(dsh 参考):大圆角深色卡片,无边框;hover/聚焦仅轻描边 */
+.ant-sender {
+  border-radius: 16px !important;
+  background: var(--cockpit-800) !important;
+  border: 1px solid transparent !important;
+  box-shadow: none !important;
+  transition: border-color 0.16s ease, background 0.16s ease;
+}
+.ant-sender:hover {
+  border-color: var(--border) !important;
+}
+.ant-sender:focus-within {
+  border-color: var(--border-light) !important;
+}
+
 /* 流式正文 Markdown:去掉最后一个元素的下边距,避免气泡内出现悬空空白 */
 .x-markdown > *:last-child {
   margin-bottom: 0;
@@ -138,9 +176,371 @@ body,
   border-radius: 10px;
 }
 
+/* ========== React Bits 组件(阶段 B 视觉,源码移植自 reactbits.dev) ========== */
+/* ShinyText:background-clip:text 扫光文字 */
+.shiny-text {
+  position: relative;
+  display: inline-block;
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.shiny-text__glow {
+  position: absolute;
+  inset: 0;
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  filter: blur(0.14em);
+  pointer-events: none;
+  user-select: none;
+}
+
+/* SpotlightCard:鼠标跟随聚光卡(表面色/描边由使用方覆盖为驾驶舱令牌) */
+.spotlight-card {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  padding: 0; /* 官方默认 2rem,本项目由使用方控制内边距 */
+  border-radius: 10px; /* 官方 1.5rem,贴合驾驶舱卡尺度 */
+  background-color: var(--spotlight-card-surface);
+  box-shadow: var(--spotlight-card-shadow);
+}
+.spotlight-card__light,
+.spotlight-card__grain,
+.spotlight-card__border,
+.spotlight-card__edge {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+}
+.spotlight-card__light,
+.spotlight-card__grain {
+  z-index: -1;
+  opacity: 0;
+}
+.spotlight-card__grain {
+  background-size: 160px 160px;
+  mix-blend-mode: overlay;
+}
+.spotlight-card__border,
+.spotlight-card__edge {
+  z-index: 1;
+  padding: 1px;
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box exclude,
+    linear-gradient(#000 0 0);
+}
+.spotlight-card__border {
+  background: var(--spotlight-card-border);
+}
+.spotlight-card__edge {
+  opacity: 0;
+}
+
+/* ========== Markdown 代码高亮 token 配色(GitHub Dark 语法色) ========== */
+.hljs {
+  background: transparent;
+  color: var(--text-1);
+}
+.hljs-comment,
+.hljs-quote {
+  color: #8b949e;          /* GitHub dark: fg.muted */
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-built_in,
+.hljs-name,
+.hljs-template-tag {
+  color: #ff7b72;          /* GitHub dark: 关键字红 */
+}
+.hljs-string,
+.hljs-attr,
+.hljs-addition,
+.hljs-regexp,
+.hljs-meta-string {
+  color: #a5d6ff;          /* GitHub dark: 字符串浅蓝 */
+}
+.hljs-number,
+.hljs-literal,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-attribute {
+  color: #79c0ff;          /* GitHub dark: 数字/变量蓝 */
+}
+.hljs-title,
+.hljs-section,
+.hljs-title.function_ {
+  color: #d2a8ff;          /* GitHub dark: 函数紫 */
+}
+.hljs-type,
+.hljs-class .hljs-title,
+.hljs-title.class_,
+.hljs-params {
+  color: #ffa657;          /* GitHub dark: 类型/参数橙 */
+}
+.hljs-tag,
+.hljs-selector-id,
+.hljs-selector-class {
+  color: #7ee787;          /* GitHub dark: 标签绿 */
+}
+.hljs-symbol,
+.hljs-bullet,
+.hljs-link {
+  color: #79c0ff;
+}
+.hljs-meta {
+  color: #8b949e;
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 600;
+}
+
+/* 亮色模式(GitHub Light 语法色) */
+:root[data-theme='light'] .hljs {
+  color: #1f2328;
+}
+:root[data-theme='light'] .hljs-comment,
+:root[data-theme='light'] .hljs-quote {
+  color: #6e7781;
+}
+:root[data-theme='light'] .hljs-keyword,
+:root[data-theme='light'] .hljs-built_in,
+:root[data-theme='light'] .hljs-name,
+:root[data-theme='light'] .hljs-template-tag {
+  color: #cf222e;          /* GitHub light: 关键字红 */
+}
+:root[data-theme='light'] .hljs-string,
+:root[data-theme='light'] .hljs-addition,
+:root[data-theme='light'] .hljs-regexp {
+  color: #0a3069;          /* GitHub light: 字符串深蓝 */
+}
+:root[data-theme='light'] .hljs-number,
+:root[data-theme='light'] .hljs-literal,
+:root[data-theme='light'] .hljs-variable,
+:root[data-theme='light'] .hljs-template-variable {
+  color: #0550ae;          /* GitHub light: 数字蓝 */
+}
+:root[data-theme='light'] .hljs-title,
+:root[data-theme='light'] .hljs-section {
+  color: #8250df;          /* GitHub light: 函数紫 */
+}
+:root[data-theme='light'] .hljs-type,
+:root[data-theme='light'] .hljs-params {
+  color: #953800;          /* GitHub light: 类型橙 */
+}
+:root[data-theme='light'] .hljs-tag,
+:root[data-theme='light'] .hljs-selector-id,
+:root[data-theme='light'] .hljs-selector-class {
+  color: #116329;          /* GitHub light: 标签绿 */
+}
+
 /* 侧栏会话项:去掉 antd 默认激活底色叠加,改由 tokens 控制 */
 .ant-conversations-item-active {
   font-weight: 500;
+}
+
+/* ========== StarBorder(2026-10-18,reactbits animations/star-border 的 CSS 等效) ==========
+   官方用 canvas 逐帧描边星轨;这里用 conic-gradient + @property 角度动画实现
+   同款「光点绕边」观感,零 RAF 开销,更适合消息流内多实例。 */
+@property --sb-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+.star-border {
+  position: relative;
+  border-radius: var(--sb-radius, 12px);
+  background: var(--sb-surface, var(--cockpit-800));
+  isolation: isolate;
+}
+.star-border__ring {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: var(--sb-thickness, 1px);
+  pointer-events: none;
+  background: conic-gradient(
+    from var(--sb-angle),
+    transparent 0deg,
+    var(--sb-color, #8b7bff) 26deg,
+    #ffffff 38deg,
+    var(--sb-color, #8b7bff) 50deg,
+    transparent 92deg,
+    transparent 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box exclude,
+    linear-gradient(#000 0 0);
+  animation: star-border-spin var(--sb-duration, 4s) linear infinite;
+  z-index: 1;
+}
+.star-border__glow {
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: 0 0 18px -6px var(--sb-color, #8b7bff);
+  opacity: 0.45;
+  z-index: 0;
+}
+@keyframes star-border-spin {
+  to { --sb-angle: 360deg; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .star-border__ring { animation: none; }
+}
+
+/* ========== DeepThink(思考过程,reactbits micro/thought-line 等效) ========== */
+/* 呼吸的光点图标:运行时明暗起伏,结束时定住 */
+@keyframes dt-breath {
+  0%, 100% { opacity: 0.45; transform: scale(0.94); }
+  50% { opacity: 1; transform: scale(1.06); }
+}
+.dt-glyph--working {
+  animation: dt-breath 1.6s ease-in-out infinite;
+}
+/* 标题微光扫过(thought-line 的 shimmer) */
+@keyframes dt-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -80% 0; }
+}
+.dt-shimmer {
+  background-image: linear-gradient(
+    100deg,
+    var(--text-2) 0%,
+    var(--text-2) 38%,
+    var(--text-1) 50%,
+    var(--text-2) 62%,
+    var(--text-2) 100%
+  );
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: dt-shimmer 2.2s linear infinite;
+}
+/* 进行中步骤的脉冲点 */
+@keyframes dt-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(139, 123, 255, 0.55); opacity: 1; }
+  70% { box-shadow: 0 0 0 6px rgba(139, 123, 255, 0); opacity: 0.85; }
+  100% { box-shadow: 0 0 0 0 rgba(139, 123, 255, 0); opacity: 1; }
+}
+.dt-pulse {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--brand-light);
+  animation: dt-pulse 1.5s ease-out infinite;
+}
+/* 多轮思考行进场(thought-line steps 的淡入上移) */
+@keyframes dt-step-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.dt-step {
+  animation: dt-step-in 0.28s ease-out both;
+}
+/* 左侧竖线(thought-line 的轨迹线) */
+.dt-trace {
+  position: relative;
+  padding-left: 18px;
+}
+.dt-trace::before {
+  content: '';
+  position: absolute;
+  left: 5px;
+  top: 4px;
+  bottom: 4px;
+  width: 1px;
+  background: linear-gradient(180deg, rgba(139, 123, 255, 0.45), rgba(139, 123, 255, 0.12));
+}
+
+/* ========== 会话列表进场(animated-list / line-sidebar 等效) ========== */
+@keyframes sidebar-item-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.ant-conversations-item {
+  animation: sidebar-item-in 0.26s ease-out both;
+}
+/* hover 左侧指示条(line-sidebar:细线从中间向两端展开) */
+.ant-conversations-item {
+  position: relative;
+}
+.ant-conversations-item::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 2px;
+  height: 0;
+  border-radius: 2px;
+  background: var(--brand-light);
+  opacity: 0;
+  transform: translateY(-50%);
+  transition: height 0.2s ease, opacity 0.2s ease;
+}
+.ant-conversations-item:hover::before {
+  height: 60%;
+  opacity: 0.85;
+}
+.ant-conversations-item-active::before {
+  height: 70%;
+  opacity: 1;
+}
+
+/* ========== 可读性(2026-10-18 MiSans 接入同步调优)========== */
+/* 侧栏会话列表:13px + 圆角悬浮块(dsh 参考:item 无边框,hover 仅背景) */
+.ant-conversations-item,
+.ant-conversations-item .ant-conversations-item-label {
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+.ant-conversations-item {
+  border-radius: 8px !important;
+}
+
+/* 步骤链描述行:12.5px(antdx 默认偏小) */
+.ant-thought-chain-node-description {
+  font-size: 12.5px !important;
+}
+
+/* 输入区开关(联网/思考):去默认描边,弱化为文字+图标,hover 轻背景 */
+.ant-sender-switch {
+  border: none !important;
+  background: transparent !important;
+  color: var(--text-2) !important;
+  border-radius: 8px !important;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.ant-sender-switch:hover {
+  background: rgba(255, 255, 255, 0.05) !important;
+  color: var(--text-1) !important;
+}
+/* 提示卡(Prompts)与欢迎区说明文字 */
+.ant-prompts-item {
+  font-size: 13px;
+}
+/* 下拉菜单项 */
+.ant-dropdown-menu-item {
+  font-size: 13px;
 }
 
 /* Sender:与官方一致的悬浮阴影与圆角 */

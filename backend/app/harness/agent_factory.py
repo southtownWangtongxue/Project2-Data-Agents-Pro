@@ -154,6 +154,7 @@ def _agent_spec() -> dict[str, Any]:
     每次请求都变,进指纹会导致每次都重建。
     """
     from app.deepagent.harness import _resolve_temperature
+    from app.core.llm import get_thinking_mode
     from app.deepagent.tools import web_search_tool
 
     provider = get_current_provider()
@@ -163,6 +164,8 @@ def _agent_spec() -> dict[str, Any]:
         "middleware": [type(m).__name__ for m in (SqlGateMiddleware(),)],
         "provider": _provider_fingerprint(),
         "temperature": _resolve_temperature(provider),
+        # 思考开关进指纹：开关变化 → 自动重建 Agent（model_kwargs 构建期固化）
+        "thinking": get_thinking_mode(),
     }
 
 
@@ -198,7 +201,8 @@ def build_harness_agent() -> Any:
     _agent_fingerprint = fingerprint
     log.info(
         f"[Harness] 主循环装配完成: tools={len(tools)} fingerprint={fingerprint} "
-        f"provider={spec['provider']} temperature={spec['temperature']}"
+        f"provider={spec['provider']} temperature={spec['temperature']} "
+        f"thinking={spec['thinking']}"
     )
     return _agent
 

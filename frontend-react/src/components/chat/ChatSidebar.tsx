@@ -1,51 +1,112 @@
 /**
- * ChatSidebar.tsx —— 会话侧栏(antdx Conversations + 侧栏底部账户区)
+ * ChatSidebar.tsx —— 会话侧栏(antdx Conversations + 账户菜单)
  *
- * 结构对齐官方独立式样板间 side:logo 区 → Conversations(flex-1) → sideFooter。
- * 业务扩展:会话长期目标(goal)以菜单项形式挂在会话上。
+ * 2026-10-18 定版(按验收反馈):
+ * - **取消归档**:移除归档分组、单条归档菜单、批量归档(后端接口保留,前端不再使用)
+ * - **会话管理重做**:内嵌批量操作条(按钮挤压换行、易误点)改为独立的
+ *   「选择对话」弹窗(SessionPickerModal),支持全选/分组/删除
+ * - 保留:分组计数 + 组折叠(localStorage 记忆)、滚动触底分页、重命名、长期目标、删除
  */
 import { useMemo, useState } from 'react'
 import { Modal, Input, message as antdMsg, Tooltip } from 'antd'
 import { Conversations } from '@ant-design/x'
-import { Pencil, Target, Trash2 } from 'lucide-react'
+import Icon from '@/components/bits/Icon'
 import { useChatStore, type SessionInfo } from '@/stores/chat'
-import { useAuthStore } from '@/stores/auth'
-import { useThemeStore } from '@/stores/theme'
 import { api } from '@/api/client'
+import AccountMenu from './AccountMenu'
+import SessionPickerModal from './SessionPickerModal'
+import ShinyText from '@/components/bits/reactbits/ShinyText'
 
 const GROUP_TODAY = '今天'
 const GROUP_YESTERDAY = '昨天'
+const GROUP_WEEK = '7天内'
+const GROUP_MONTH = '30天内'
 const GROUP_EARLIER = '更早'
+const GROUP_ORDER = [GROUP_TODAY, GROUP_YESTERDAY, GROUP_WEEK, GROUP_MONTH, GROUP_EARLIER]
+const COLLAPSE_STORAGE_KEY = 'sidebarCollapsedGroups'
+/** 滚动触底加载的预触发距离(px) */
+const SCROLL_PREFETCH = 80
 
+/** 分组对齐 dsh:今天 / 昨天 / 7天内 / 30天内 / 更早 */
 function groupOf(s: SessionInfo): string {
   if (!s.created_at) return GROUP_EARLIER
-  const d = new Date(s.created_at)
-  const today = new Date()
-  const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime()
-  const ts = d.getTime()
-  if (ts >= startOfToday) return GROUP_TODAY
-  if (ts >= startOfToday - 24 * 3600 * 1000) return GROUP_YESTERDAY
+  const ts = new Date(s.created_at).getTime()
+  const now = Date.now()
+  const startOfToday = new Date(now)
+  startOfToday.setHours(0, 0, 0, 0)
+  if (ts >= startOfToday.getTime()) return GROUP_TODAY
+  if (ts >= startOfToday.getTime() - 86400_000) return GROUP_YESTERDAY
+  if (ts >= now - 7 * 86400_000) return GROUP_WEEK
+  if (ts >= now - 30 * 86400_000) return GROUP_MONTH
   return GROUP_EARLIER
 }
 
-export default function ChatSidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
+function loadCollapsedGroups(): string[] {
+  try {
+    const raw = localStorage.getItem(COLLAPSE_STORAGE_KEY)
+    if (raw) return JSON.parse(raw) as string[]
+  } catch { /* 损坏的本地存储回退默认 */ }
+  return [GROUP_EARLIER] // 更早默认折叠
+}
+
+export default function ChatSidebar() {
   const store = useChatStore()
-  const auth = useAuthStore()
-  const theme = useThemeStore()
   const [goalOpen, setGoalOpen] = useState(false)
   const [goalText, setGoalText] = useState('')
   const [goalThread, setGoalThread] = useState<string>('')
+  /* 「选择对话」批量删除弹窗 */
+  const [pickerOpen, setPickerOpen] = useState(false)
+  /* 组折叠态(受控:展开键取反,localStorage 记忆) */
+  const [collapsedGroups, setCollapsedGroups] = useState<string[]>(loadCollapsedGroups)
 
   /** 按「今天/昨天/更早」分组,组内保持接口返回的倒序 */
-  const items = useMemo(() => {
-    const grouped = new Map<string, { key: string; label: string; group: string }[]>()
+  const grouped = useMemo(() => {
+    const map = new Map<string, { key: string; label: string; group: string }[]>()
     for (const s of store.sessions) {
       const g = groupOf(s)
-      if (!grouped.has(g)) grouped.set(g, [])
-      grouped.get(g)!.push({ key: s.thread_id, label: s.title || '未命名会话', group: g })
+      if (!map.has(g)) map.set(g, [])
+      map.get(g)!.push({ key: s.thread_id, label: s.title || '未命名会话', group: g })
     }
-    return [...grouped.entries()].flatMap(([, list]) => list)
+    return map
   }, [store.sessions])
+
+  const items = useMemo(() => {
+    const out: { key: string; label: string; group: string }[] = []
+    for (const g of GROUP_ORDER) {
+      for (const it of grouped.get(g) || []) {
+        out.push({ key: it.key, group: g, label: it.label })
+      }
+    }
+    return out
+  }, [grouped])
+
+  /** groupable:组标题带计数;折叠态受控并持久化 */
+  const groupable = useMemo(() => {
+    const presentGroups = [...grouped.keys()]
+    return {
+      label: (group: string, info: { groupInfo: { data: unknown[] } }) => (
+        <span className="flex items-center gap-1.5">
+          <span className="text-[12.5px] text-[var(--text-2)]">{group}</span>
+          <span className="mono text-[11.5px] text-[var(--text-3)]">{info.groupInfo.data.length}</span>
+        </span>
+      ),
+      collapsible: true,
+      expandedKeys: presentGroups.filter(g => !collapsedGroups.includes(g)),
+      onExpand: (keys: string[]) => {
+        const next = presentGroups.filter(g => !keys.includes(g))
+        setCollapsedGroups(next)
+        try { localStorage.setItem(COLLAPSE_STORAGE_KEY, JSON.stringify(next)) } catch { /* 忽略存储失败 */ }
+      },
+    }
+  }, [grouped, collapsedGroups])
+
+  /** 滚动触底 → 加载下一页 */
+  const onListScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - SCROLL_PREFETCH) {
+      store.loadMoreSessions()
+    }
+  }
 
   const openGoal = async (threadId: string) => {
     if (!threadId) {
@@ -91,124 +152,124 @@ export default function ChatSidebar({ collapsed, onToggle }: { collapsed: boolea
       okText: '删除',
       okButtonProps: { danger: true },
       cancelText: '取消',
-      onOk: () => store.deleteSession(threadId),
+      onOk: async () => {
+        try {
+          await store.deleteSession(threadId)
+          antdMsg.success(`已删除「${title || '未命名会话'}」`)
+        } catch (e) {
+          /* 删除失败必须可见:失败被吞会让人误以为已删、刷新又出现 */
+          antdMsg.error(`删除失败: ${(e as Error).message || '未知错误'}`)
+          throw e
+        }
+      },
     })
   }
 
-  /* 折叠态:仅保留图标条 */
-  if (collapsed) {
-    return (
-      <aside
-        className="h-full w-12 flex-shrink-0 flex flex-col items-center gap-3 py-4 border-r"
-        style={{ borderColor: 'var(--border)', background: 'var(--panel)' }}
-      >
-        <span className="w-7 h-7 rounded-lg flex items-center justify-center text-white text-[13px] font-bold"
-          style={{ background: 'linear-gradient(135deg,#7056F8,#8B6FFF)' }}>D</span>
-        <Tooltip title="展开侧栏" placement="right">
-          <button type="button" onClick={onToggle}
-            className="w-8 h-8 rounded-md border bg-transparent cursor-pointer text-[var(--text-2)] hover:text-[var(--text-1)] transition-colors"
-            style={{ borderColor: 'var(--border)' }}>→</button>
-        </Tooltip>
-        <Tooltip title="新建会话" placement="right">
-          <button type="button" onClick={() => store.newSession()} title="新建会话"
-            className="w-8 h-8 rounded-md border cursor-pointer text-[var(--brand-light)] transition-colors"
-            style={{ borderColor: 'rgba(112,86,248,0.35)', background: 'rgba(112,86,248,0.12)' }}>+</button>
-        </Tooltip>
-      </aside>
-    )
-  }
+  const emptyList = items.length === 0 && !store.sessionsLoading
 
   return (
     <aside
       className="h-full w-[280px] flex-shrink-0 flex flex-col px-3 box-border"
       style={{ background: 'var(--panel)' }}
     >
-      {/* 🌟 logo 区 */}
+      {/* 🌟 logo 区 + 会话管理入口 */}
       <div className="flex items-center gap-2 py-6 px-6 box-border">
-        <span className="w-6 h-6 rounded-md flex items-center justify-center text-white text-[13px] font-bold flex-shrink-0"
-          style={{ background: 'linear-gradient(135deg,#7056F8,#8B6FFF)' }}>D</span>
-        <span className="font-bold text-[16px] text-[var(--text-1)] truncate">DataAgent Pro</span>
-        <Tooltip title="折叠侧栏" placement="right">
-          <button type="button" onClick={onToggle} title="折叠侧栏"
-            className="ml-auto w-6 h-6 rounded border bg-transparent cursor-pointer text-[var(--text-3)] hover:text-[var(--text-1)] transition-colors"
-            style={{ borderColor: 'var(--border)' }}>←</button>
-        </Tooltip>
-      </div>
-
-      {/* 🌟 会话管理 */}
-      {items.length === 0 && !store.sessionsLoading ? (
-        <div className="flex-1 flex flex-col items-center justify-center gap-1 text-center">
-          <span className="text-[12px] text-[var(--text-3)]">暂无会话</span>
-          <span className="text-[11px] text-[var(--text-3)] opacity-70">发起第一轮对话后自动归档</span>
-        </div>
-      ) : (
-        <Conversations
-          className="flex-1 min-h-0 overflow-y-auto mt-3"
-          style={{ padding: 0 }}
-          activeKey={store.chat.threadId || undefined}
-          onActiveChange={key => key && store.loadSession(String(key))}
-          groupable
-          creation={{
-            onClick: () => {
-              if (store.chat.messages.length === 0 && store.sessions.length === 0) {
-                antdMsg.info('已经是新会话,直接提问即可')
-                return
-              }
-              store.newSession()
-            },
-          }}
-          items={items}
-          styles={{ item: { padding: '0 8px' } }}
-          menu={conversation => ({
-            items: [
-              {
-                key: 'rename',
-                label: '重命名',
-                icon: <Pencil size={14} />,
-                onClick: () => rename(String(conversation.key), labelText(conversation.label)),
-              },
-              {
-                key: 'goal',
-                label: '长期目标',
-                icon: <Target size={14} />,
-                onClick: () => openGoal(String(conversation.key)),
-              },
-              {
-                key: 'delete',
-                label: '删除',
-                icon: <Trash2 size={14} />,
-                danger: true,
-                onClick: () => remove(String(conversation.key), labelText(conversation.label)),
-              },
-            ],
-          })}
+        <img src="/logo.png" alt="" className="w-6 h-6 rounded-md flex-shrink-0" />
+        <ShinyText
+          text="DataAgent Pro"
+          color="#ECECF1"
+          shineColor="#C4B5FD"
+          speed={3.2}
+          delay={1.5}
+          shineWidth={26}
+          softness={0.9}
+          glow={0.3}
+          trigger="view"
+          className="font-bold text-[16px] truncate"
         />
-      )}
-
-      {/* 🌟 侧栏底部:账户 / 主题 / 目标 */}
-      <div
-        className="h-10 flex items-center justify-between border-t mt-3 pt-3 pb-3"
-        style={{ borderColor: 'var(--border)' }}
-      >
-        <span className="flex items-center gap-2 min-w-0">
-          <span className="w-6 h-6 rounded-full flex items-center justify-center text-[11px] text-white flex-shrink-0"
-            style={{ background: 'linear-gradient(135deg,#3f3f46,#52525b)' }}>
-            {(auth.user?.nick_name || auth.user?.user_name || 'U').slice(0, 1).toUpperCase()}
-          </span>
-          <span className="text-[12px] text-[var(--text-2)] truncate">
-            {auth.user?.nick_name || auth.user?.user_name || '未登录'}
-          </span>
-        </span>
-        <span className="flex items-center gap-1">
-          <Tooltip title="切换主题">
-            <button type="button" onClick={theme.toggle} title="切换明暗主题"
-              className="w-7 h-7 rounded-md border bg-transparent cursor-pointer text-[var(--text-2)] hover:text-[var(--text-1)] transition-colors"
-              style={{ borderColor: 'var(--border)' }}>
-              {theme.mode === 'dark' ? '☾' : '☀'}
+        {!emptyList && (
+          <Tooltip title="选择对话（批量删除）" placement="bottom">
+            <button
+              type="button"
+              onClick={() => setPickerOpen(true)}
+              title="选择对话"
+              className="ml-auto w-7 h-7 rounded-lg bg-transparent border-none cursor-pointer text-[var(--text-3)] hover:text-[var(--text-1)] hover:bg-white/[0.06] transition-colors flex items-center justify-center"
+            >
+              <Icon name="listCheck" size={16} />
             </button>
           </Tooltip>
-        </span>
+        )}
       </div>
+
+      {/* 🌟 会话列表 */}
+      {emptyList ? (
+        <div className="flex-1 flex flex-col items-center justify-center gap-1 text-center">
+          <span className="text-[13px] text-[var(--text-2)]">暂无会话</span>
+          <span className="text-[12px] text-[var(--text-3)]">在输入框提问即可开始第一个对话</span>
+        </div>
+      ) : (
+        /* 滚动容器:触底预加载下一页 */
+        <div className="flex-1 min-h-0 overflow-y-auto mt-1" onScroll={onListScroll}>
+          <Conversations
+            style={{ padding: 0 }}
+            activeKey={store.chat.threadId || undefined}
+            onActiveChange={key => {
+              if (!key) return
+              store.loadSession(String(key))
+            }}
+            groupable={groupable}
+            creation={{
+              onClick: () => {
+                if (store.chat.messages.length === 0 && store.sessions.length === 0) {
+                  antdMsg.info('已经是新会话,直接提问即可')
+                  return
+                }
+                store.newSession()
+              },
+            }}
+            items={items}
+            styles={{ item: { padding: '0 8px' } }}
+            menu={conversation => ({
+              items: [
+                {
+                  key: 'rename',
+                  label: '重命名',
+                  icon: <Icon name="edit" size={16} />,
+                  onClick: () => rename(String(conversation.key), labelText(conversation.label)),
+                },
+                {
+                  key: 'goal',
+                  label: '长期目标',
+                  icon: <Icon name="target" size={16} />,
+                  onClick: () => openGoal(String(conversation.key)),
+                },
+                {
+                  key: 'delete',
+                  label: '删除',
+                  icon: <Icon name="trash" size={16} />,
+                  danger: true,
+                  onClick: () => remove(String(conversation.key), labelText(conversation.label)),
+                },
+              ],
+            })}
+          />
+          {/* 滚动加载指示 */}
+          {store.sessionsLoadingMore && (
+            <div className="flex justify-center py-3 text-[12px] text-[var(--text-3)]">加载中…</div>
+          )}
+          {!store.sessionsHasMore && store.sessions.length > 0 && (
+            <div className="flex justify-center py-3 text-[12px] text-[var(--text-3)]">已加载全部会话</div>
+          )}
+        </div>
+      )}
+
+      {/* 🌟 侧栏底部:账户菜单(只保留深色,无分隔线) */}
+      <div className="flex items-center gap-1 mt-2 pb-3">
+        <AccountMenu />
+      </div>
+
+      {/* 选择对话(批量删除) */}
+      <SessionPickerModal open={pickerOpen} onClose={() => setPickerOpen(false)} />
 
       {/* 长期目标编辑 */}
       <Modal
@@ -226,7 +287,7 @@ export default function ChatSidebar({ collapsed, onToggle }: { collapsed: boolea
           placeholder="例如:围绕月度经营分析,所有回答都聚焦华东区数据"
           maxLength={2000}
         />
-        <div className="text-[11px] text-[var(--text-3)] mt-1">目标将在下一轮对话时注入系统提示词</div>
+        <div className="text-[12px] text-[var(--text-3)] mt-1">目标将在下一轮对话时注入系统提示词</div>
       </Modal>
     </aside>
   )

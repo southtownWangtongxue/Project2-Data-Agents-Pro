@@ -4,7 +4,7 @@
  * 说明:后端暂无反馈上报端点,反馈仅本地记录(切换会话后失效),已在 tooltip 中标注。
  */
 import { Actions } from '@ant-design/x'
-import { RefreshCw } from 'lucide-react'
+import Icon from '@/components/bits/Icon'
 import { Tooltip } from 'antd'
 import { useChatStore } from '@/stores/chat'
 import type { Msg } from '@/sdk/protocol'
@@ -19,7 +19,7 @@ export default function MessageActions({ msg, content }: { msg: Msg; content: st
         {
           key: 'retry',
           label: '重新生成',
-          icon: <RefreshCw size={14} />,
+          icon: <Icon name="refresh" size={16} />,
           onItemClick: () => store.retryLastMessage(),
         },
         {

@@ -169,10 +169,12 @@ export function applyEvent(prev: ChatState, ev: SSEEvent): ChatState {
     }
 
     case E.SQL: {
+      // SQL 文本取值:harness 桥接器发 sql 字段、legacy 发 content——双口径兼容
+      const sqlText = ev.sql || ev.content || ''
       // 用清洗后的完整 SQL 覆盖流式卡片
       if (s.activeSqlMsgId) {
         s.messages = s.messages.map(m =>
-          m.id === s.activeSqlMsgId ? { ...m, sql: ev.content || '' } : m,
+          m.id === s.activeSqlMsgId ? { ...m, sql: sqlText } : m,
         )
         s.activeSqlMsgId = null
       } else {
@@ -180,7 +182,7 @@ export function applyEvent(prev: ChatState, ev: SSEEvent): ChatState {
           id: msgId(),
           role: 'assistant',
           kind: 'sql',
-          sql: ev.content || '',
+          sql: sqlText,
           stepId: ev.step_id,
         })
       }

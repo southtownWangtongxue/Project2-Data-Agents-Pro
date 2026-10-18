@@ -115,6 +115,10 @@ class ChatRequest(BaseModel):
         default=None,
         description="模型 provider id（对应 LLM 配置中的 id）；为空则使用默认 provider。界面切换模型时动态路由实际调用",
     )
+    thinking: bool = Field(
+        default=True,
+        description="思考模式开关（前端 Sender 开关，默认关由前端控制）：开启=模型可推理且展示思考内容；关闭=尽力禁用推理（enable_thinking=False）并默认隐藏思考展示",
+    )
 
 
 # ================================================================
@@ -230,6 +234,37 @@ async def _stream_tokens(text: str, delay: float = 0.0):
             await _asyncio.sleep(delay)
 
 
+def _usage_window() -> int:
+    """上下文窗口大小（usage 事件中占比的分母）。
+
+    优先级:当前 provider.context_window（模型选择器/配置中心可配）>
+    settings.CONTEXT_WINDOW > 默认 192K。与三弹窗「上下文已用」联动。
+    """
+    from app.core.usage_metrics import DEFAULT_CONTEXT_WINDOW
+
+    try:
+        from app.core.llm import get_current_provider
+
+        provider = get_current_provider() or {}
+        value = int(provider.get("context_window") or 0)
+        if value > 0:
+            return value
+        return int(getattr(settings, "CONTEXT_WINDOW", 0) or DEFAULT_CONTEXT_WINDOW)
+    except Exception:  # noqa: BLE001 —— 统计失败不应影响主流程
+        return DEFAULT_CONTEXT_WINDOW
+
+
+def _deep_tools_for_usage():
+    """DeepAgent 路径的工具集（供 tool_defs 占比估算；失败返回空列表）。"""
+    try:
+        from app.deepagent.tools import web_search_tool  # noqa: F401
+        from app.harness.tools import get_data_tools
+
+        return [*get_data_tools(), web_search_tool]
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def _thinking_event(agent: str, phase: str, content: str = "") -> str:
     """
     构造 thinking SSE 事件，展示 Agent 推理过程。
@@ -291,7 +326,7 @@ def _error_event(message: str, code: str = "UNKNOWN", recoverable: bool = False)
 # ================================================================
 
 
-async def _stream_chat(question: str, user_name: str, history: list[dict] | None = None, existing_thread_id: str | None = None, model: str | None = None, mode: str = "data", web_search: bool = False):
+async def _stream_chat(question: str, user_name: str, history: list[dict] | None = None, existing_thread_id: str | None = None, model: str | None = None, mode: str = "data", web_search: bool = False, thinking: bool = True):
     """
     SSE 流式对话生成器 —— 异步生成 SSE 事件流。
 
@@ -306,17 +341,30 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
         user_name: 当前登录用户名（用于 thread_id 格式和用户隔离）
         history: 对话历史消息列表 [{"role": "...", "content": "..."}, ...]
         existing_thread_id: 前端传入的会话 thread_id（多轮复用，新建会话时为 None）
+        thinking: 思考模式开关（False 时尽力禁用模型推理并跳过思考事件推送）
 
     产出:
         SSE 事件字符串，每个事件一行 "data: {...}\n\n"
     """
     from app.graph.mode_router import get_graph as get_graph_by_mode
-    from app.core.llm import set_provider, describe_route
+    from app.core.llm import set_provider, set_thinking_mode, describe_route
     from app.core.config_manager import get_config_manager
+    from app.core.usage_metrics import (
+        UsageMeter,
+        build_usage_event,
+        context_breakdown,
+        messages_text,
+        set_request_usage_meter,
+    )
     # 解析并锁定当前模型 provider（动态路由：界面所选模型 → 实际 API 调用）
     provider = get_config_manager().get_llm_config(model)
     set_provider(provider)
-    logger.info("[LLM路由] 实际调用: %s", describe_route())
+    # 思考模式开关（前端 Sender 开关 → 模型构建处读取注入 enable_thinking）
+    set_thinking_mode(thinking)
+    # Token 计量（legacy 路径：agent 内 LLM 调用经 llm.py 回调回灌到本计量器）
+    usage_meter = UsageMeter()
+    set_request_usage_meter(usage_meter)
+    logger.info("[LLM路由] 实际调用: %s (thinking=%s)", describe_route(), thinking)
 
     graph = get_graph_by_mode(mode)
 
@@ -393,6 +441,16 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                 run_id=run_id, node_index=node_index,
                 role=role, content=content, payload=payload,
             )
+
+    async def _emit_thinking(agent: str, phase: str, content: str = "") -> str:
+        """thinking 事件：先落库（供历史会话恢复思考内容），再产出 SSE 字符串。
+
+        显隐由前端「思考模式」开关控制（默认关）：持久化保证开关重新打开后
+        历史思考内容可恢复；推送保留工作流进度反馈（与模型推理开关解耦）。
+        """
+        await _track(EventType.THINKING, role="system", content=content,
+                     payload={"agent": agent, "phase": phase})
+        return _thinking_event(agent, phase, content)
 
     if es_enabled:
         await _track(EventType.USER_MESSAGE, role="user", content=question)
@@ -572,7 +630,7 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                         }
                         step_names = [s.get("step", "?") for s in plan_steps]
 
-                        yield _thinking_event("clarify_plan", "planning",
+                        yield await _emit_thinking("clarify_plan", "planning",
                                               f"分析意图并生成执行计划: {intent_labels.get(intent, intent)}")
                         yield _sse_event({
                             "type": "plan",
@@ -603,7 +661,7 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                             "options": options,
                         })
                     else:
-                        yield _thinking_event("clarifier", "analyzing", "分析用户意图...")
+                        yield await _emit_thinking("clarifier", "analyzing", "分析用户意图...")
 
                 # ── planner: 执行计划生成（旧版兼容）───────
                 elif node_name == "planner":
@@ -619,7 +677,7 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                     plan_steps = state_update.get("plan_steps", [])
                     step_names = [s.get("step", "?") for s in plan_steps]
 
-                    yield _thinking_event("planner", "planning", f"生成执行计划: {intent_labels.get(intent, intent)}")
+                    yield await _emit_thinking("planner", "planning", f"生成执行计划: {intent_labels.get(intent, intent)}")
                     yield _sse_event({
                         "type": "plan",
                         "intent": intent,
@@ -630,7 +688,7 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
 
                 # ── misc_agent: 杂项处理 ──────────
                 elif node_name == "misc_agent":
-                    yield _thinking_event("misc_agent", "processing", "处理请求...")
+                    yield await _emit_thinking("misc_agent", "processing", "处理请求...")
                     logger.info("[SSE] misc_agent 阶段")
                     content = state_update.get("analysis_text", "")
                     if content:
@@ -664,7 +722,7 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                                 await _track(EventType.ANALYSIS, role="assistant", content=str(content))
                 # ── schema_agent: 加载表结构 ──────────────
                 elif node_name == "schema_agent":
-                    yield _thinking_event("schema_agent", "loading_schema", "加载数据表结构...")
+                    yield await _emit_thinking("schema_agent", "loading_schema", "加载数据表结构...")
                     error = state_update.get("error_message", "")
                     if error:
                         logger.warning(f"[SSE] schema_agent 错误: {error}")
@@ -672,7 +730,7 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
 
                 # ── sql_coder: SQL 生成 ──────────────────
                 elif node_name == "sql_coder":
-                    yield _thinking_event("sql_coder", "generating", "正在生成SQL查询...")
+                    yield await _emit_thinking("sql_coder", "generating", "正在生成SQL查询...")
                     error = state_update.get("error_message", "")
                     if error:
                         logger.warning(f"[SSE] sql_coder 错误: {error}")
@@ -692,11 +750,11 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                 elif node_name == "security":
                     logger.info("[SSE] security 阶段完成")
                     risk_level = state_update.get("risk_level", "")
-                    yield _thinking_event("security", "auditing", f"安全审核中, 风险等级: {risk_level or '评估中'}")
+                    yield await _emit_thinking("security", "auditing", f"安全审核中, 风险等级: {risk_level or '评估中'}")
 
                 # ── execute_sql: SQL 执行 ────────────────
                 elif node_name == "execute_sql":
-                    yield _thinking_event("execute_sql", "executing", "执行SQL查询...")
+                    yield await _emit_thinking("execute_sql", "executing", "执行SQL查询...")
                     # 推送执行错误（如有）
                     error = state_update.get("error_message", "")
                     if error:
@@ -735,7 +793,7 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                     feedback = state_update.get("quality_feedback", "")
                     logger.info(f"[SSE] quality_gate 评估完成: quality={quality}")
 
-                    yield _thinking_event("quality_gate", "evaluating", "评估查询结果质量...")
+                    yield await _emit_thinking("quality_gate", "evaluating", "评估查询结果质量...")
 
                     if quality != "good" and feedback:
                         # 质量不足时推送用户友好反馈
@@ -750,12 +808,12 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                 elif node_name == "chart_direct":
                     logger.info("[SSE] chart_direct 快捷路径: 复用上轮缓存数据")
                     query_result = state_update.get("query_result", [])
-                    yield _thinking_event("chart_direct", "loading_cache",
+                    yield await _emit_thinking("chart_direct", "loading_cache",
                                           f"复用上轮查询数据（{len(query_result)} 条记录）")
 
                 # ── analyst: 数据分析 ────────────────────
                 elif node_name == "analyst":
-                    yield _thinking_event("analyst", "analyzing", "正在分析查询结果...")
+                    yield await _emit_thinking("analyst", "analyzing", "正在分析查询结果...")
                     analysis_text = state_update.get("analysis_text", "")
                     if analysis_text:
                         collected_analysis = analysis_text  # 收集用于标题生成
@@ -773,7 +831,7 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
 
                 # ── reporter: 图表生成 ────────────────────
                 elif node_name == "reporter":
-                    yield _thinking_event("reporter", "generating_chart", "正在生成图表配置...")
+                    yield await _emit_thinking("reporter", "generating_chart", "正在生成图表配置...")
                     chart_config = state_update.get("chart_config")
                     if chart_config:
                         chart_type = chart_config.get("chart_type", "unknown")
@@ -792,11 +850,11 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
 
                 # ── answer: 纯文本回答（Phase E.3）───────────
                 elif node_name == "answer":
-                    yield _thinking_event("answer", "formatting", "生成纯文本回答...")
+                    yield await _emit_thinking("answer", "formatting", "生成纯文本回答...")
 
                 # ── rag_agent: RAG 知识库检索 ────────────
                 elif node_name == "rag_agent":
-                    yield _thinking_event("rag_agent", "retrieving", "检索知识库...")
+                    yield await _emit_thinking("rag_agent", "retrieving", "检索知识库...")
                     text = state_update.get("analysis_text", "")
                     if text:
                         collected_analysis = text[:200]  # 收集用于标题生成
@@ -814,7 +872,7 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
 
                 # ── finish: 工作流结束 ────────────────────
                 elif node_name == "finish":
-                    yield _thinking_event("finish", "completed", "完成")
+                    yield await _emit_thinking("finish", "completed", "完成")
                     logger.info(f"[SSE] 工作流执行完毕, node_index={node_index}")
                     # DEF-009：输出本轮节点耗时序列（自身耗时），用于性能画像
                     logger.info("[PERF] 节点耗时序列: %s | 总计 %.1fs",
@@ -826,8 +884,19 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
                             "elapsed_s": round(_time.monotonic() - _run_t_start, 1),
                         })
 
-                    # done 先行：标题生成（1~3s LLM 调用）移出关键路径，
+                    # usage 统计先行（读数条三弹窗），再 done，标题最后：
                     # 前端 onDone 后已解锁输入，title 为增量更新，挂连接等待安全
+                    yield _sse_event(build_usage_event(
+                        usage_meter,
+                        context=context_breakdown(
+                            system_prompt="",
+                            tool_defs="",
+                            messages=messages_text([*(history or []), {"role": "user", "content": question}]),
+                            window=_usage_window(),
+                        ),
+                        turns=max(1, node_index + 1),
+                        steps=step_counter,
+                    ))
                     yield _sse_event({"type": "done"})
 
                     try:
@@ -885,9 +954,12 @@ async def _stream_chat(question: str, user_name: str, history: list[dict] | None
         if 'graph_task' in locals() and not graph_task.done():
             graph_task.cancel()
         set_stream_context(StreamContext())
+        # 请求级用量计量器随请求结束注销（防上下文泄漏）
+        from app.core.usage_metrics import set_request_usage_meter
+        set_request_usage_meter(None)
 
 
-async def _stream_chat_deepagent(question: str, user_name: str, history: list[dict] | None = None, existing_thread_id: str | None = None, model: str | None = None, mode: str = "data", web_search: bool = False, runtime_context: str = ""):
+async def _stream_chat_deepagent(question: str, user_name: str, history: list[dict] | None = None, existing_thread_id: str | None = None, model: str | None = None, mode: str = "data", web_search: bool = False, runtime_context: str = "", thinking: bool = True):
     """
     DeepAgent 模式 SSE 流式生成器 —— 基于 deepagents 库的智能调度。
 
@@ -912,13 +984,24 @@ async def _stream_chat_deepagent(question: str, user_name: str, history: list[di
         SSE 事件字符串流
     """
     # 锁定当前模型 provider（动态路由：界面所选模型 → 实际 API 调用）
-    from app.core.llm import set_provider, describe_route
+    from app.core.llm import set_provider, set_thinking_mode, describe_route
     from app.core.config_manager import get_config_manager
+    from app.core.usage_metrics import (
+        UsageMeter,
+        build_usage_event,
+        context_breakdown,
+        messages_text,
+        tool_defs_text,
+    )
     # 修复：显式保存 provider 引用，供 __end__ 阶段 generate_node_title 使用
     # （原先未赋值，task 模式标题生成抛 NameError 被静默吞掉）
     provider = get_config_manager().get_llm_config(model)
     set_provider(provider)
-    logger.info("[LLM路由] 实际调用(DeepAgent): %s", describe_route())
+    # 思考模式开关（前端 Sender 开关 → 模型构建处读取注入 enable_thinking）
+    set_thinking_mode(thinking)
+    # Token 计量（DeepAgent 路径：从 astream 事件直读 usage_metadata）
+    usage_meter = UsageMeter()
+    logger.info("[LLM路由] 实际调用(DeepAgent): %s (thinking=%s)", describe_route(), thinking)
 
     agent = await get_deep_agent()
 
@@ -1011,10 +1094,7 @@ async def _stream_chat_deepagent(question: str, user_name: str, history: list[di
         )
         # yield _sse_event({"type": "status", "content": "联网搜索已开启"})
 
-    yield _sse_event({
-        "type": "status",
-        "content": "DeepAgent 正在分析您的请求...",
-    })
+    # 2026-10-18:移除「正在分析您的请求...」占位状态(legacy 遗留)
 
     # 用于标题生成的数据收集
     collected_deep_text = ""
@@ -1038,6 +1118,18 @@ async def _stream_chat_deepagent(question: str, user_name: str, history: list[di
         # 事件溯源：落盘本轮完整回答文本为 analysis 事件
         if es_enabled and deep_full_text:
             await _track(EventType.ANALYSIS, role="assistant", content=deep_full_text)
+        # usage 统计先行（读数条三弹窗数据源），再 done
+        events.append(build_usage_event(
+            usage_meter,
+            context=context_breakdown(
+                system_prompt=runtime_context or "",
+                tool_defs=tool_defs_text(_deep_tools_for_usage()),
+                messages=messages_text([*(history or []), {"role": "user", "content": question}]),
+                window=_usage_window(),
+            ),
+            turns=max(1, node_index + 1),
+            steps=len(deep_node_steps),
+        ))
         # done 先行：标题生成（1~3s LLM 调用）移出关键路径——若 title 在 done 之前
         # 生成，前端 isLoading 会多转 1~3s 圈（阶段一 1.3 语义，合并时勿回退）
         events.append({"type": "done"})
@@ -1102,6 +1194,7 @@ async def _stream_chat_deepagent(question: str, user_name: str, history: list[di
                     "content": f"任务执行超过 {int(_max_seconds)}s 仍未完成，已主动结束本次执行。",
                 })
                 break
+            usage_meter.observe_event(event)  # 末块 usage_metadata 计量（读数条数据源）
             mode, data = event
 
             if mode == "messages":
@@ -1379,7 +1472,8 @@ async def chat_completions(body: ChatRequest, user: dict = Depends(get_current_u
             return StreamingResponse(
                 _wrap_cancellable(
                     stream_chat_harness(question, user_name, history_msgs, body.thread_id,
-                                        body.model, body.mode, body.web_search, _runtime_context)
+                                        body.model, body.mode, body.web_search, _runtime_context,
+                                        body.thinking)
                 ),
                 media_type="text/event-stream",
                 headers={
@@ -1402,7 +1496,7 @@ async def chat_completions(body: ChatRequest, user: dict = Depends(get_current_u
         _req_started = _t.monotonic()
         _legacy_stream = _stream_chat(
             question, user_name, history_msgs, body.thread_id,
-            body.model, body.mode, body.web_search,
+            body.model, body.mode, body.web_search, body.thinking,
         )
 
         async def _shadow_task(legacy_answer, legacy_tools=None):
@@ -1440,7 +1534,7 @@ async def chat_completions(body: ChatRequest, user: dict = Depends(get_current_u
     if _loop_req.is_deepagent:
         return StreamingResponse(
             _wrap_cancellable(
-                _stream_chat_deepagent(question, user_name, history_msgs, body.thread_id, body.model, body.mode, body.web_search, _runtime_context)
+                _stream_chat_deepagent(question, user_name, history_msgs, body.thread_id, body.model, body.mode, body.web_search, _runtime_context, body.thinking)
             ),
             media_type="text/event-stream",
             headers={
@@ -1452,7 +1546,7 @@ async def chat_completions(body: ChatRequest, user: dict = Depends(get_current_u
 
     return StreamingResponse(
         _wrap_cancellable(
-            _stream_chat(question, user_name, history_msgs, body.thread_id, body.model, body.mode, body.web_search)
+            _stream_chat(question, user_name, history_msgs, body.thread_id, body.model, body.mode, body.web_search, body.thinking)
         ),
         media_type="text/event-stream",
         headers={
@@ -1760,12 +1854,15 @@ async def _delete_session_mysql(thread_id: str) -> int:
     返回:
         被删除的会话行数（0 表示会话不存在）
     """
-    from app.models.session import ChatSession, ChatNode
+    from app.models.session import ChatSession, ChatNode, SessionEvent
     from app.db.session import get_db
     from sqlalchemy import delete
 
     try:
         async for db in get_db():
+            # 事件溯源日志一并删：否则留下孤儿事件(2026-10 诊断发现 10+ 孤儿
+            # thread)，既让事件表无限膨胀，也可能让后续投影/统计读到幽灵会话
+            await db.execute(delete(SessionEvent).where(SessionEvent.thread_id == thread_id))
             await db.execute(delete(ChatNode).where(ChatNode.thread_id == thread_id))
             result = await db.execute(
                 delete(ChatSession).where(ChatSession.thread_id == thread_id)
@@ -1795,6 +1892,9 @@ class SessionInfo(BaseModel):
 async def list_sessions(
     user: dict = Depends(get_current_user),
     all_users: bool = False,
+    limit: int | None = None,
+    offset: int = 0,
+    archived: bool = False,
 ):
     """
     返回当前用户（或管理员查看全部）的历史会话列表。
@@ -1806,6 +1906,9 @@ async def list_sessions(
 
     参数:
         all_users: 仅 Admin 可用，查看所有用户的会话
+        limit: 分页每页条数；None（默认）= 全量返回，保持旧调用方行为不变
+        offset: 分页偏移量（配合 limit 使用，默认 0）
+        archived: false（默认）= 活跃会话；true = 归档会话（侧栏归档分组）
 
     返回:
         list[dict] 会话摘要列表
@@ -1817,18 +1920,27 @@ async def list_sessions(
     user_name = user["user_name"]
     is_admin = user.get("user_type") == "00"
     view_all = all_users and is_admin
+    offset = max(0, offset)
 
     try:
         async for db in get_db():
-            # 构建查询
+            # 构建查询（归档过滤对「自己的会话」与「管理员全量视图」一致）
             if view_all:
-                stmt = select(ChatSession).order_by(ChatSession.updated_at.desc())
+                stmt = (
+                    select(ChatSession)
+                    .where(ChatSession.archived.is_(bool(archived)))
+                    .order_by(ChatSession.updated_at.desc())
+                )
             else:
                 stmt = (
                     select(ChatSession)
                     .where(ChatSession.user_name == user_name)
+                    .where(ChatSession.archived.is_(bool(archived)))
                     .order_by(ChatSession.updated_at.desc())
                 )
+            # 分页：limit 为 None 时全量（旧行为）；上限 100 防滥用
+            if limit is not None:
+                stmt = stmt.limit(min(limit, 100)).offset(offset)
             result = await db.execute(stmt)
             db_sessions = result.scalars().all()
 
@@ -1860,6 +1972,7 @@ async def list_sessions(
                     "question": question,
                     "created_at": s.created_at.isoformat() if s.created_at else "",
                     "message_count": node_count,
+                    "archived": bool(getattr(s, "archived", False)),
                 })
 
             return sessions
@@ -2020,6 +2133,53 @@ async def update_session_title(
         return {"success": False, "thread_id": thread_id, "error": str(exc)}
 
 
+class SessionArchive(BaseModel):
+    """会话归档请求体"""
+    archived: bool = Field(True, description="true=归档，false=取消归档（恢复）")
+
+
+@router.patch("/sessions/{thread_id}/archive", summary="归档/恢复会话")
+async def archive_session(
+    thread_id: str,
+    body: SessionArchive,
+    user: dict = Depends(get_current_user),
+):
+    """
+    归档/恢复会话（2026-10 会话管理）。
+
+    归档不删除任何数据：仅置 archived 标记，前端侧栏按 archived 过滤分组，
+    恢复后原样回到活跃列表（消息、事件溯源全部保留）。
+
+    权限检查复用 delete_session 的 _check_thread_owner：非 admin 仅能操作自己的会话。
+    """
+    from app.models.session import ChatSession
+    from app.db.session import get_db
+    from sqlalchemy import select
+
+    _check_thread_owner(thread_id, user)
+
+    try:
+        async for db in get_db():
+            result = await db.execute(
+                select(ChatSession).where(ChatSession.thread_id == thread_id)
+            )
+            session = result.scalar_one_or_none()
+            if not session:
+                raise HTTPException(status_code=404, detail="会话不存在")
+            session.archived = bool(body.archived)
+            await db.commit()
+            return {
+                "success": True,
+                "thread_id": thread_id,
+                "archived": bool(body.archived),
+            }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("[sessions] 归档状态更新失败: thread_id=%s", thread_id)
+        raise HTTPException(status_code=500, detail=f"归档状态更新失败: {exc}")
+
+
 @router.get("/sessions/{thread_id}", summary="恢复历史会话消息")
 async def get_session_messages(
     thread_id: str,
@@ -2094,11 +2254,47 @@ async def get_session_messages(
             if derived:
                 logger.info("[sessions] 历史会话从事件日志投影恢复: thread_id=%s, 消息数=%d",
                             thread_id, len(derived))
+                # 历史会话的上下文构成(2026-10-18):事件日志未落 usage 事件,
+                # 这里按投影消息 + 当前 provider 的上下文窗口现场估算,
+                # 供读数条三弹窗在切换到历史会话时仍有数据(estimated=true)。
+                usage_payload = None
+                try:
+                    from app.core.usage_metrics import context_breakdown, messages_text
+
+                    sys_text, tool_text = "", ""
+                    try:
+                        from app.harness.stream_harness import _usage_system_prompt, _usage_tool_defs
+
+                        sys_text = _usage_system_prompt("data")
+                        tool_text = _usage_tool_defs()
+                    except Exception:  # noqa: BLE001 —— 取不到就只估算消息部分
+                        pass
+                    ctx = context_breakdown(
+                        system_prompt=sys_text,
+                        tool_defs=tool_text,
+                        messages=messages_text(derived),
+                        window=_usage_window(),
+                    )
+                    estimated_in = ctx.get("system_prompt", 0) + ctx.get("tool_defs", 0) + ctx.get("messages", 0)
+                    usage_payload = {
+                        "type": "usage",
+                        "estimated": True,
+                        "input_tokens": estimated_in,
+                        "output_tokens": 0,
+                        "cached_tokens": 0,
+                        "uncached_input_tokens": estimated_in,
+                        "total_tokens": estimated_in,
+                        "cache_hit_ratio": 0,
+                        "context": ctx,
+                    }
+                except Exception as exc:  # noqa: BLE001 —— 统计失败不能影响历史恢复
+                    logger.warning("[sessions] 历史上下文估算失败(忽略): %s", exc)
                 return {
                     "thread_id": thread_id,
                     "title": title,
                     "nodes": nodes,
                     "messages": derived,
+                    "usage": usage_payload,
                 }
             logger.info("[sessions] 事件日志为空，回退 Redis: thread_id=%s", thread_id)
         except Exception as exc:

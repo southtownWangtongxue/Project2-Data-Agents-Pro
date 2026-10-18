@@ -35,8 +35,8 @@ class EventType:
 
     分为两类：
     - 最终态业务事件（可投影为可见消息）：user_message/sql/result/analysis/chart/error
-    - 过程态事件（默认不投影，供审计/重放；tool_chain 现已投影为工具卡片）：
-      plan/clarification/tool_chain
+    - 过程态事件（默认不投影，供审计/重放；tool_chain/thinking/reasoning 现已投影，
+      保证切换会话/重启后工具步骤与思考内容可见）：plan/clarification/tool_chain
     """
 
     USER_MESSAGE = "user_message"
@@ -48,6 +48,11 @@ class EventType:
     PLAN = "plan"
     CLARIFICATION = "clarification"
     TOOL_CHAIN = "tool_chain"
+    # ── 思考过程态事件（2026-10 前端优化：历史会话恢复思考内容）──
+    # thinking：legacy 工作流节点思考块（agent/phase/content）
+    # reasoning：DeepAgent/Harness 模型推理内容（content）
+    THINKING = "thinking"
+    REASONING = "reasoning"
 
     # ── R16 turn/step 语义（P1 事件底座）──
     # turn = 会话中的一轮问答（node_index 即轮次标识，run_id 即运行标识，
@@ -168,6 +173,10 @@ class SessionEventStore:
         for evt in events:
             msg = _project(evt)
             if msg is not None:
+                # 轮次标记(2026-10-18):前端按 turn_index 切换查看多轮对话;
+                # 旧数据 node_index 为空 → 不带该字段,前端回退为平铺全部。
+                if evt.node_index is not None:
+                    msg["turn_index"] = evt.node_index
                 messages.append(msg)
         return messages
 
@@ -302,7 +311,10 @@ def _project(evt: SessionEvent) -> dict | None:
         return {"role": "user", "type": "text", "content": evt.content or ""}
 
     if etype == EventType.SQL:
-        return {"role": "assistant", "type": "sql", "sql": evt.content or ""}
+        # SQL 文本:content 列为主;旧数据(Harness L2 双写曾把 SQL 只存 payload)
+        # 从 payload.sql 兜底,避免历史会话恢复出空 SQL 卡
+        sql_text = evt.content or (payload or {}).get("sql") or ""
+        return {"role": "assistant", "type": "sql", "sql": sql_text}
 
     if etype == EventType.RESULT:
         data = payload.get("data", []) if payload else []
@@ -342,6 +354,25 @@ def _project(evt: SessionEvent) -> dict | None:
             "type": "tool_chain",
             "toolName": name or "tool",
             "toolMeta": tool_meta if tool_meta else None,
+            "collapsed": True,
+        }
+
+    if etype == EventType.THINKING:
+        # 节点思考块：重启后经 loadSession 恢复为 thinking 消息（Think 折叠卡）
+        return {
+            "role": "system",
+            "type": "thinking",
+            "agent": (payload or {}).get("agent", "") if payload else "",
+            "phase": (payload or {}).get("phase", "") if payload else "",
+            "content": evt.content or "",
+        }
+
+    if etype == EventType.REASONING:
+        # 模型推理内容：重启后经 loadSession 恢复为 reasoning 消息（Think 折叠卡）
+        return {
+            "role": "assistant",
+            "type": "reasoning",
+            "content": evt.content or "",
             "collapsed": True,
         }
 

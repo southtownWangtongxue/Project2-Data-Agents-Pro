@@ -7,6 +7,7 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import { ThoughtChain } from '@ant-design/x'
+import Icon from '@/components/bits/Icon'
 import type { Msg, Step } from '@/sdk/protocol'
 import MessageItem from './MessageItem'
 
@@ -56,9 +57,14 @@ export default function StepChain({ step, messages }: Props) {
             status: running ? 'loading'
               : step.status === 'pending' ? 'abort'   /* todo 未开始:官方 abort 空心态 */
               : 'success',
-            /* 兜底链(模型未建 todo,按工具序列事后重建):标题前加 ↺ 前缀并在描述里
+            /* 兜底链(模型未建 todo,按工具序列事后重建):标题前加 ↺ 图标并在描述里
                注明"工具序列重建",让用户看得出这是重建过程而非模型自己规划的步骤 */
-            title: (step.synthesized ? '↺ ' : '') + (step.label || step.agent),
+            title: (
+              <span className="inline-flex items-center gap-1">
+                {step.synthesized && <Icon name="refresh" size={13} className="text-[var(--text-3)]" />}
+                {step.label || step.agent}
+              </span>
+            ),
             blink: running,
             collapsible: true,
             content: (

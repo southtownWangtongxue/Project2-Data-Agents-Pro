@@ -19,7 +19,7 @@ const EFFORT_OPTIONS = [
 
 const EMPTY: Partial<LlmProvider> = {
   id: '', name: '', api_base: '', model: '', api_key: '', api_key_env: '',
-  key_mode: 'env', temperature: 0.3, max_tokens: 4096, enabled: true, is_default: false,
+  key_mode: 'env', temperature: 0.3, max_tokens: 4096, context_window: 192_000, enabled: true, is_default: false,
   thinking_mode: false,
   capabilities: { tools: true, image_input: false, thinking: false },
   params: { top_p: 1, presence_penalty: 0, frequency_penalty: 0, reasoning_effort: '' },
@@ -249,7 +249,7 @@ export default function LlmConfig() {
 
           <div className="border-t border-[var(--border)] pt-3 mt-1">
             <div className="text-[12px] text-[var(--text-2)] mb-2">采样参数</div>
-            <div className="grid grid-cols-3 gap-x-3">
+            <div className="grid grid-cols-2 gap-x-3">
               <Form.Item name="temperature" label="temperature">
                 <InputNumber min={0} max={2} step={0.1} className="!w-full" />
               </Form.Item>
@@ -258,6 +258,22 @@ export default function LlmConfig() {
               </Form.Item>
               <Form.Item name="max_tokens" label="最大输出">
                 <InputNumber min={256} step={256} className="!w-full" />
+              </Form.Item>
+              <Form.Item
+                name="context_window"
+                label={<Tooltip title="上下文窗口(tokens):读数条「上下文已用」的占比分母。与模型选择器内的「上下文长度」双向同步">上下文窗口</Tooltip>}
+              >
+                <Select
+                  showSearch
+                  options={[
+                    { value: 192_000, label: '192K' },
+                    { value: 300_000, label: '300K' },
+                    { value: 600_000, label: '600K' },
+                    { value: 1_000_000, label: '1M' },
+                    { value: 128_000, label: '128K' },
+                    { value: 64_000, label: '64K' },
+                  ]}
+                />
               </Form.Item>
               <Form.Item name="presence_penalty" label="presence_penalty">
                 <InputNumber min={-2} max={2} step={0.1} className="!w-full" />

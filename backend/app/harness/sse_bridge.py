@@ -40,6 +40,8 @@ class HarnessEventBridge:
         self.pending_approval: bool = False
         # 已发过 tool_call 的调用 id(updates 路径内去重:同一调用只发一次卡)
         self._emitted_call_ids: set[str] = set()
+        # 本轮工具调用次数(读数条「N 轮 M 步」中的步数来源)
+        self.tool_call_count: int = 0
 
     # ── 对外入口 ────────────────────────────────────────────
 
@@ -89,6 +91,7 @@ class HarnessEventBridge:
             return None
         if call_id:
             self._emitted_call_ids.add(call_id)
+        self.tool_call_count += 1
         return {
             "type": "tool_call",
             "name": name,

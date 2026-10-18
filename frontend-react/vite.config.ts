@@ -17,7 +17,7 @@ export default defineConfig({
     proxy: {
       '/api': {
         // 后端地址可经环境变量覆盖(公司电脑 8000 被系统占用时改用 8100/8001)
-        target: `http://localhost:${process.env.BACKEND_PORT || 8000}`,
+        target: `http://localhost:${process.env.BACKEND_PORT || 8001}`,
         changeOrigin: true,
       },
     },

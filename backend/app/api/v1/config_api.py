@@ -87,6 +87,8 @@ class LLMProvider(BaseModel):
     model: str
     temperature: float = 0.3
     max_tokens: int = 4096
+    # 上下文窗口(tokens):读数条「上下文已用」的分母,三弹窗联动(2026-10-18)
+    context_window: int = 192_000
     is_default: bool = False
     enabled: bool = True
     # 全模态与思考能力
@@ -118,6 +120,50 @@ async def create_llm(provider: LLMProvider, _admin=Depends(require_admin)):
 
 # 注意：静态路径 /llm/mode-defaults 必须先于 /llm/{provider_id} 注册，
 # 否则会被路径参数路由抢先匹配（FastAPI 按注册顺序匹配），导致该接口永远不可达。
+class ProviderRuntime(BaseModel):
+    """运行时参数(模型选择器内联配置):上下文窗口 + 思考强度。
+
+    只更新这两项,避免前端为改一个数值回传整个 provider(含 api_key)。
+    """
+
+    context_window: int | None = Field(None, ge=1_000, le=4_000_000, description="上下文窗口 tokens")
+    reasoning_effort: str | None = Field(None, description="思考强度: '' | minimal | low | medium | high | max")
+
+
+@router.patch("/llm/{provider_id}/runtime", summary="更新模型运行时参数(上下文窗口/思考强度)")
+async def update_provider_runtime(
+    provider_id: str,
+    body: ProviderRuntime,
+    _admin=Depends(require_admin),
+):
+    """供模型选择器内联配置:上下文窗口写入 provider，思考强度写入 params。
+
+    上下文窗口同时是读数条「上下文已用」的分母（usage.context.window），
+    修改后下一次对话即生效。
+    """
+    mgr = get_config_manager()
+    data = mgr.get("llm_providers.json")
+    providers = data.get("providers", [])
+    target = next((p for p in providers if p.get("id") == provider_id), None)
+    if target is None:
+        raise HTTPException(404, f"Provider {provider_id} 不存在")
+    if body.context_window is not None:
+        target["context_window"] = int(body.context_window)
+    if body.reasoning_effort is not None:
+        params = target.get("params") or {}
+        params["reasoning_effort"] = body.reasoning_effort
+        target["params"] = params
+    err = mgr.save("llm_providers.json", data)
+    if err:
+        raise HTTPException(500, f"保存失败: {err}")
+    return {
+        "ok": True,
+        "id": provider_id,
+        "context_window": target.get("context_window", 192_000),
+        "reasoning_effort": (target.get("params") or {}).get("reasoning_effort", ""),
+    }
+
+
 @router.put("/llm/mode-defaults")
 async def update_mode_defaults(body: dict, _admin=Depends(require_admin)):
     mgr = get_config_manager()

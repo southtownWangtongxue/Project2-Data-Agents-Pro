@@ -7,33 +7,63 @@
  */
 import { useState } from 'react'
 import { Bubble, Think } from '@ant-design/x'
-import { XMarkdown } from '@ant-design/x-markdown'
+import Icon from '@/components/bits/Icon'
 import { useChatStore } from '@/stores/chat'
 import type { Msg } from '@/sdk/protocol'
+import Markdown from '@/components/bits/Markdown'
 import MessageActions from './MessageActions'
 import SQLCard from './SQLCard'
 import ResultTable from './ResultTable'
 import ChartView from './ChartView'
 import ToolCard from './ToolCard'
-import ReasoningCard from './ReasoningCard'
+import DeepThink from './DeepThink'
 import ApprovalCard from './ApprovalCard'
 import ClarifyCard from './ClarifyCard'
 import PlanCard from './PlanCard'
 import ErrorCard from './ErrorCard'
 
-/** 节点思考块(antdx Think):默认折叠,点击标题展开 */
+/**
+ * 收集该 reasoning 消息所属「一次回复」的全部思考段落(多轮列表)。
+ * 只由该回复的**第一条** reasoning 渲染 DeepThink,其余返回 null 避免重复;
+ * 分界:最近一条 user 消息之后。
+ */
+function collectRounds(messages: Msg[], msg: Msg, turnIndex: number): string[] | null {
+  const idx = messages.findIndex(m => m.id === msg.id)
+  if (idx < 0) return null
+  let start = 0
+  for (let i = idx; i >= 0; i--) {
+    if (messages[i].role === 'user') { start = i + 1; break }
+  }
+  /* 多轮切换:只聚合当前轮次的思考(旧数据无 turnIndex 则不限) */
+  const hasTurnInfo = messages.some(m => typeof m.turnIndex === 'number')
+  const inTurn = (m: Msg) => !hasTurnInfo || m.turnIndex === undefined || m.turnIndex === turnIndex
+  const rounds: string[] = []
+  let firstId: string | null = null
+  for (let i = start; i < messages.length; i++) {
+    const m = messages[i]
+    if (m.kind !== 'reasoning' || !inTurn(m)) continue
+    if (!firstId) firstId = m.id
+    if ((m.content || '').trim()) rounds.push(m.content || '')
+  }
+  if (firstId !== msg.id) return null
+  return rounds
+}
+
+/** 节点思考块(antdx Think):运行中自动展开(实时可见),完成后可折叠 */
 function ThinkingBlock({ msg }: { msg: Msg }) {
-  const [expanded, setExpanded] = useState(false)
   const running = msg.phase !== 'done'
+  const [userSet, setUserSet] = useState<boolean | null>(null)
+  const expanded = userSet !== null ? userSet : running
   return (
     <Think
-      title={`${msg.agent || '节点'} · ${msg.phase || ''}`}
+      icon={<Icon name="brain" size={13} />}
+      title={`节点思考 · ${msg.agent || 'agent'}${msg.phase ? ` · ${msg.phase}` : ''}`}
       loading={running}
       expanded={expanded}
-      onExpand={setExpanded}
+      onExpand={setUserSet}
       blink={running}
     >
-      {msg.content}
+      <Markdown content={msg.content || ''} />
     </Think>
   )
 }
@@ -64,7 +94,7 @@ export default function MessageItem({ msg }: { msg: Msg }) {
           streaming={streaming}
           content={content}
           contentRender={text => (
-            <XMarkdown
+            <Markdown
               className="x-markdown"
               content={String(text)}
               streaming={{
@@ -94,18 +124,27 @@ export default function MessageItem({ msg }: { msg: Msg }) {
       if (msg.toolName === 'misc_agent') {
         return (
           <div className="text-[11px] text-[var(--text-3)] mono px-1">
-            {msg.toolPhase === 'done' ? '✓ 已回答' : '… 生成回答中'}
+            <span className="inline-flex items-center gap-1">
+              <Icon name={msg.toolPhase === 'done' ? 'check' : 'loader'} size={10} className={msg.toolPhase === 'done' ? '' : 'animate-spin'} />
+              {msg.toolPhase === 'done' ? '已回答' : '生成回答中'}
+            </span>
           </div>
         )
       }
       return <ToolCard msg={msg} />
 
-    case 'reasoning':
-      /* thinking_mode 关闭时仅隐藏(消息仍在 store,切回可见) */
-      if (!store.thinkingModeEnabled) return null
-      return <ReasoningCard msg={msg} />
+    case 'reasoning': {
+      /* 思考模式开关(默认关):关闭时仅隐藏,消息仍在 store,切回可见 */
+      if (!store.thinking) return null
+      /* 2026-10-18:一次回复的全部思考段落聚合成一个「深度思考」多轮列表 */
+      const rounds = collectRounds(store.chat.messages, msg, store.currentTurnIndex)
+      if (!rounds || rounds.length === 0) return null
+      return <DeepThink rounds={rounds} working={store.isGenerating} />
+    }
 
     case 'thinking':
+      /* 与 reasoning 同受思考开关控制(历史恢复的思考块一并隐藏/展示) */
+      if (!store.thinking) return null
       return <ThinkingBlock msg={msg} />
 
     case 'approval':

@@ -52,6 +52,33 @@ async def create_tables():
             # 列已存在或表不存在，跳过
             pass
 
+        # 兼容性迁移：为 chat_sessions 添加 archived 列（会话归档，2026-10）
+        try:
+            await conn.run_sync(
+                lambda sync_conn: sync_conn.execute(
+                    __import__("sqlalchemy").text(
+                        "ALTER TABLE chat_sessions ADD COLUMN archived TINYINT(1) NOT NULL DEFAULT 0 "
+                        "COMMENT '是否归档：1=归档（可恢复），0=活跃'"
+                    )
+                )
+            )
+            logger.info("[models] chat_sessions.archived 列已添加")
+        except Exception:
+            # 列已存在或表不存在，跳过
+            pass
+
+        # archived 查询索引（列已存在时创建，失败不影响启动）
+        try:
+            await conn.run_sync(
+                lambda sync_conn: sync_conn.execute(
+                    __import__("sqlalchemy").text(
+                        "CREATE INDEX idx_chat_sessions_archived ON chat_sessions (archived)"
+                    )
+                )
+            )
+        except Exception:
+            pass
+
     logger.info("[models] 数据库表创建/同步完成")
 
     # 播种默认管理员账号

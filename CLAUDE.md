@@ -103,13 +103,22 @@ npm run docs:build               # 构建静态文档站点
 
 ## Known Issues (待修复)
 
-从 DEVELOPMENT_PLAN.md 阶段 2 遗留（记录于 2026-04-29）：
+> 注：下表原记录于 2026-04-29（DEVELOPMENT_PLAN 阶段 2 遗留）。经 2026-10-16 交接复核，
+> 其中 #1/#3 已在后续提交中修复，但本表未同步，特在此订正，避免误判为待办。
 
-| # | 问题 | 优先级 |
-|---|------|--------|
-| 1 | schema/sql_coder 节点缺少错误短路条件边，错误传播链路过长 | 高 |
-| 2 | ~~chat.py 中 GraphInterrupt 用字符串匹配捕获~~ | ✅ 已解决（2026-10-10 复核：已用 `except GraphInterrupt`） |
-| 3 | execute_node 丢失 Phase1 的 SQL 自纠错重试能力 | 🟡 部分解决（自纠错保留在 sql_coder.generate_and_execute_sql；quality_gate 为降级路由非打回重试） |
+| # | 问题 | 状态 | 订正依据 |
+|---|------|------|------|
+| 1 | schema/sql_coder 节点缺少错误短路条件边 | ✅ 已修复 | `graph/workflow.py` 的 `route_schema` / `route_sql_coder` 均已检查 `error_message` 短路（前者→finish，后者→rag_agent 兜底） |
+| 2 | ~~chat.py 中 GraphInterrupt 用字符串匹配捕获~~ | ✅ 已解决（2026-10-10 复核：已用 `except GraphInterrupt`） | — |
+| 3 | execute_node 丢失 SQL 自纠错重试能力 | ✅ 已修复 | `execute_node` 已调用 `generate_and_execute_sql(max_retries=2, initial_sql=sql)`；`quality_gate` 为降级路由，职责不同，非缺陷 |
+
+### 当前真正遗留（详见 `docs/NEXT_STEPS.md`）
+
+- **Phase 3 收敛与归档（部分）**：`legacy-graph-13node` tag 已存在（轻量 tag→`3652e6c`），但归档/回滚文档已补（`docs/archive/plans/2026-10-16-legacy-graph-13node-archive.md`）；`USE_DEEP_AGENT` / `AGENT_LOOP_SHADOW` 等历史开关**仍在代码**（`agent_loop.py` / `chat.py` / `workflow.py` / `config_layer.py`），清理未完（见 `docs/NEXT_STEPS.md` 工作线 A）。
+- **三个 Harness feature flag 默认 False**：`EVENT_SOURCING_ENABLED` / `PROMPT_SECTION_ENABLED` / `SEAM_ENABLED` 代码就绪但休眠（见 `docs/reference/harness-landing-gap-analysis.md` L1–L6）。
+- **人工门禁待判**：`backend/configs/harness_review.md` 指标 3/4 仍为 `[ ]`；多数样本 legacy 侧"已排除"，对比口径降级。
+- **nemotron 跨模型稳健性附录**：被上游 provider 故障阻塞，需配额恢复后跑 `backend/scripts/nemotron_batch.py`。
+- **产品决策**：第 3 层 prompt rules 极强，模型拒绝发写 SQL，审批卡实际不可达（"过度安全"），需决定否放开写操作。
 
 ## Important Constraints
 - 在Python项目测试时，确保项目在虚拟环境中使用uv安装项目依赖进行测试
