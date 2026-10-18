@@ -2658,13 +2658,26 @@ async def delete_session(thread_id: str, user: dict = Depends(get_current_user))
         checkpointer = graph.checkpointer
 
         if checkpointer is not None:
-            cfg = {"configurable": {"thread_id": thread_id}}
-            if hasattr(checkpointer, "adelete"):
-                result = checkpointer.adelete(cfg)
+            # LangGraph 检查点 Saver 的标准删除接口是 delete_thread / adelete_thread(thread_id)，
+            # 并不存在 adelete(config) / delete(config)。原实现两个 hasattr 均为 False，
+            # 导致删除会话后 Redis checkpoint 从未被清理，孤儿 key 长期累积。
+            if hasattr(checkpointer, "adelete_thread"):
+                result = checkpointer.adelete_thread(thread_id)
                 if inspect.isawaitable(result):
                     await result
-            elif hasattr(checkpointer, "delete"):
-                checkpointer.delete(cfg)
+            elif hasattr(checkpointer, "delete_thread"):
+                result = checkpointer.delete_thread(thread_id)
+                if inspect.isawaitable(result):
+                    await result
+            else:
+                # 兼容极旧版本：回退到 config 形式
+                cfg = {"configurable": {"thread_id": thread_id}}
+                if hasattr(checkpointer, "adelete"):
+                    result = checkpointer.adelete(cfg)
+                    if inspect.isawaitable(result):
+                        await result
+                elif hasattr(checkpointer, "delete"):
+                    checkpointer.delete(cfg)
     except Exception as exc:
         logger.warning(f"[sessions] Redis 删除失败（不影响主流程）: {exc}")
 

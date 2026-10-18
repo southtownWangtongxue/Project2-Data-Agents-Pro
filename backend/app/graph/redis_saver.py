@@ -10,6 +10,7 @@ Redis 数据模型（纯 String/ZSET，无需任何模块）：
 import asyncio
 import json
 import logging
+import os
 import time
 from collections import defaultdict
 
@@ -21,6 +22,9 @@ logger = logging.getLogger(__name__)
 CKPT_PREFIX = "ckpt"
 CKPT_ZSET_PREFIX = "ckpt_z"
 CKPT_TTL = 86400 * 7  # 7 天
+# 启动时预加载历史检查点的总超时（秒）。远程 Redis + 大量 checkpoint 时，
+# 逐个/批量拉取可能拖到分钟级，必须设上限，避免阻塞 FastAPI lifespan 启动。
+PRELOAD_TIMEOUT = float(os.getenv("REDIS_PRELOAD_TIMEOUT", "10"))
 
 
 def _to_serializable(obj):
@@ -69,9 +73,17 @@ class PlainRedisSaver(InMemorySaver):
     # ── 生命周期 ──────────────────────────────────────────
 
     async def asetup(self) -> None:
-        """初始化 Redis 连接并加载历史检查点。"""
+        """初始化 Redis 连接并加载历史检查点。
+
+        注意：历史预加载必须有超时上限。远程 Redis 上 checkpoint 数量多时，
+        全量加载可能耗时数分钟，若直接 await 会阻塞 FastAPI lifespan，
+        导致服务始终不监听端口（表现为「连不上数据库/Redis」）。
+        超时只跳过历史加载，Redis 连接与后续写入不受影响。
+        """
         if self._initialized:
             return
+
+        # 1) 建连 + 探活：失败则降级为纯内存
         try:
             self._redis = aioredis.from_url(
                 self._redis_url,
@@ -80,12 +92,24 @@ class PlainRedisSaver(InMemorySaver):
             )
             await self._redis.ping()
             logger.info(f"[PlainRedisSaver] Redis 连接成功: {self._redis_url}")
-            await self._load_from_redis()
-            self._initialized = True
         except Exception as exc:
             logger.warning(f"[PlainRedisSaver] Redis 初始化失败 ({exc})，仅使用内存存储")
             self._redis = None
             self._initialized = True
+            return
+
+        # 2) 预加载历史检查点：有界超时，绝不阻塞启动
+        try:
+            await asyncio.wait_for(self._load_from_redis(), timeout=PRELOAD_TIMEOUT)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[PlainRedisSaver] 历史检查点预加载超时(>%ss)，跳过加载，服务继续启动",
+                PRELOAD_TIMEOUT,
+            )
+        except Exception as exc:
+            logger.warning(f"[PlainRedisSaver] 历史检查点预加载失败 ({exc})，跳过加载")
+
+        self._initialized = True
 
     async def aclose(self) -> None:
         """关闭 Redis 连接。"""
@@ -133,17 +157,26 @@ class PlainRedisSaver(InMemorySaver):
         return thread_id, ns, ckpt_id
 
     async def _load_from_redis(self) -> None:
-        """从 Redis 加载所有历史检查点到 InMemorySaver（带超时保护）。"""
+        """从 Redis 加载历史检查点到 InMemorySaver。
+
+        优化：先 SCAN 收集全部 key，再用 MGET 分批批量读取。原实现逐 key
+        GET，在远程 Redis + 上千 key 时会产生上千次往返，启动被拖到分钟级。
+        """
         if self._redis is None:
             return
 
+        # 1) SCAN 收集 key（单次 5s 超时）
+        keys: list[str] = []
         cursor = 0
-        loaded = 0
         try:
-            cursor, keys = await asyncio.wait_for(
-                self._redis.scan(cursor, match=f"{CKPT_PREFIX}:*", count=100),
-                timeout=5.0,
-            )
+            while True:
+                cursor, batch = await asyncio.wait_for(
+                    self._redis.scan(cursor, match=f"{CKPT_PREFIX}:*", count=500),
+                    timeout=5.0,
+                )
+                keys.extend(batch)
+                if cursor == 0:
+                    break
         except asyncio.TimeoutError:
             logger.warning("[PlainRedisSaver] SCAN 超时，跳过历史加载")
             return
@@ -151,17 +184,26 @@ class PlainRedisSaver(InMemorySaver):
             logger.warning(f"[PlainRedisSaver] SCAN 失败: {exc}，跳过历史加载")
             return
 
-        while True:
-            for key in keys:
+        # 2) MGET 分批读取（每批一次往返）
+        loaded = 0
+        batch_size = 200
+        for start in range(0, len(keys), batch_size):
+            chunk = keys[start:start + batch_size]
+            try:
+                values = await self._redis.mget(chunk)
+            except Exception as exc:
+                logger.warning(f"[PlainRedisSaver] 批量读取失败: {exc}")
+                continue
+
+            for key, data_str in zip(chunk, values):
+                if data_str is None:
+                    continue
                 try:
                     parsed = self._parse_ckpt_key(key)
                     if parsed is None:
                         continue
                     thread_id, ns, ckpt_id = parsed
 
-                    data_str = await self._redis.get(key)
-                    if data_str is None:
-                        continue
                     saved = json.loads(data_str)
 
                     # 还原 storage
@@ -191,16 +233,6 @@ class PlainRedisSaver(InMemorySaver):
                     loaded += 1
                 except Exception as exc:
                     logger.warning(f"[PlainRedisSaver] 加载检查点失败 key={key}: {exc}")
-
-            if cursor == 0:
-                break
-            try:
-                cursor, keys = await asyncio.wait_for(
-                    self._redis.scan(cursor, match=f"{CKPT_PREFIX}:*", count=100),
-                    timeout=3.0,
-                )
-            except (asyncio.TimeoutError, Exception):
-                break
 
         if loaded > 0:
             logger.info(f"[PlainRedisSaver] 从 Redis 加载了 {loaded} 个检查点")
