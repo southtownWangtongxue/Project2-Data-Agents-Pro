@@ -30,9 +30,19 @@
 - 🔒 **"读数据随意，改数据必批"**：写类 SQL（INSERT/UPDATE/DELETE/DROP）自动拦截并进入人工审批流，敏感字段（手机号/身份证）自动脱敏。
 - 📊 **即时可视化与导出**：自动生成 ECharts 图表配置，支持 Excel / CSV 导出。
 - ⚡ **流式响应（SSE）**：执行计划、SQL、工具调用、分析结论逐 token 流式呈现，首字节 < 1s。
-- 🧠 **RAG 知识库**：从向量库（Milvus）检索业务口径与指标定义，让回答贴合企业语境。
-- 🎨 **暗色主题对话工作台**：会话栏 / 步骤链 / 14 类消息卡片 / 追问建议 / 模型选择器，基于 **React 19 + Ant Design X 2.9**（Bubble.List、Sender、Conversations、Welcome、Prompts、ThoughtChain、XStream）构建，交互对齐官方独立式样板间。
-- 🔌 **动态模型路由**：模型 provider 通过配置热加载，前端统一选择，支持 Qwen / GLM 等私有部署模型。
+- 🧠 **深度思考（reasoning 流式）**：模型思考内容实时流入「深度思考」卡——生成中自动展开、
+  实时计时、多轮思考逐条列表（进行中脉冲 / 完成勾选），完成后折叠；受「深度思考」开关控制。
+- 📈 **可观测性三弹窗**：底部读数条常驻「会话统计 / Token 用量 / 上下文已用」——
+  轮次步数、模型耗时、TTFT、TPS、真实 token 与缓存命中、上下文三段构成与占比圆环；
+  **上下文窗口可在模型菜单或配置中心调整并实时联动**。
+- 🧭 **多轮节点切换**：历史会话按「第 N/M 轮」切换查看，轮次下拉直达；思考卡只聚合当前轮。
+- 🗂️ **会话管理**：独立「选择对话」弹窗批量删除（分组 + 圆形复选 + 标题与时间），失败可见。
+- 🎨 **dsh 风格深色工作台**：单深色令牌体系（弱描边、无多余分隔线）、官方图标、
+  MiSans + JetBrains Mono 自托管字体、React Bits 动效（扫光标题 / 聚光卡片 / 星轨描边）；
+  基于 **React 19 + Ant Design 6 + Ant Design X 2.9**（Bubble.List、Sender、Conversations、
+  Welcome、Prompts、ThoughtChain、x-markdown）构建，交互对齐官方独立式样板间。
+- 🔌 **动态模型路由与运行时参数**：provider 配置热加载，前端统一选择；
+  每个模型可配上下文窗口（192K/300K/600K/1M）与思考强度（Low/High/Max）。
 - 🐳 **一键容器化**：Docker Compose 启动 Redis + Milvus + MySQL + 基础设施全套依赖。
 
 ## 🏗️ 系统架构
@@ -78,12 +88,13 @@
 |---|---|
 | 后端框架 | Python 3.10+ · FastAPI（异步 + SSE 流式） |
 | Agent 编排 | LangGraph 1.x（状态图 · Human-in-the-Loop） |
-| Agent 框架 | LangChain 1.x · deepAgents 0.5.x |
-| 前端 | React 19 · Vite 6 · TypeScript · Ant Design X 2.9（x-sdk / x-markdown） · zustand · ECharts |
+| Agent 框架 | LangChain 1.x · deepAgents（`create_deep_agent`）· langchain-openai 1.2.x |
+| 前端 | React 19 · Vite · TypeScript · Ant Design 6 · Ant Design X 2.9（x-markdown）· zustand · ECharts |
+| 前端视觉 | 单深色令牌 · `@ant-design/icons` · MiSans VF（`misans`）· JetBrains Mono（`@fontsource`）· `motion`（React Bits 组件） |
 | ORM / 驱动 | SQLAlchemy（多方言：MySQL / PostgreSQL / SQL Server / Oracle） |
 | 向量库 | Milvus 2.x（RAG 知识库） |
-| 缓存 / 状态 | Redis（Graph 中断状态快照） |
-| LLM | 私有部署 Qwen / GLM |
+| 缓存 / 状态 | Redis（Graph 中断状态快照，TTL 1h） |
+| LLM | OpenAI 兼容 provider（DashScope/Qwen、OpenRouter 等），配置热加载 |
 | 部署 | Docker / Docker Compose · Nginx · GitHub Actions（镜像发布） |
 | 文档 | VitePress |
 
@@ -109,11 +120,14 @@ docker-compose up -d          # 启动 Redis / MySQL / Milvus 等
 
 ```bash
 cd backend
-uv sync --group dev           # 安装依赖（建议使用 uv）
-uv run uvicorn app.main:app --reload --port 8000
+uv sync --group dev                          # 安装依赖（建议使用 uv）
+uv run uvicorn app.main:app --reload --port 8001
 ```
 
-后端启动后接口文档：`http://localhost:8000/docs`
+> 默认示例端口写 **8001**：部分环境（如公司电脑）`8000` 被系统占用，前端 dev 代理默认也指向
+> `8001`（可用 `BACKEND_PORT` 覆盖）。若你的 8000 空闲，改成 8000 并同步设置前端 `BACKEND_PORT=8000` 即可。
+
+后端启动后接口文档：`http://localhost:8001/docs`
 
 ### 3. 启动前端
 
@@ -121,9 +135,12 @@ uv run uvicorn app.main:app --reload --port 8000
 cd frontend-react
 npm install
 npm run dev                   # 开发服务器，默认 http://localhost:5173
+# 后端不在 8001 时：
+# BACKEND_PORT=8000 npm run dev
 ```
 
 > 历史 Vue 3 前端已冻结归档在 `frontend/`（tag `vue-legacy`），不再维护；镜像与 CI 均以 `frontend-react/` 为准。
+> 前端为**单深色主题**（无亮色切换）；MiSans / JetBrains Mono 为自托管字体，构建产物含 unicode-range 切片。
 
 登录默认管理员账号：`admin` / `12345678`
 
@@ -201,21 +218,24 @@ docker compose up -d
 DataAgent-Pro/
 ├── backend/                  # FastAPI 后端
 │   ├── app/
-│   │   ├── agents/           # Misc / RAG / Schema / SQL Coder / Security / Analyst / Reporter
-│   │   ├── api/v1/           # REST + SSE 接口
-│   │   ├── core/             # LLM 路由、配置管理
-│   │   ├── db/               # 多方言 SQLAlchemy 驱动
-│   │   ├── deepagent/        # deepAgents 结构化推理
-│   │   ├── graph/            # LangGraph 状态图 / 状态定义
-│   │   ├── rag/              # Milvus 检索
-│   │   └── skills/           # 技能目录
-│   └── configs/              # LLM provider 等配置（热加载）
+│   │   ├── harness/          # **主路径**：stream_harness / agent_factory / sse_bridge / sql_gate / tools
+│   │   ├── core/             # LLM 路由（含 reasoning 补丁）/ usage_metrics / event_sourcing / hitl / config
+│   │   ├── api/v1/           # chat（会话/归档/目标）、config_api（provider/运行时参数）、approve…
+│   │   ├── models/           # ChatSession（archived 等）/ ChatNode / SessionEvent
+│   │   ├── agents/           # legacy 13 节点专家（Misc/RAG/Schema/SQL Coder/Security/Analyst/Reporter）
+│   │   ├── graph/            # legacy LangGraph 状态图（tag legacy-graph-13node）
+│   │   ├── deepagent/        # 独立 DeepAgent 路径（mode=task）
+│   │   ├── db/ rag/ skills/ utils/
+│   │   └── tests/            # 22 个纯逻辑回归（usage 计量 / 事件投影）
+│   └── configs/              # llm_providers.json 等（热加载）
 ├── frontend-react/           # React 19 前端（当前维护版本）
 │   └── src/
-│       ├── pages/Chat.tsx         # 对话工作台（三段式布局：侧栏 / 消息区 / 输入区）
-│       ├── components/chat/       # Bubble.List / Sender / 步骤链 / 14 类消息卡片
-│       ├── sdk/                   # DataAgentProvider(XStream) + SSE 事件 reducer
-│       └── stores/                # zustand：chat / auth / config
+│       ├── pages/Chat.tsx         # 对话工作台（侧栏 / 轮次导航 + 消息区 / 输入区 + 读数条）
+│       ├── components/chat/       # DeepThink / StatPopovers / TurnNavigator / SessionPickerModal /
+│       │                          # ModelSelector / StepChain / 14 类消息卡片
+│       ├── components/bits/       # Icon（语义图标）/ Markdown（hljs + SQL 格式化）/ reactbits/（动效）
+│       ├── sdk/                   # protocol（SSE 类型）/ reducer（事件→消息）/ history（投影→消息）
+│       └── stores/                # zustand：chat（流/用量/轮次）/ auth / config / theme（恒 dark）
 ├── frontend/                 # Vue 3 前端（已冻结，tag vue-legacy 归档，不再维护）
 ├── docs/                     # VitePress 文档（开发计划、需求规格、配置体系）
 ├── deploy/                   # 单体镜像配套：nginx.conf / supervisord.conf / entrypoint.sh
@@ -232,16 +252,26 @@ DataAgent-Pro/
 | `POST` | `/api/v1/chat/completions` | 核心对话（SSE：文本 / 图表配置 / 中间状态） |
 | `POST` | `/api/v1/chat/approve` | 对话内审批决策（高危 SQL，流内挂起后恢复续流） |
 | `POST` | `/api/v1/chat/cancel` | 中断 Agent 执行 |
-| `GET` | `/api/v1/chat/sessions` | 会话列表 / 详情 / 重命名 / 删除 |
+| `GET` | `/api/v1/chat/sessions` | 会话列表（支持 `limit/offset/archived`）/ 详情 / 重命名 / 删除 |
+| `PATCH` | `/api/v1/chat/sessions/{id}/archive` | 归档 / 恢复（前端当前不展示，接口保留） |
+| `GET`/`PUT` | `/api/v1/chat/sessions/{id}/goal` | 会话长期目标（注入 system prompt） |
+| `PATCH` | `/api/v1/config/llm/{id}/runtime` | 模型运行时参数：上下文窗口 / 思考强度 |
 | `GET` | `/api/v1/datasource/list` | 列出可访问数据源 |
 | `POST` | `/api/v1/export/{csv,excel}` | 异步导出 Excel / CSV |
 
-SSE 事件类型（18 类）：`thread_id` · `status` · `thinking` · `reasoning` · `token` · `tool_call` · `tool_result` · `sql` · `result` · `chart` · `plan` · `clarification` · `error` · `title` · `done` · `approval_required` · `quality_feedback` · `node_started`。
+SSE 事件类型（19 类，只增不改）：`thread_id` · `status` · `thinking` · `reasoning` · `token` · `tool_call` · `tool_result` · `sql` · `result` · `chart` · `plan` · `clarification` · `error` · `title` · `done` · `approval_required` · `quality_feedback` · `node_started` · **`usage`**。
+
+> `usage` 为扁平结构：token 明细（input/output/cached/uncached/total/cache_hit_ratio）+ `context`
+> 三段估算（system_prompt/tool_defs/messages/window/used_pct）。窗口取当前 provider 的
+> `context_window`（模型菜单与配置中心可改，默认 192K），前端三弹窗与分母据此实时联动。
 
 ## 📚 文档
 
 完整文档（需求规格、配置体系、开发计划）基于 VitePress 构建，位于 `docs/`：
 
+- **项目交接文档**（架构现状 / 踩坑 / 待办）：`docs/HANDOVER.md`
+- **Harness 架构落地差距分析**：`docs/reference/harness-landing-gap-analysis.md`
+- **智能体协作指南**（跨工具通用）：`AGENTS.md` · Claude 专属：`CLAUDE.md`
 - 对话渲染层重构设计（归档）：`docs/archive/plans/2026-10-12-chat-antdx-refactor-design.md`
 - 对话界面对齐官方样板间规范：`docs/reference/chat-ui-playground-alignment.md`
 - 需求规格说明书、配置体系说明书：`docs/`
@@ -256,9 +286,11 @@ npm run docs:dev
 
 ## ✅ 质量验证
 
-- 前端 `tsc -b` 类型检查 + `vite build` 通过，核心数据流有 vitest 覆盖（SSE Provider / reducer / 审批状态机）
-- 后端 `pytest` 全绿
-- 对话全流程经浏览器端到端验证（会话列表 / 消息流 / 步骤链 / 空态 / 模型路由 / 对话内审批 / 暗色主题）
+- 前端 `tsc -b` 类型检查 + `vite build` 通过；`vitest` 7 项（历史投影映射 / 渲染块编排等）
+- 后端 `pytest tests/ -q` **22 passed**（usage 计量 / 事件投影）
+- **MCP 端到端为主门禁**（chrome-devtools 走真实页面 + 真实 HTTP/SSE/DB）：会话列表与切换、
+  流式对话（含思考/工具/SQL/结果/图表）、三弹窗真实数据、多轮切换、选择对话删除、模型运行时参数
+- Windows 构建提示：`vite build` 需把 `TEMP/TMP` 指向仓库内目录（沙箱限制写系统临时目录）
 
 ## 🤝 贡献
 

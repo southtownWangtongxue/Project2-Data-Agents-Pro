@@ -1,158 +1,181 @@
 # CLAUDE.md
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+This file provides guidance to coding agents when working with code in this repository.
+（面向其他智能体工具的通用版本见 `AGENTS.md`；交接与历史决策见 `docs/HANDOVER.md`。）
 
 ## Project Overview
 
-**DataAgent Pro** — an intelligent business data interaction platform that enables non-technical users to query, analyze, and visualize business data via natural language (Text-to-SQL), powered by a Multi-Agent collaborative architecture.
+**DataAgent Pro** — 面向业务人员的多智能体数据分析平台：用自然语言提问 → 生成 SQL → 执行 →
+出表/图 → 给分析结论。技术栈 **FastAPI + LangGraph/deepagents**（后端）与
+**React 19 + Ant Design X**（前端），状态落 Redis（checkpointer）+ MySQL（业务/元数据）+
+Milvus（RAG）。
+
+当前主路径是 **Harness 模式**（`HARNESS_MODE=on`）：deepagents 主循环 + 工具，
+13 节点固定编排已归档为 legacy（tag `legacy-graph-13node`）。
 
 ## Tech Stack
 
-| Layer | Technology |
-|-------|-----------|
-| Backend framework | Python 3.10+, FastAPI (async, SSE streaming) |
-| Agent orchestration | LangGraph 1.x (stateful workflows, Human-in-the-loop) |
-| Agent framework | LangChain 1.x (tools, output parsers), deepAgents 0.5.x (structured reasoning) |
-| Frontend | Vue 3 + Vite + Element Plus + Echarts |
-| ORM / DB driver | SQLAlchemy (multi-dialect: MySQL, PostgreSQL, SQL Server, Oracle) |
-| Vector DB | Milvus 2.x (RAG knowledge base) |
-| Cache / State | Redis (Graph interrupt state snapshots) |
-| LLM | Privately deployed Qwen or GLM models |
-| Deployment | Docker Compose (dev), Kubernetes (prod), Nginx (static frontend) |
-| Documentation | VitePress (must be delivered as deployable online docs in `docs/`) |
+| 层 | 技术 |
+|---|---|
+| 后端框架 | Python 3.10+ · FastAPI（异步 + SSE） |
+| Agent | LangGraph 1.x · LangChain 1.x · deepagents（`create_deep_agent`） · langchain-openai 1.2.x |
+| 前端 | **React 19 + Vite + TypeScript** · Ant Design 6 + Ant Design X 2.9（Bubble/Sender/Conversations/ThoughtChain/x-markdown） · zustand · ECharts |
+| 前端视觉 | 单深色令牌（`src/index.css`）· `@ant-design/icons` 6.x · MiSans VF（npm `misans`）· JetBrains Mono（`@fontsource`）· motion（React Bits 组件） |
+| ORM / 驱动 | SQLAlchemy（MySQL / PostgreSQL / SQL Server / Oracle） |
+| 向量库 / 缓存 | Milvus 2.x（RAG） · Redis（checkpointer，TTL 1h） |
+| LLM | OpenAI 兼容 provider（DashScope/Qwen、OpenRouter 等），配置热加载 |
+| 部署 | 单体镜像（nginx + uvicorn + supervisord）+ Docker Compose |
 
-## Multi-Agent Architecture (Harness Pattern)
-
-The system follows a **Control Plane + Data Plane + Expert Workers** architecture:
-
-1. **Orchestrator Agent** — intent parsing, task decomposition, LangGraph state management, dynamic routing
-2. **Misc Agent** — handles non-professional/general questions (杂项节点), prevents non-data questions from polluting the main pipeline
-3. **RAG Agent** — retrieves operational standards and metric definitions from Milvus
-4. **Schema Agent** — dynamically loads relevant table schemas, filters irrelevant tables to reduce token cost
-5. **SQL Coder Agent** — generates dialect-specific SQL (MySQL/PG/Oracle/SQL Server), self-corrects on execution errors (max 2 retries)
-6. **Security Agent** — classifies SQL as read (SELECT → allow) or write (INSERT/UPDATE/DELETE/DROP → block, trigger human approval)
-7. **Analyst Agent** — performs statistical analysis (YoY, MoM, anomaly detection) on query results
-8. **Reporter Agent** — generates Echarts JSON configs for visualization, or Excel/CSV file export
-
-### Harness-Aligned Core Modules (feature-flagged)
-
-借鉴 DeepSeek Harness（dsh）设计模式落地的核心模块，均以 feature flag 门控、默认关闭、旧行为保持可用：
-
-| 模块 | 职责 | Feature Flag（默认 False） |
-|------|------|---------------------------|
-| `app/core/event_sourcing.py` | 会话事件溯源：append-only `session_events` 表 + surface 投影（`derive_messages`）+ Fork；历史恢复投影优先、Redis 回退 | `EVENT_SOURCING_ENABLED` |
-| `app/core/prompt_section.py` | 系统提示词分层组装：order 排序 + 作用域遮蔽 + 变量插值（legacy 单一字符串兜底） | `PROMPT_SECTION_ENABLED` |
-| `app/core/seam.py` | 能力接缝：search / storage 后端可替换（Provider 注册 + 运行时选择；LLM seam 留待统一接口） | `SEAM_ENABLED` |
-| `app/core/stream_protocol.py` | SSE 类型化事件协议（新增类型只增不删；reasoning 与正文 token 类型化隔离） | 无（默认启用） |
-
-落地状态与差距详见 `docs/reference/harness-landing-gap-analysis.md`。
-
-## Core Workflow
+## Architecture（当前真实形态）
 
 ```
-User Input → Intent Routing
-  ├─ ask_help / non-data → Misc Agent → Stream output
-  └─ query_data / write_data → Schema Agent → SQL Coder → Security Agent
-        ├─ SELECT → Execute SQL → Analyst Agent → Reporter Agent → Stream output
-        └─ DML/DDL → Suspend Graph → Push approval → Admin approve/reject → Resume or reject
+用户提问
+  └─ POST /api/v1/chat/completions
+       ├─ HARNESS_MODE=on ─→ app/harness/stream_harness.py
+       │     ├─ agent_factory.build_harness_agent()  # 单例，按 spec 指纹重建
+       │     ├─ tools/data_tools.py                  # get_table_schema / run_sql / search_knowledge / make_chart
+       │     ├─ sql_gate(+middleware)                # 读写分类 → allow/ask/deny，ask 时 interrupt
+       │     ├─ sse_bridge.py                        # deepagents 事件 → SSE 协议（含 reasoning/usage）
+       │     └─ HITL 等待-恢复（进程内 waiter，见约束）
+       └─ legacy 13 节点（tag legacy-graph-13node，勿在其上新增功能）
 ```
 
-The workflow is implemented as a **LangGraph 1.x state graph** with interrupt/resume for Human-in-the-loop. Graph state is persisted to Redis via `checkpointer.py` with a default TTL of **1 hour**. The state schema is defined in `app/graph/state.py` (AgentState TypedDict).
+### 关键模块
 
-## Key API Endpoints
+| 模块 | 职责 | 状态 |
+|---|---|---|
+| `app/harness/stream_harness.py` | SSE 生成器：心跳（`asyncio.shield`）、瞬时错误重放、HITL、usage 收尾 | **主路径** |
+| `app/harness/agent_factory.py` | Agent 装配与指纹（提示词/工具/provider/温度/思考开关） | 主路径 |
+| `app/harness/sse_bridge.py` | deepagents 事件 → SSE；reasoning/tool/sql/result/chart | 主路径 |
+| `app/core/event_sourcing.py` | 会话 append-only 事件 + surface 投影（`derive_messages`）+ fork | 默认启用 |
+| `app/core/usage_metrics.py` | token 用量 + 上下文三段估算（`UsageMeter`/`context_breakdown`） | 主路径 |
+| `app/core/llm.py` | provider 上下文、思考开关/强度、**reasoning_content 补丁** | 主路径 |
+| `app/core/prompt_section.py` | 分层提示词（Harness 尚未接入，属 L3 待办） | flag 休眠 |
+| `app/core/seam.py` | 能力接缝（search/storage） | flag 休眠 |
 
-| Method | Path | Purpose |
-|--------|------|---------|
-| `POST` | `/api/v1/chat/completions` | Core chat (SSE streaming: text, chart config, intermediate state) |
-| `POST` | `/api/v1/chat/approve` | Admin approval callback (task_id + action: approve/reject) |
-| `POST` | `/api/v1/chat/stop` | Interrupt agent execution |
-| `GET` | `/api/v1/datasource/list` | List user-accessible data sources |
-| `POST` | `/api/v1/export/excel` | Async export to Excel/CSV |
+## Repository Layout
 
-## 开发命令速查
+```
+backend/app/
+├── api/v1/        # chat.py（对话/会话/归档/目标）、config_api.py（provider/运行时参数）、approve.py…
+├── core/          # llm / usage_metrics / event_sourcing / stream_protocol / config_manager / hitl
+├── harness/       # stream_harness / agent_factory / sse_bridge / sql_gate(+middleware) / tools
+├── deepagent/     # 独立 DeepAgent 路径（mode=task）
+├── graph/         # legacy 13 节点工作流（归档）
+├── models/        # ChatSession（含 archived/context 相关）/ ChatNode / SessionEvent
+└── db/, rag/, skills/, agents/, utils/
+frontend-react/src/
+├── pages/         # Chat.tsx（工作台）、Login.tsx、admin/LlmConfig.tsx…
+├── components/
+│   ├── chat/      # MessageList/MessageItem/StepChain/DeepThink/StatPopovers/StatBar/
+│   │              # TurnNavigator/SessionPickerModal/ModelSelector/SenderInput/AccountMenu…
+│   └── bits/      # Icon（语义图标）、Markdown（x-markdown+hljs+SQL 格式化）、reactbits/（ShinyText/BlurText/SpotlightCard/StarBorder）
+├── sdk/           # protocol.ts（SSE 事件类型）、reducer.ts（事件→消息）、history.ts（投影→消息）、blocks.ts
+└── stores/        # chat（会话/流/用量/轮次）、auth、config（providers/运行时参数）、theme（恒 dark）
+```
+
+## Dev Commands
 
 ```bash
-# === 后端 ===
+# === 后端（端口 8001：本机 8000 常被系统占用，前端代理默认 8001）===
 cd backend
-uv sync --group dev              # 安装/同步依赖（含 dev）
-uv run data-agent                # 启动后端 (uvicorn, 端口 8000, 热重载)
-uv run uvicorn app.main:app --reload --port 8000  # 等效命令
-uv run pytest                    # 运行全部测试
-uv run pytest -k "test_name"     # 运行匹配名称的单个测试
-uv run pytest tests/test_agents.py::TestSecurityAgent::test_mask_phone  # 运行指定测试函数
+.venv/Scripts/python.exe -m uvicorn app.main:app --port 8001          # Windows
+uv run uvicorn app.main:app --reload --port 8001                      # 或 uv
+.venv/Scripts/python.exe -m pytest tests/ -q                          # 22 passed
 
 # === 前端 ===
-cd frontend
-npm install                      # 安装依赖
-npm run dev                      # 启动开发服务器 (端口 5173)
-npm run build                    # 生产构建
-npx vue-tsc --noEmit             # TypeScript 类型检查
-
-# === 基础设施 ===
-cp .env.example .env             # 创建环境变量文件（按需修改 LLM Key 和 DB 密码）
-docker-compose up -d             # 启动所有服务 (Redis+etcd+MinIO+Milvus+MySQL+PostgreSQL)
-docker-compose ps                # 查看服务状态
-docker-compose down -v           # 停止并清理所有服务（含数据卷）
-./scripts/start-dev.sh           # 一键启动开发环境
-
-# === 文档 ===
-cd docs
-npm install                      # 安装 VitePress 依赖
-npm run docs:dev                 # 启动文档开发服务器
-npm run docs:build               # 构建静态文档站点
+cd frontend-react
+npm install
+npm run dev                     # 5173；后端地址可用 BACKEND_PORT 覆盖（默认 8001）
+npx tsc -b --pretty false       # 类型检查
+npm run build                   # 生产构建
+npx vitest run                  # 7 passed
 ```
 
-## Known Issues (待修复)
+**Windows 构建坑（实测）**：`vite build` / vitest 可能因沙箱限制无法写系统 `%TEMP%`，
+构建前把 `TEMP`/`TMP` 指向仓库内目录：
 
-> 注：下表原记录于 2026-04-29（DEVELOPMENT_PLAN 阶段 2 遗留）。经 2026-10-16 交接复核，
-> 其中 #1/#3 已在后续提交中修复，但本表未同步，特在此订正，避免误判为待办。
+```powershell
+$env:TEMP="$PWD/.esbuild-tmp"; $env:TMP="$PWD/.esbuild-tmp"; npm run build
+```
 
-| # | 问题 | 状态 | 订正依据 |
-|---|------|------|------|
-| 1 | schema/sql_coder 节点缺少错误短路条件边 | ✅ 已修复 | `graph/workflow.py` 的 `route_schema` / `route_sql_coder` 均已检查 `error_message` 短路（前者→finish，后者→rag_agent 兜底） |
-| 2 | ~~chat.py 中 GraphInterrupt 用字符串匹配捕获~~ | ✅ 已解决（2026-10-10 复核：已用 `except GraphInterrupt`） | — |
-| 3 | execute_node 丢失 SQL 自纠错重试能力 | ✅ 已修复 | `execute_node` 已调用 `generate_and_execute_sql(max_retries=2, initial_sql=sql)`；`quality_gate` 为降级路由，职责不同，非缺陷 |
+**vite 缓存坑**：`node_modules/.vite` 有时无法删除（批量删除保护），用
+`Rename-Item node_modules/.vite .vite.stale-<n>` 移走再启动即可。
 
-### 当前真正遗留（详见 `docs/NEXT_STEPS.md`）
+## API & SSE Contracts
 
-- **Phase 3 收敛与归档（部分）**：`legacy-graph-13node` tag 已存在（轻量 tag→`3652e6c`），但归档/回滚文档已补（`docs/archive/plans/2026-10-16-legacy-graph-13node-archive.md`）；`USE_DEEP_AGENT` / `AGENT_LOOP_SHADOW` 等历史开关**仍在代码**（`agent_loop.py` / `chat.py` / `workflow.py` / `config_layer.py`），清理未完（见 `docs/NEXT_STEPS.md` 工作线 A）。
-- **三个 Harness feature flag 默认 False**：`EVENT_SOURCING_ENABLED` / `PROMPT_SECTION_ENABLED` / `SEAM_ENABLED` 代码就绪但休眠（见 `docs/reference/harness-landing-gap-analysis.md` L1–L6）。
-- **人工门禁待判**：`backend/configs/harness_review.md` 指标 3/4 仍为 `[ ]`；多数样本 legacy 侧"已排除"，对比口径降级。
-- **nemotron 跨模型稳健性附录**：被上游 provider 故障阻塞，需配额恢复后跑 `backend/scripts/nemotron_batch.py`。
-- **产品决策**：第 3 层 prompt rules 极强，模型拒绝发写 SQL，审批卡实际不可达（"过度安全"），需决定否放开写操作。
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/v1/chat/completions` | 核心对话（SSE） |
+| POST | `/api/v1/chat/approve` | 审批决策（approve/edit/reject） |
+| POST | `/api/v1/chat/cancel` | 中断执行 |
+| GET/PATCH/DELETE | `/api/v1/chat/sessions[/{id}]` | 列表（`limit/offset/archived`）/详情/重命名/删除 |
+| PATCH | `/api/v1/chat/sessions/{id}/archive` | 归档/恢复（前端已不展示，接口保留） |
+| GET/PUT | `/api/v1/chat/sessions/{id}/goal` | 会话长期目标 |
+| PATCH | `/api/v1/config/llm/{id}/runtime` | 上下文窗口 + 思考强度（**只改这两项**） |
+| POST | `/api/v1/export/{csv,excel}` | 导出 |
+
+**SSE 事件（19 类，只增不改）**：
+`thread_id` · `status` · `token` · `reasoning` · `thinking` · `tool_call` · `tool_result` ·
+`sql` · `result` · `chart` · `plan` · `clarification` · `error` · `title` · `done` ·
+`approval_required` · `quality_feedback` · `node_started` · **`usage`**
+
+**`usage`（扁平字段，done 前下发）**：
+
+```
+type, input_tokens, output_tokens, cached_tokens, uncached_input_tokens, total_tokens,
+cache_hit_ratio, estimated, turns, steps,
+context{ system_prompt, tool_defs, messages, window, used_pct }
+```
+
+- 窗口优先级：`provider.context_window` > `settings.CONTEXT_WINDOW` > 192000。
+- 历史会话：`GET /chat/sessions/{id}` 现场估算并返回 `usage`（`estimated: true`）。
+
+**字段口径提醒（踩过坑）**：
+- `sql` 事件同时可能存在 `sql` 与 `content` 字段——前端取 `ev.sql || ev.content`。
+- 落库（`_es_flush`）content 取 `payload.content or payload.sql`。
+- 投影消息带 `turn_index`（来自 `session_events.node_index`），前端据此做「第 N/M 轮」切换；
+  旧数据无该字段时平铺。
 
 ## Important Constraints
-- 在Python项目测试时，确保项目在虚拟环境中使用uv安装项目依赖进行测试
-- **"读数据随意，改数据必批"** — reads are free, writes always require human approval. Use both regex AND LLM double-checking to classify SQL before execution.
-- Data masking required on sensitive fields (phone numbers, ID numbers) before returning results.
-- Per-user concurrency rate limiting via FastAPI to prevent LLM resource exhaustion.
-- Target: simple queries < 5s end-to-end, complex queries < 15s, first-byte SSE < 1s.
-- New database dialects are added via config + SQL dialect template (`app/db/dialects/`) — core Agent logic must not change.
-- Redis checkpoint TTL is 1 hour (`checkpointer.py:CHECKPOINT_TTL`) — approval-awaiting tasks expire after this.
 
-## SSE Event Types (前端 Backend 协议)
+- **读数据随意，改数据必批**：写类 SQL 必须走 `sql_gate` → 人工审批；正则 + LLM 双重分类。
+- **敏感字段脱敏**（手机号/身份证）后才能返回。
+- **HITL 要求同进程**：`app/core/hitl.py` 的 waiter 是进程内字典；多 worker/多副本前必须改
+  Redis pub/sub 或粘性会话（见 `docs/HANDOVER.md` §5.4）。
+- Redis checkpoint TTL 1 小时。
+- **服务由用户掌控**：不要擅自重启用户的后端/前端；代码改动靠 `--reload`，配置改
+  `backend/configs/*.json`（watchdog 热更新）。
+- 新方言通过 `app/db/dialects/` 扩展，核心 Agent 逻辑不变。
+- **reasoning_content 补丁在模块加载期执行**（`core/llm.py`）——修改后必须整进程重启才生效。
+- `enable_thinking` / `reasoning_effort` 必须走 **`extra_body`**，放 `model_kwargs` 会让
+  openai SDK 抛 `unexpected keyword argument`。
 
-后端通过 SSE 流式推送事件到前端 `useSSE.ts` composable。协议约定「只增不删」（见 `app/core/stream_protocol.py`），事件类型常量以 `SSEEventType` 为准：
+## Verification（门禁）
 
-| event.type | callback | 用途 |
-|-----------|----------|------|
-| `thread_id` | onThreadId | 会话 ID（流开始推送，多轮复用） |
-| `status` | onStatus | 流程状态 / quality_feedback 复用展示 |
-| `sql` | onSQL | SQL 卡片（token 事件 channel=sql 先行流式追加） |
-| `result` | onResult | 查询结果数据 + 列名 |
-| `token` | onToken | 逐字正文（携带 `channel`: sql=SQL 卡片 / answer=正文） |
-| `reasoning` | onReasoning | 思考模型 reasoning_content 增量（折叠卡片） |
-| `thinking` | onThinking | Agent 阶段思考卡片（agent/phase/content） |
-| `node_started` | onNodeStarted | 节点开始（驱动任务清单 + step_id 分组） |
-| `plan` | onPlan | 执行计划（intent/steps/chart_suitable） |
-| `clarification` | onClarification | 意图追问卡片 |
-| `tool_call` / `tool_result` | onToolCall / onToolResult | 工具调用/结果（合并为 tool_chain 卡片） |
-| `chart` | onChart | ECharts 图表配置 |
-| `title` | onTitle | 会话标题（done 后异步推送） |
-| `error` | onError | 错误信息（code + recoverable） |
-| `approval_required` | onApprovalRequired | 高危 SQL 需要审批（thread_id, question, sql, reason） |
-| `quality_feedback` | onStatus（复用） | 质量门评估反馈 |
-| `done` | onDone | 流正常结束 |
+1. `npx tsc -b --pretty false` + `npm run build`（前端）
+2. `npx vitest run`（7）+ `pytest tests/ -q`（22）
+3. **MCP 端到端**（chrome-devtools 走真实页面 + 真实 HTTP/SSE/DB）——单测全绿不代表可用，
+   本仓库多次出现「单测通过但真实链路炸」。
 
-所有节点内事件统一携带自增 `step_id`（`thread_id`/`done`/`title` 除外），前端按步骤分组渲染；15s 无事件时后端发送 `: ping` 注释行心跳。
+## Known Issues / 待办
 
-- 当你在提示词中包含 use context7 时，服务器会获取当前官方文档和代码示例，并直接集成到你的 AI 助手的上下文窗口中
+- **DashScope 免费额度**：2026-10-18 实测 `qwen3.7-flash` 返回 `403 Free quota exhausted`，
+  对话不可用（账号问题）；额度恢复后需回归实时对话/思考/三弹窗。
+- **`reasoning_effort` 上游支持**：已按 `extra_body` 下发，DashScope 兼容模式是否接受待验证；
+  不支持时保持空值。
+- **L3 分层提示词**未接入 Harness；**L5 能力接缝** flag 仍休眠（见 gap-analysis §5.6）。
+- **nemotron 跨模型附录**：上游故障阻塞，恢复后跑 `backend/scripts/nemotron_batch.py`。
+- **产品决策**：第 3 层 prompt rules 极强，模型拒绝发写 SQL，审批卡实际不可达（"过度安全"）。
+- 历史遗留开关 `USE_DEEP_AGENT` / `AGENT_LOOP_SHADOW` 仍在代码（见 `docs/NEXT_STEPS.md` 工作线 A）。
+
+## 前端约定（2026-10 定版）
+
+- **单深色主题**：无亮色切换；层级靠背景明度（`#0a0a0b / #101012 / #141416 / #1c1c1f`），
+  边框用 `rgba(255,255,255,0.07)`，不要新增分隔线。
+- 图标统一 `<Icon name="..." size={14|16} />`（`components/bits/Icon.tsx` 语义名 → antd 图标），
+  不要引入其他图标库或自建字体图标。
+- 字体：`--font-sans`（MiSans VF）、`--font-mono`（JetBrains Mono，**必须带 MiSans 中文兜底**）；
+  最小字号 12px。
+- 生成中判断用 `store.isGenerating`（**不要用 `isLoading`**——它同时用于历史加载）。
+- 思考显隐受 `store.thinking` 开关控制；`DeepThink` 只在有 reasoning 数据时渲染。
