@@ -1,7 +1,9 @@
 # 项目交接文档
 
-> 生成时间:2026-10-16 · 面向接手后续任务的智能体/开发者
-> 当前分支:`data_agent_pro` · 后端测试 **218 passed** · 前端 **38 passed**
+> 生成时间:2026-10-16 · 最近更新:**2026-10-18**（前端体验重做 + 思考/计量链路打通,见 §8）
+> 当前分支:`data_agent_pro` · 最新提交 `8c91215`
+> 测试现状:前端 `vitest` **7 passed** + `tsc`/`vite build`;后端 `backend/tests` **22 passed**
+> （纯逻辑测试套件已于 2026-10-17 归档到 `docs/archive/tests/`,门禁以 MCP 端到端为主）
 
 ---
 
@@ -267,3 +269,76 @@ cd backend && uv run python -c "from app.harness.shadow import shadow_report, bu
 **总体判断**：`NEXT_STEPS.md` 工作线 B 中，**L1/L2 已交付，L6 因前端重写自然消亡，
 L4 与 Phase 3 绑定，剩下真正可做的只有 L3（需先接入）与 L5（需评估真实需求）**。
 建议把它们从「预设路线」改为「按需提案」，避免为完成路线而做无收益改造。
+
+---
+
+## 8. 2026-10-18 增量:前端体验重做 + 思考/计量链路打通
+
+提交 `8c91215`（67 文件）。这一轮的重心从"架构落地"转到**可用性与可观测性**,
+所有结论均为 Chrome DevTools MCP 端到端实测（非单测推断）。
+
+### 8.1 视觉与交互定版（参考 dsh）
+
+| 项 | 落点 | 关键决策 |
+|---|---|---|
+| 单深色主题 | `index.css` / `stores/theme.ts` | 取消亮色切换;画布 `#0a0a0b`、面板 `#101012`、卡片 `#141416`、悬浮 `#1c1c1f`;边框改半透明白 `rgba(255,255,255,0.07)`（弱描边取代分隔线） |
+| 图标 | `components/bits/Icon.tsx` | **弃用自建 iconfont**（Remix 只搬了 @font-face 未搬 3229 条 `::before` 字形映射 → 全站空白）,改 Ant Design 官方 `@ant-design/icons 6.3.4`;语义名映射,size 13–16 |
+| 字体 | `main.tsx` | MiSans VF（npm `misans`,unicode-range 切片）+ JetBrains Mono `@fontsource`;`--font-mono` 必须带中文兜底 `MiSans` |
+| 去分隔线 | 全局 | 侧栏底、读数条、弹窗标题行全部去 border,靠明度差分层;输入框 16px 圆角无边框 |
+| 会话管理 | `SessionPickerModal.tsx` | 内嵌批量条（按钮挤压换行、易误点）→ 独立「选择对话」弹窗（今天/7天内/30天内/更早 + 圆形复选 + 标题与时间）,**取消归档功能**（后端字段保留） |
+| 模型配置 | `ModelSelector.tsx` | 悬浮模型行即展开参数面板（无按钮）:上下文长度 192K/300K/600K/1M/自定义 + 思考强度 默认/Low/High/Max |
+| 动效 | `reactbits/` | ShinyText / BlurText / SpotlightCard 源码移植;StarBorder 用 CSS conic 等效（免 canvas RAF）;会话项进场 + hover 指示条 |
+
+### 8.2 可观测性:usage 契约 + 三弹窗
+
+**新增 SSE 事件 `usage`（协议只增不改,扁平字段）**:
+
+```json
+{"type":"usage","input_tokens":0,"output_tokens":0,"cached_tokens":0,
+ "uncached_input_tokens":0,"total_tokens":0,"cache_hit_ratio":0,"estimated":true,
+ "turns":1,"steps":2,
+ "context":{"system_prompt":0,"tool_defs":0,"messages":0,"window":192000,"used_pct":0}}
+```
+
+- 采集:`core/usage_metrics.py` 的 `UsageMeter` 读末块 `usage_metadata`(需 `stream_usage=True`);legacy 路径经 `_RequestUsageCallback` 回灌。
+- **上下文窗口可配**:`LLMProvider.context_window`(默认 192000);`_usage_window()` 优先级 = provider > `settings.CONTEXT_WINDOW` > 192K。
+- 运行时改参:`PATCH /config/llm/{id}/runtime`（只改 `context_window` / `reasoning_effort`,不回传 api_key）。
+- **历史会话不失效**:`GET /chat/sessions/{id}` 在事件投影路径**现场估算** usage（三段 + provider 窗口,`estimated:true`）,前端 `loadSession` 写入 store;否则切换会话三弹窗全是「—」。
+- 前端三弹窗:`StatPopovers.tsx`（会话统计 / Token 用量 / 上下文已用,含缩略圆环）,分母实时联动（`usage.context.window || contextUsage.window`）。
+
+### 8.3 实时思考（本轮最大的跨层修复）
+
+链路真相:**DashScope 返回 `delta.reasoning_content`（默认就有）→ `langchain-openai 1.2.x` 明确不提取该字段（源码注释"not extracted"）→ 前端一直收不到 reasoning**。
+
+- 修法:`core/llm.py` 模块级 monkeypatch `_convert_delta_to_message_chunk` / `_convert_dict_to_message`,把 `reasoning_content` 回填 `additional_kwargs`;`sse_bridge` 已有读取逻辑直接生效。**改后必须整进程重启后端**。
+- 实测:reasoning 事件 0 → 72/轮。
+- 展示:`DeepThink.tsx` 一次回复的多段思考聚合为一个「深度思考」卡（生成中自动展开 + 实时计时 + 多轮步骤列表 + StarBorder 星轨）,完成后折叠。
+- 历史碎片:`_ES_MAP` 曾把每个 reasoning chunk 逐条落库（72 条 → 72 张「2 字」卡）;后端 `_es_flush` 先合并连续 REASONING 再入库,前端 `mapProjectedMessages` 合并相邻片段（旧数据也能修好）。
+- 移除 legacy 占位状态「正在分析您的请求…」(harness 与 deepagent 两处)。
+
+### 8.4 多轮对话节点切换
+
+- 落库:`_es_flush(..., node_index=node_index)`;投影:`derive_messages` 给每条消息补 `turn_index`（旧数据无）。
+- 前端:`Msg.turnIndex` + `TurnNavigator.tsx`（‹ 第 N/M 轮 › + 轮次下拉,仅历史会话且 `turns.length>1` 出现）;`MessageList` 按 `currentTurnIndex` 过滤,无 turnInfo 时平铺（向后兼容）;思考卡 `collectRounds` 也只聚合当前轮。
+
+### 8.5 本轮修掉的跨层根因（都可复现,建议保留在记忆中）
+
+1. **心跳 `wait_for` 取消杀流**:`wait_for(aiter.__anext__(), timeout=15)` 超时会取消迭代任务 → LangGraph astream 生成器被腰斩 → 长工具（make_chart 15s）后流"干净退出"（无 error）。修法:`asyncio.shield(pending_next)` + 持久任务,超时只发 `: ping`;`finally` 回收未决任务。实测 67 事件完整跑通。
+2. **SQL 事件字段口径**:harness 发 `sql` 字段、reducer 只读 `content` → SQL 卡空白。已双口径兼容（`ev.sql || ev.content`）。
+3. **SQL 落库列**:`_es_flush` 只取 `payload.content` → SQL 文本在 `payload.sql` → 历史恢复空 SQL 卡。已 `content or payload.sql`,并在 `_project` 对旧数据兜底。
+4. **`enable_thinking` 参数位置**:放 `model_kwargs` 会让 openai SDK 抛 `unexpected keyword argument`（thinking=false 必现）。已改 `extra_body`（`reasoning_effort` 同路径）。
+5. **历史 usage 缺口**:见 §8.2（现场估算 + `estimated` 标记）。
+
+### 8.6 运维与环境注意（本轮新踩）
+
+- **`vite build` 在 Windows 可能因沙箱限制写系统 %TEMP% 被拒**:构建前把 `$env:TEMP/$env:TMP` 指到 `frontend-react/.esbuild-tmp`。
+- **vite deps 缓存删不掉**:`node_modules/.vite` 触发批量删除保护 → 用 `Rename-Item` 移走再启动。
+- **DashScope 免费额度**:2026-10-18 实测 `qwen3.7-flash` 返回 `403 Free quota exhausted`,对话不可用;需充值或在配置中心启用其他 provider（`nemotron` 需 OpenRouter key）。**这是账号问题,非代码问题**。
+- 端口约定:后端 `8001`（本机 8000 被系统占用）,前端 `5173`;本轮结束时两个服务已停止。
+
+### 8.7 待办（按优先级）
+
+1. **额度恢复后回归**:实时对话 + 思考流 + 三弹窗 + 多轮切换的全链路复测（现在只能验证到"参数正确、无 400"）。
+2. **思考强度上游支持确认**:`reasoning_effort` 已按 `extra_body` 下发,但 DashScope 兼容模式是否接受需额度恢复后验证;不支持时应保持空值。
+3. L3（分层提示词接入 Harness）/ L5（能力接缝）仍为「按需提案」,见 §5.6。
+4. HITL 多进程约束未变（§5.4 的 ⚠️）,扩容前必须改 Redis pub/sub 或粘性会话。

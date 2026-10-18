@@ -22,6 +22,8 @@
 | Phase 4 流式协议类型化 | `stream_protocol.py` + ReasoningBlock | ✅ 已落地（且已演进至 channel/step_id） |
 | Phase 5 渲染投影层 | slot 体系 / ConversationNodeDefinition | ❌ 未实施 |
 | 会话能力（fork/trajectory/goal） | 事件溯源红利 | ✅ API 已全量提供 |
+| TokenUsage 细分与上下文构成 | 集成分析未列入阶段，属可观测性缺口 | ✅ **已落地（2026-10-18）**：`usage` SSE 事件（token 明细 + 上下文三段 + 窗口可配），见 §3.6 |
+| 思考流（reasoning）端到端 | 依赖 provider 返回 reasoning_content | ✅ **已打通（2026-10-18）**：langchain 丢弃字段的补丁 + 前端深度思考卡，见 §6.1 |
 | 数据驱动意图（inbox/pre-step waterfall） | 设计模式借鉴，非必选项 | ❌ 保留 LLM clarify_and_plan（符合「借鉴式」定位） |
 
 > 证据分级标注沿用集成分析约定：【代码核实】= 本次逐文件核实；【commit】= git 历史可查。
@@ -158,10 +160,21 @@
 - **现状**：传统路径意图识别仍为 `orchestrator.py` 的 `clarify_and_plan`（单次 LLM 调用，intent 枚举 5 类）；全后端无 inbox/waterfall 机制（【代码核实】）。
 - **评估**：这**符合**集成分析「只借鉴设计模式、不引入 dsh 运行时」的定位（其 5 阶段方案本就未包含意图机制重写）。建议在报告与后续规划中显式标注为「有意不采用」，避免被误判为遗漏。
 
-### 3.6 TokenUsage 未细分 🟢 低优先
+### 3.6 TokenUsage 未细分 ✅ **已落地（2026-10-18）**
 
-- **现状**：后端无 token 用量统计上报代码（【代码核实】grep 仅命中研究文档）；前端性能条为字符数估算。
-- **建议**：待 LLM seam 统一后一并实施（需在各调用点汇聚 usage 数据）。
+- **原现状**：后端无 token 用量统计上报代码；前端性能条为字符数估算。
+- **已实施**：
+  - `app/core/usage_metrics.py`：`UsageMeter` 从流末块 `usage_metadata` 聚合
+    `input/output/cached/uncached/total`；legacy 路径经 `_RequestUsageCallback` 回灌。
+  - LLM 客户端（`core/llm.py` / `deepagent/harness.py`）开启 `stream_usage=True`。
+  - 三条流式路径（harness / legacy / deepagent）在 `done` 前下发 **`usage` SSE 事件**（协议只增）：
+    扁平 token 字段 + `context{system_prompt,tool_defs,messages,window,used_pct}`。
+  - **上下文窗口可配**：`LLMProvider.context_window`（默认 192000），`_usage_window()`
+    优先级 = provider > `settings.CONTEXT_WINDOW` > 192K；运行时接口
+    `PATCH /config/llm/{id}/runtime`（模型选择器悬浮面板 / 配置中心双向同步）。
+  - 历史会话：`GET /chat/sessions/{id}` 在投影路径**现场估算**并返回 `usage`
+    （`estimated: true`），避免切换会话后弹窗全空。
+  - 前端：底部读数条三弹窗（会话统计 / Token 用量 / 上下文已用），分母随窗口实时联动。
 
 ### 3.7 其他核实中发现的工程缝隙 🟢
 
@@ -174,6 +187,31 @@
    原有墙钟熔断逻辑不变。端到端验证：真实请求下 15.0s 静默期准时收到心跳。
    `_stream_chat_deepagent`（`mode=task`）仍无心跳，属低流量路径，待后续处理。
 2. **多模式事件溯源覆盖**：`mode_router.py` 已注册 data/task/report/doc 四模式，但 task/report/doc 工作流的节点事件是否入 `session_events` 未系统核查，建议随 §3.2 一并补齐。
+   - **2026-10-18 补充**：L2 双写已补齐（data 4→7 / report 3→6 / doc 3→4 类）；
+     但 **reasoning 事件曾按流式 chunk 逐条落库**（一次对话 72 条 → 历史投影碎成 72 张卡），
+     已改为 `_es_flush` 内**先合并连续 REASONING 再入库**，前端 `mapProjectedMessages`
+     亦合并相邻片段（兼容旧数据）。
+3. ✅ **心跳实现缺陷（2026-10-18 修复）**：§3.7.1 补的 `wait_for(aiter.__anext__(), timeout=15)`
+   存在隐性致命问题——`wait_for` 超时会**取消**迭代任务，直接掐死 LangGraph 的 `astream`
+   生成器帧。实测 `make_chart` 恰好执行 15s（等于心跳窗），事件流在工具后"干净退出"
+   （无 error、无 SQL、无正文），日志表现为 `[pre]` 有、`[post]` 缺失。
+   修法：`asyncio.shield(pending_next)` + 持久任务，超时只发 `: ping` 不取消迭代，
+   `finally` 回收未决任务。修复后 67 事件完整跑通（工具链 → SQL/结果 → 正文 → usage → done）。
+4. ✅ **SQL 事件字段口径不一致（2026-10-18 修复）**：harness 桥接器把 SQL 文本放
+   `sql` 字段、legacy 放 `content`，而前端 reducer 只读 `content` → SQL 卡空白。
+   已双口径兼容（`ev.sql || ev.content`）；落库侧同样修 `payload.content or payload.sql`，
+   `_project` 对旧数据从 `payload.sql` 兜底。
+5. ✅ **思考内容被适配层丢弃（2026-10-18 修复）**：`langchain-openai 1.2.x` 明确不提取
+   `reasoning_content`（源码注释），导致 SSE 无 reasoning 事件。已在 `core/llm.py`
+   模块加载期 monkeypatch `_convert_delta_to_message_chunk` / `_convert_dict_to_message`
+   回填 `additional_kwargs["reasoning_content"]`（**改后需整进程重启**）。详见 §6.1。
+6. ✅ **`enable_thinking` 参数位置错误（2026-10-18 修复）**：该非标准参数放在
+   `model_kwargs` 会让 openai SDK 抛 `unexpected keyword argument`
+   （`thinking=false` 时必现，直接打断对话）。已改 `extra_body`
+   （`reasoning_effort` 同路径下发）。
+7. ✅ **轮次信息缺失（2026-10-18 补齐）**：`_es_flush` 现在写入 `node_index`，
+   `derive_messages` 给每条投影消息补 `turn_index`；前端据此实现「第 N/M 轮」切换
+   （旧数据无该字段时自动回退为平铺）。
 
 ---
 
@@ -182,7 +220,7 @@
 | 阶段 | 内容 | 对应差距 | 风险 | 交付判据 |
 |---|---|---|---|---|
 | **L1** | ✅ 灰度开启事件溯源 + 端到端回归 | §3.1 | 中（会话恢复核心路径，Redis 回退兜底） | **已达成（2026-10-17）**：flag 默认已 `True`；恢复/轨迹/fork/导出四项端到端全过，fork `copied_events=4` |
-| **L2** | DeepAgent + 多模式事件双写补齐 | §3.2、§3.7.2 | 中 | DeepAgent/task/report/doc 会话投影完整（§3.2 复核显示已补齐，待按模式实测确认） |
+| **L2** | DeepAgent + 多模式事件双写补齐 | §3.2、§3.7.2 | 中 | ✅ **已完成（2026-10-18）**：data 4→7 / report 3→6 / doc 3→4 类；reasoning 落库改为合并写入；事件带 `node_index`（§6.3） |
 | **L3** | ⚠️ 分层提示词：**需先把 `PromptAssembler` 接入 `agent_factory`**（当前 `deepagent/prompts.py` 无任何 import 方，开 flag 对 Harness 零效果），再谈 A/B | §3.1 | 低 | 提示词分层默认生效（前提：已接入 Harness） |
 | **L4** | 子代理因果归因（事件 payload 增 source 字段） | §3.3 | 低 | 轨迹接口可区分子代理产出 |
 | **L5** | 能力接缝灰度 + LLM seam 论证 | §3.1 | 中（存储引擎解析） | `SEAM_ENABLED` 默认生效或明确弃用 |
@@ -204,6 +242,71 @@
 | `docs/项目审计与改进计划.md` | §3.2 对照表：流式 Token/思考过程/工具可视化/会话管理由 ❌🟡 改为 ✅；§4.2 事件清单：quality_feedback（已补 case）、node_started（已产出）、补充 reasoning/channel/step_id；§5 问题表：RAG Agent 节点（已存在 `workflow.py` rag_agent 节点）、deepAgents（`subagents.py` 已实际使用）、skills（技能管理已实现）；阶段 C-1/C-2 标注完成 |
 | `CLAUDE.md` | 架构节补充四个核心模块（event_sourcing/prompt_section/seam/stream_protocol）与三个 feature flag 说明 |
 | `README.md` / `docs/guide/architecture.md` / `docs/index.md` | 最小化补充事件溯源/能力接缝/分层提示词能力一句话说明 |
+
+---
+
+## 6. 2026-10-18 增量：思考流、计量与轮次（`8c91215`）
+
+本轮把报告里「属于可观测性/体验层」的三个缺口一次补齐，全部有端到端实测证据。
+
+### 6.1 思考流端到端（reasoning_content）
+
+**事实链**（三段验证）：
+
+| 环节 | 结论 |
+|---|---|
+| 上游 DashScope | `qwen3.7-flash` 流式**默认返回** `delta.reasoning_content`（直连实测 5268 字符，`enable_thinking=True` 亦同） |
+| 适配层 | `langchain-openai 1.2.1` 的 `chat_models/base.py` 注释明确 `reasoning_content` / `reasoning_details` **不被提取** → 我们的 SSE 永远无 `reasoning` 事件 |
+| 前端 | reducer（按 step 累加）与 `DeepThink` 渲染链路本就完整，只是没有数据 |
+
+**修法**：`app/core/llm.py` 模块加载期 monkeypatch
+`langchain_openai.chat_models.base._convert_delta_to_message_chunk`
+（及非流式的 `_convert_dict_to_message`），把 `reasoning_content` 回填到
+`chunk.additional_kwargs`；`sse_bridge._emit_messages` 已有读取逻辑直接生效。
+用 `_reasoning_patched` 标记保证幂等，**必须在后端整进程重启后生效**。
+
+**实测**：`reasoning` 事件 0 → 72（一轮）；前端「深度思考」卡字数 92→258→420 实时增长，
+完成后自动折叠为「深度思考 · N 字 · N 轮」。
+
+**配套**：
+- 删除 legacy 占位状态「正在分析您的请求…」（`stream_harness` 与 deepagent 两处），
+  保留的 `status` 只用于重试/超时/审批超时等真实状态。
+- 思考碎片治理：落库合并连续 REASONING（见 §3.7.2 补充）+ 前端相邻片段合并。
+
+### 6.2 计量契约（承接 §3.6）
+
+`usage` 事件字段（扁平，协议只增）：
+
+```
+type, input_tokens, output_tokens, cached_tokens, uncached_input_tokens,
+total_tokens, cache_hit_ratio, estimated, turns, steps,
+context{ system_prompt, tool_defs, messages, window, used_pct }
+```
+
+- 窗口优先级：`provider.context_window` > `settings.CONTEXT_WINDOW` > `DEFAULT_CONTEXT_WINDOW(192000)`。
+- 运行时改参：`PATCH /api/v1/config/llm/{provider_id}/runtime`
+  `{ context_window?, reasoning_effort? }`（只改这两项，不回传 api_key）。
+- 历史会话：`GET /api/v1/chat/sessions/{thread_id}` 返回 `usage`（现场估算，`estimated: true`）。
+- 前端：`StatPopovers` 三弹窗；无数据时分母仍按当前配置显示（`— / 300.0K` 实测）。
+
+### 6.3 轮次投影（供多轮切换）
+
+- `_es_flush(..., node_index=node_index)` → `session_events.node_index` 有值；
+- `derive_messages` 逐条补 `turn_index`；
+- 前端 `TurnNavigator`（第 N/M 轮 + 下拉）与 `MessageList` 过滤；
+- **兼容**：旧事件 `node_index=NULL` → 消息不带 `turn_index` → 导航条不出现、消息平铺。
+
+### 6.4 本轮遗留
+
+1. **上游额度**：2026-10-18 实测 `qwen3.7-flash` 返回 `403 Free quota exhausted`，
+   真实对话回归被阻塞（参数正确性已由「无 400」间接验证）。额度恢复后需重跑
+   §6.1/§6.2 的端到端断言。
+2. **`reasoning_effort` 上游支持**：已按 `extra_body` 下发，但 DashScope 兼容模式是否接受
+   需额度恢复后验证；不支持时保持空值（不下发）。
+3. HITL 多进程约束未变（见 `docs/HANDOVER.md` §5.4）。
+
+> 本节与 `docs/HANDOVER.md` §8 互为镜像：本文记录"缺口视角"的闭合，
+> HANDOVER 记录"接手视角"的交付与运维注意。
 
 ---
 
